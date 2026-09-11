@@ -1,0 +1,13 @@
+__pycache__/
+.venv/
+.vscode/
+.idea/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+1
+avatars/
+.trae/
+*.mp3
+*.log
