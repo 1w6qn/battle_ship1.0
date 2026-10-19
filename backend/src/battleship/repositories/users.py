@@ -124,6 +124,29 @@ class UserRepository:
         )
         return int(ahead or 0) + 1
 
+    def leaderboard(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Wins board: only accounts that have played, wins DESC then streak DESC."""
+        from sqlalchemy import func
+
+        safe_limit = min(max(1, int(limit)), 100)
+        statement = (
+            select(
+                User.id,
+                User.username,
+                User.wins,
+                User.losses,
+                User.current_streak,
+                User.longest_streak,
+                User.avatar,
+            )
+            .where(
+                (func.coalesce(User.wins, 0) + func.coalesce(User.losses, 0)) > 0
+            )
+            .order_by(User.wins.desc(), User.longest_streak.desc())
+            .limit(safe_limit)
+        )
+        return [dict(row._mapping) for row in self.session.execute(statement)]
+
     def count(self) -> int:
         from sqlalchemy import func
 
