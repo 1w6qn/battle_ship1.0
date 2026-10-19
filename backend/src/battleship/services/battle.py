@@ -288,6 +288,9 @@ class BattleService:
         result = await asyncio.to_thread(
             self.settlement.settle, room, winner_id, loser_id
         )
+        # Legacy _finalize_match always released the presence "in a game" flag,
+        # even when persistence failed, so friends can invite again immediately.
+        self.rooms.release_presence(room)
         await self._emit_game_over(room, winner_id, reason, result)
         return result
 
@@ -310,6 +313,7 @@ class BattleService:
         result = await asyncio.to_thread(
             self.settlement.settle, room, winner_id, loser_id
         )
+        self.rooms.release_presence(room)
         await self._emit_game_over(room, winner_id, reason, result)
         return result
 

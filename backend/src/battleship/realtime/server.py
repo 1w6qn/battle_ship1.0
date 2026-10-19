@@ -16,15 +16,21 @@ from ..contracts.events_in import is_debug_event
 from ..http.session import session_from_cookie_header, session_user_id, session_username
 from ..infra.logging import get_logger, log_context
 from ..services.battle import BattleService
+from ..services.chat import ChatService
+from ..services.friends import FriendsService
 from ..services.gameplay import GameplayService
+from ..services.lobby import LobbyService
+from ..services.presence import PresenceService
 from ..services.rooms import Connection, RoomService
 from .emitter import SocketIoPublisher
 from .handlers.battle import register_battle_handlers
+from .handlers.chat import register_chat_handlers
 from .handlers.debug import (
     DEBUG_EVENT_DISABLED_MESSAGE,
     register_debug_handlers,
     register_debug_implementations,
 )
+from .handlers.lobby import register_lobby_handlers
 from .handlers.reconnect import register_reconnect_handlers
 from .handlers.room import register_room_handlers
 
@@ -41,8 +47,15 @@ def create_socket_server(
     rooms: RoomService | None = None,
     gameplay: GameplayService | None = None,
     battle: BattleService | None = None,
+    lobby: LobbyService | None = None,
+    presence: PresenceService | None = None,
+    friends: FriendsService | None = None,
+    chat: ChatService | None = None,
 ) -> socketio.AsyncServer:
-    rooms = rooms or RoomService()
+    presence = presence or (rooms.presence if rooms is not None else None)
+    presence = presence or PresenceService()
+    rooms = rooms or RoomService(presence=presence)
+    lobby = lobby or LobbyService(rooms, presence)
     gameplay = gameplay or GameplayService(
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )
@@ -72,15 +85,19 @@ def create_socket_server(
                 "username": session_username(session),
             },
         )
+        connection = Connection(
+            sid=sid,
+            user_id=session_user_id(session),
+            username=session_username(session),
+        )
+        # Register the connection in the single online table before anything
+        # else (the legacy connect handler did this first, so every later
+        # branch -- including resume_game -- sees the player as online).
+        await rooms.handle_connect(connection)
+        lobby.ensure_ticker()
         # A returning account may still sit in an unfinished room: push
         # resume_game + a fresh reconnect token so the client can rejoin.
-        await rooms.notify_resume(
-            Connection(
-                sid=sid,
-                user_id=session_user_id(session),
-                username=session_username(session),
-            )
-        )
+        await rooms.notify_resume(connection)
         with log_context(event="connect"):
             logger.info(
                 "socket connected",
@@ -91,9 +108,16 @@ def create_socket_server(
     @sio.event
     async def disconnect(sid: str, reason=None) -> None:
         metrics.connection_closed()
-        # Start the 30s grace in a background task. This handler must never emit
-        # or wait on the grace window (the legacy eventlet hub deadlock).
+        # Start the 30s grace in a background task. This handler must never wait
+        # on the grace window (the legacy eventlet hub deadlock).
         await rooms.handle_disconnect(sid)
+        # Presence and lobby membership are gone now; tell the remaining
+        # members. A failure here must never break the disconnect path.
+        try:
+            await lobby.handle_disconnect(sid)
+            await lobby.broadcast()
+        except Exception:  # noqa: BLE001
+            logger.exception("lobby broadcast on disconnect failed")
         with log_context(event="disconnect"):
             logger.info("socket disconnected", extra={"socket_id": sid, "reason": str(reason)})
 
@@ -124,9 +148,16 @@ def create_socket_server(
 
     publisher = SocketIoPublisher(sio)
     rooms.bind(publisher)
+    lobby.bind(publisher)
     gameplay.bind(publisher)
     battle.bind(publisher)
-    register_room_handlers(sio, rooms)
+    if friends is not None:
+        friends.bind(publisher)
+    if chat is not None:
+        chat.bind(publisher)
+        register_chat_handlers(sio, chat)
+    register_room_handlers(sio, rooms, lobby)
+    register_lobby_handlers(sio, lobby)
     register_battle_handlers(sio, gameplay, battle)
     register_reconnect_handlers(sio, rooms)
     register_debug_implementations(battle)
