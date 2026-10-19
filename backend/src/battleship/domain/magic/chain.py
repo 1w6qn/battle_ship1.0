@@ -47,6 +47,9 @@ class ChainResult:
     negated_by: str | None = None
     affected_positions: list[Any] = field(default_factory=list)
     game_over: bool = False
+    #: Card-specific payload keys (cards / max_ships / ...) frozen from the
+    #: legacy ChainResult.__dict__ dump.
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
@@ -72,6 +75,8 @@ class ChainResult:
             ]
         if self.game_over:
             payload["game_over"] = True
+        for key, value in (self.extra or {}).items():
+            payload.setdefault(key, value)
         return payload
 
 
