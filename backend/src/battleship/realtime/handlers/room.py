@@ -53,3 +53,8 @@ def register_room_handlers(sio: socketio.AsyncServer, rooms: RoomService,
         if result.get("status") == "success":
             await _broadcast_lobby(lobby)
         return result
+
+    @sio.on("set_decline_priority")
+    async def set_decline_priority(sid: str, data: dict[str, Any] | None = None) -> dict:
+        connection = await connection_from_sio(sio, sid)
+        return await rooms.set_decline_priority(connection, data)

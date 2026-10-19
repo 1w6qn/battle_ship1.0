@@ -84,6 +84,56 @@ class FriendsService:
                 logger.exception("friend push failed", extra={"socket_id": sid})
         return delivered
 
+    # ------------------------------------------------------ settlement hook
+
+    def recent_opponent_hook(self, room: Any, uow: Any, context: Any) -> None:
+        """Append the legacy recent_opponent frames for a finished match.
+
+        Legacy sends one private frame to each seat before game_over, and only
+        when both seats really are accounts (AI / guest seats have no user row).
+        Registering this as a settlement hook keeps every ending path on one
+        funnel, exactly like the legacy _finalize_match hook.
+        """
+
+        facts = context.facts
+        winner_uid = facts.winner_user_id
+        loser_uid = facts.loser_user_id
+        if not winner_uid or not loser_uid:
+            return
+        winner_row = uow.users.get(winner_uid)
+        loser_row = uow.users.get(loser_uid)
+        if winner_row is None or loser_row is None:
+            return
+        for me_uid, other_uid, me_seat, other_seat in (
+            (str(winner_uid), str(loser_uid), facts.winner_id, facts.loser_id),
+            (str(loser_uid), str(winner_uid), facts.loser_id, facts.winner_id),
+        ):
+            me = room.players.get(me_seat)
+            player = room.players.get(other_seat)
+            if me is None or player is None:
+                continue
+            # Frame goes to *my* seat; the payload describes my opponent.
+            target = getattr(me, "socket_id", None)
+            if not target:
+                continue
+            context.events.append(
+                {
+                    "phase": "before",
+                    "event": "recent_opponent",
+                    "to": target,
+                    "data": {
+                        "user_id": other_uid,
+                        "username": str(
+                            getattr(player, "name", "")
+                            or getattr(other_row, "username", "")
+                            or other_uid
+                        ),
+                        "avatar": str(getattr(player, "avatar", "") or ""),
+                        "relation": uow.social.get_friend_relation(me_uid, other_uid),
+                    },
+                }
+            )
+
     # ---------------------------------------------------------------- helpers
 
     @staticmethod
