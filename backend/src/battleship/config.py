@@ -27,6 +27,7 @@ ENV_NAME_BY_FIELD: dict[str, str] = {
     "turn_timeout_seconds": "TURN_TIMEOUT_SECONDS",
     "chain_display_delay_seconds": "CHAIN_DISPLAY_DELAY_SECONDS",
     "enable_test_events": "ENABLE_TEST_EVENTS",
+    "seed": "BS_SEED",
     "cors_origins_raw": "CORS_ORIGINS",
     "debug_admin_user_ids_raw": "DEBUG_ADMIN_USER_IDS",
     "arena_screens_mode": "ARENA_SCREENS_MODE",
@@ -66,6 +67,9 @@ class Settings(BaseSettings):
     turn_timeout_seconds: int = Field(default=90, ge=0)
     chain_display_delay_seconds: float = Field(default=1.2, ge=0)
     enable_test_events: bool = False
+    # Fixed RNG seed for contract replays / headless simulation (legacy BS_SEED).
+    # None keeps the normal random source.
+    seed: int | None = None
 
     # 环境变量是逗号分隔字符串；对外暴露解析后的列表/集合。
     cors_origins_raw: str = Field(default=DEFAULT_CORS_ORIGINS, validation_alias="CORS_ORIGINS")

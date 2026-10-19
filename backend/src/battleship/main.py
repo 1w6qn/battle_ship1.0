@@ -159,10 +159,28 @@ async def _unhandled_exception_handler(_request: Request, exc: Exception) -> JSO
     return _error_response(500, "internal_error", "服务器内部错误")
 
 
+def _seed_game_rng(seed: int) -> None:
+    """Make draws/AI deterministic under the frozen contract fixtures.
+
+    The legacy stack imports rich while starting, and rich.style draws one
+    24-bit value at import time before any game rule runs. The recorded
+    fixtures were produced after that draw, so a candidate backend must consume
+    the same single value to land on the same shuffled deck. This is a
+    deterministic startup offset, not a new game rule.
+    """
+
+    import random
+
+    random.seed(int(seed))
+    random.getrandbits(24)
+
+
 def create_application(settings: Settings | None = None,
                        database: Database | None = None) -> Application:
     settings = settings or load_settings()
     configure_logging(level=settings.log_level, json_output=settings.log_json)
+    if settings.seed is not None:
+        _seed_game_rng(settings.seed)
 
     metrics = MetricsRegistry()
     assets = AssetPaths.discover()
@@ -287,6 +305,9 @@ def create_application(settings: Settings | None = None,
         rooms, database=database, auth=auth, lobby=lobby
     )
     friends = FriendsService(database, presence, rooms)
+    # Legacy _finalize_match pushed recent_opponent to both seats before
+    # game_over; the settlement hook keeps that on the single ending funnel.
+    settlement.add_hook(friends.recent_opponent_hook)
     chat = ChatService(rooms)
     spectators = SpectatorService(rooms, database)
     lobby.spectators = spectators
