@@ -25,9 +25,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import __version__
 from .config import Settings, load_settings
 from .http.routers import auth as auth_router
+from .http.routers import chat as chat_router
 from .http.routers import contracts as contracts_router
+from .http.routers import friends as friends_router
 from .http.routers import health as health_router
 from .http.routers import legacy as legacy_router
+from .http.routers import lobby as lobby_router
 from .http.routers import stats as stats_router
 from .infra.assets import AssetPaths
 from .infra.health import HealthService
@@ -36,6 +39,10 @@ from .infra.metrics import MetricsRegistry
 from .infra.ratelimit import RateLimiter
 from .realtime.server import create_socket_server
 from .repositories import Database
+from .services.chat import ChatService
+from .services.friends import FriendsService
+from .services.lobby import LobbyService
+from .services.presence import PresenceService
 from .services.rooms import RoomService
 
 logger = get_logger("main")
@@ -64,6 +71,10 @@ class Application:
     assets: AssetPaths
     database: Database
     rooms: RoomService
+    lobby: LobbyService
+    presence: PresenceService
+    friends: FriendsService
+    chat: ChatService
 
 
 @asynccontextmanager
@@ -176,13 +187,24 @@ def create_application(settings: Settings | None = None,
     # handlers rather than the read-only template entry.
     fastapi_app.include_router(auth_router.router)
     fastapi_app.include_router(stats_router.router)
+    fastapi_app.include_router(lobby_router.router)
+    fastapi_app.include_router(friends_router.router)
+    fastapi_app.include_router(chat_router.router)
     fastapi_app.include_router(legacy_router.router)
 
     if assets.static_dir.is_dir():
         fastapi_app.mount("/static", StaticFiles(directory=str(assets.static_dir)), name="static")
 
-    rooms = RoomService()
-    sio = create_socket_server(settings, metrics, rooms)
+    # One presence instance for the room service, the lobby and the friends
+    # service (CLAUDE #17: the online table must exist exactly once).
+    presence = PresenceService()
+    rooms = RoomService(presence=presence)
+    lobby = LobbyService(rooms, presence, database)
+    friends = FriendsService(database, presence, rooms)
+    chat = ChatService(rooms)
+    sio = create_socket_server(
+        settings, metrics, rooms, lobby, presence, friends, chat
+    )
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
     fastapi_app.state.settings = settings
@@ -193,6 +215,10 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.database = database
     fastapi_app.state.rate_limiter = rate_limiter
     fastapi_app.state.rooms = rooms
+    fastapi_app.state.lobby = lobby
+    fastapi_app.state.presence = presence
+    fastapi_app.state.friends = friends
+    fastapi_app.state.chat = chat
 
     asgi = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
     return Application(
@@ -205,6 +231,10 @@ def create_application(settings: Settings | None = None,
         assets=assets,
         database=database,
         rooms=rooms,
+        lobby=lobby,
+        presence=presence,
+        friends=friends,
+        chat=chat,
     )
 
 

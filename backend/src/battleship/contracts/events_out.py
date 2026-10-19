@@ -21,6 +21,15 @@ OUTBOUND_EVENTS: tuple[str, ...] = (
     "dice_rolled",
     "error",
     "field_magic_updated",
+    # Friend pushes: the legacy stack emitted these through a parameterised
+    # helper (socketio.emit(name, ...)), so a freeze built from emit literals
+    # missed them. They are recorded legacy events (port map 10 section 4.3),
+    # not new names; ticket #14 delivers four of them (recent_opponent belongs
+    # to match settlement).
+    "friend_accepted",
+    "friend_invite",
+    "friend_message",
+    "friend_request",
     "frozen_area",
     "game_canceled",
     "game_log",
@@ -55,6 +64,7 @@ OUTBOUND_EVENTS: tuple[str, ...] = (
     "priority_waiting_end",
     "quick_chat",
     "rank_changed",
+    "recent_opponent",
     "reconnect_token",
     "reconnect_warning",
     "reinforcement_activated",
