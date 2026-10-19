@@ -58,3 +58,25 @@ Baseline numbers, the source-assertion mapping and reproducible commands:
 
 Ports 5303 (test-event server) / 5304 (production-mode server), isolated databases
 under D:\develop\battleship-verify\.tmp\3-baseline. No test file is added to the repo.
+
+## P0 contract recorder / replay gate (ticket #2, out-of-repo)
+
+The recorder, replay comparator, samples and normalization rules live in
+`D:\develop\battleship-verify` (spec testing-asset policy: no tests/fixtures in
+this repository). Only this pointer is committed.
+
+```powershell
+# One command: fresh isolated legacy stack per session (fixed RNG seed + DB),
+# record, replay, then replay a second time and compare the two runs.
+D:/develop/battleship-verify/.venv/Scripts/python.exe `
+  D:/develop/battleship-verify/tools/run_gate.py `
+  --legacy-worktree D:/develop/battle_ship1.0/.agents/worktrees/refactor `
+  --repeat 2
+
+# Replay against any candidate backend; exit code is the gate.
+D:/develop/battleship-verify/.venv/Scripts/python.exe `
+  D:/develop/battleship-verify/tools/verify.py replay --target http://127.0.0.1:5401
+```
+
+Session matrix, normalization rules and known limits:
+`D:/develop/battleship-verify/notes/CONTRACT_NORMALIZATION.md`.
