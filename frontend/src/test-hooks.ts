@@ -6,7 +6,10 @@ import { routeLoading } from './router'
 import { fetchRemoteContractHash, type TypedSocket } from './socket/client'
 import { CONTRACT_SCHEMA_HASH, ROOM_SYNC_FIELDS } from './socket/events.gen'
 import { useGameStore } from './stores/game'
+import { useLeaderboardStore } from './stores/leaderboard'
+import { useProfileStore } from './stores/profile'
 import { useResultStore } from './stores/result'
+import { useSettingsStore } from './stores/settings'
 import { GAME_STATE_SCHEMA, defaultGameState } from './stores/gameStateSchema'
 import {
   applySettlementEvent,
@@ -46,6 +49,13 @@ export interface SettlementTestApi {
   createSocket: () => Socket
 }
 
+export interface ScreensTestApi {
+  /** Read-only snapshots of the ticket #25 screen stores. */
+  profile: () => unknown
+  leaderboard: () => unknown
+  settings: () => unknown
+}
+
 export interface TestHooksApi {
   version: string
   router: Router
@@ -60,6 +70,7 @@ export interface TestHooksApi {
   defaultGameState: () => unknown
   gameState: () => unknown
   settlement: SettlementTestApi
+  screens: ScreensTestApi
   crashNext: (routeName: string) => void
 }
 
@@ -101,6 +112,35 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
 
   const game = useGameStore(pinia)
   const result = useResultStore(pinia)
+  const profile = useProfileStore(pinia)
+  const leaderboard = useLeaderboardStore(pinia)
+  const settings = useSettingsStore(pinia)
+
+  const snapshot = (value: unknown): unknown => JSON.parse(JSON.stringify(value))
+
+  const screens: ScreensTestApi = {
+    profile: () =>
+      snapshot({
+        ownStatus: profile.ownStatus,
+        viewerName: profile.viewerName,
+        viewed: profile.viewed,
+      }),
+    leaderboard: () =>
+      snapshot({
+        activeTab: leaderboard.activeTab,
+        record: leaderboard.record,
+        ranked: leaderboard.ranked,
+      }),
+    settings: () =>
+      snapshot({
+        profileStatus: settings.profileStatus,
+        privacy: settings.privacy,
+        replay: settings.replay,
+        spectate: settings.spectate,
+        passwordMessage: settings.passwordMessage,
+        wallpaper: settings.wallpaper,
+      }),
+  }
 
   const settlement: SettlementTestApi = {
     socket: () => getSettlementSocket(),
@@ -125,7 +165,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
   }
 
   window.__BS_TEST__ = {
-    version: 'ticket-22',
+    version: 'ticket-25',
     router,
     currentRouteName: () => (router.currentRoute.value.name as string | null) ?? null,
     routeLoadingHistory: () => history.slice(),
@@ -140,6 +180,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     defaultGameState: () => defaultGameState(),
     gameState: () => JSON.parse(JSON.stringify(game.state)),
     settlement,
+    screens,
     crashNext: (routeName: string) => requestCrash(routeName),
   }
 }
