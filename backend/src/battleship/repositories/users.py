@@ -92,6 +92,38 @@ class UserRepository:
         )
         return bool(result.rowcount)
 
+    def wins_rank(self, user_id: str | None) -> int | None:
+        """Legacy achievements rank: wins DESC, longest_streak DESC, played only.
+
+        Mirrors db.get_user_rank (not the rank leaderboard, which is points based).
+        Returns None when the account does not exist.
+        """
+
+        from sqlalchemy import func
+
+        if not user_id:
+            return None
+        row = self.session.execute(
+            select(User.wins, User.longest_streak).where(User.id == user_id)
+        ).first()
+        if row is None:
+            return None
+        wins = int(row.wins or 0)
+        longest = int(row.longest_streak or 0)
+        ahead = self.session.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(
+                (func.coalesce(User.wins, 0) + func.coalesce(User.losses, 0)) > 0,
+                (func.coalesce(User.wins, 0) > wins)
+                | (
+                    (func.coalesce(User.wins, 0) == wins)
+                    & (func.coalesce(User.longest_streak, 0) > longest)
+                ),
+            )
+        )
+        return int(ahead or 0) + 1
+
     def count(self) -> int:
         from sqlalchemy import func
 

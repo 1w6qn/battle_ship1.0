@@ -24,7 +24,7 @@ import json
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 from ..domain import replay as replay_rules
@@ -47,6 +47,12 @@ class SettlementContext:
     facts: SettlementFacts
     replay_saved: bool
     replay: Any = None
+    #: Read-only facts captured before the write transaction (pre-match streaks,
+    #: pre-match tiers). Hooks must never re-read these after the core writes.
+    pre: dict[str, Any] = field(default_factory=dict)
+    #: Wire frames produced by hooks. BattleService emits the "before" ones
+    #: before game_over and the "after" ones after it (legacy order).
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -55,10 +61,13 @@ class SettlementResult:
     match_id: str | None = None
     skipped: bool = False
     error: str | None = None
+    events: tuple[dict[str, Any], ...] = ()
 
 
 #: A hook runs inside the same unit of work, after the core rows.
 SettlementHook = Callable[[Room, UnitOfWork, SettlementContext], None]
+#: A read-only hook runs before the transaction; it returns extra context.
+SettlementPreHook = Callable[[Room, SettlementFacts], dict[str, Any]]
 ReplayBuilder = Callable[[Room], Any]
 
 
@@ -80,10 +89,16 @@ class SettlementService:
         # wire only a builder working: participants imply a replay.
         self.replay_gate = replay_gate
         self.hooks: list[SettlementHook] = list(hooks or ())
+        self.pre_hooks: list[SettlementPreHook] = []
         self._lock = threading.Lock()
 
     def add_hook(self, hook: SettlementHook) -> None:
         self.hooks.append(hook)
+
+    def add_pre_hook(self, hook: SettlementPreHook) -> None:
+        """Register a read-only fact collector used before the write transaction."""
+
+        self.pre_hooks.append(hook)
 
     def settle(self, room: Room, winner_id: str, loser_id: str) -> SettlementResult:
         with self._lock:
@@ -119,6 +134,8 @@ class SettlementService:
 
             match_id = str(uuid.uuid4())
             timestamp = int(time.time())
+            pre = self._run_pre_hooks(room, facts)
+            events: list[dict[str, Any]] = []
             try:
                 replay = self._build_replay(room) if self._replay_allowed(facts) else None
                 context = SettlementContext(
@@ -127,6 +144,8 @@ class SettlementService:
                     facts=facts,
                     replay_saved=bool(replay),
                     replay=replay,
+                    pre=pre,
+                    events=events,
                 )
                 with self.database.unit_of_work() as uow:
                     self._write_match(uow, room, context)
@@ -153,11 +172,30 @@ class SettlementService:
             # Legacy reset the recorder in a finally after record_match: the blob
             # is already in the context, the room no longer needs the recording.
             replay_rules.reset(room)
-            result = SettlementResult(ok=True, match_id=match_id)
+            result = SettlementResult(
+                ok=True, match_id=match_id, events=tuple(events)
+            )
             room.match_id = match_id
             room.settled = True
             room.settlement_result = result
             return result
+
+    def _run_pre_hooks(self, room: Room, facts: SettlementFacts) -> dict[str, Any]:
+        """Collect read-only pre-match facts. Failures never block settlement."""
+
+        collected: dict[str, Any] = {}
+        if self.database is None:
+            return collected
+        for hook in self.pre_hooks:
+            try:
+                collected.update(hook(room, facts) or {})
+            except Exception as error:  # noqa: BLE001 - pre-facts are optional
+                logger.error(
+                    "settlement pre-hook failed; continuing with defaults",
+                    extra={"room_id": room.id, "error_type": type(error).__name__},
+                    exc_info=error,
+                )
+        return collected
 
     # ------------------------------------------------------------------ writes
 
