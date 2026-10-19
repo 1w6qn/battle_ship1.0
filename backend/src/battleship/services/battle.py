@@ -53,6 +53,10 @@ class BattleService:
         self.sink_hooks: list[SinkHook] = []
         self.damage_hooks: list[DamageHook] = []
         self.attacks_exhausted_hooks: list[ExhaustedHook] = []
+        # Ticket #17: a card effect during an attack may clear/rebuild a board.
+        # The spectator frame is flushed once the whole effect has settled, so a
+        # spectator never ends on a half-applied frame (e.g. ship count 5 of 6).
+        self.board_flush_hook: Any = None
 
     def bind(self, publisher: EventPublisher) -> None:
         self._publisher = publisher
@@ -157,6 +161,14 @@ class BattleService:
 
     async def _perform_attack(self, room: Room, player_id: str,
                               raw_x: Any, raw_y: Any) -> dict:
+        try:
+            return await self._perform_attack_inner(room, player_id, raw_x, raw_y)
+        finally:
+            if self.board_flush_hook is not None:
+                await self._maybe_await(self.board_flush_hook(room))
+
+    async def _perform_attack_inner(self, room: Room, player_id: str,
+                                    raw_x: Any, raw_y: Any) -> dict:
         error = battle_rules.attack_error(room, player_id, raw_x, raw_y)
         if error:
             return {"status": "error", "message": error}
