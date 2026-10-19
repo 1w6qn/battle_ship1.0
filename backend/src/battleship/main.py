@@ -266,6 +266,14 @@ def create_application(settings: Settings | None = None,
         touch_turn=gameplay.touch_turn,
         chain_display_delay_seconds=settings.chain_display_delay_seconds,
     )
+    # #11 magic lifecycle seams: judgements at turn starts, effect-flag/board
+    # cleanup at big-round boundaries, and AI reset-board completion in-frame.
+    gameplay.magic = magic
+    gameplay.turn_start_hook = lambda room, _pid: magic.settle_wuyou_dream(room)
+    gameplay.draw_skip_hook = magic.consume_bingliang_skip
+    gameplay.after_draw_hook = lambda room, _pid: magic.settle_bingliang(room)
+    gameplay.round_end_hook = magic.on_new_big_round
+    magic.ai_place_hook = gameplay.ai_place_board_now
     # Ticket #8 left two explicit seams; #9 fills both: the turn watchdog fires
     # through the same attack rules, and disconnect forfeits settle for real.
     gameplay.fire_hook = battle.fire

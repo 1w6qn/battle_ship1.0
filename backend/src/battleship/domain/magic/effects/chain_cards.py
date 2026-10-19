@@ -14,9 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...battle import frozen_ship_count
+from ...battle import recalc_attacker_attacks
 from ..cards import MagicCard
 from ..chain import equal_treaty_verdict, negation_target
+from ..field import tear_down_field_magic as field_tear_down
 from ..registry import register
 from .base import EffectContext, EffectResult
 
@@ -24,47 +25,17 @@ from .base import EffectContext, EffectResult
 # --------------------------------------------------------------- field magic
 
 
-def _clear_field_effects(room: Any, field_name: str) -> bool:
-    """Clear room-level markers left by a torn-down field card.
+def _tear_down_field_magic(room: Any, caster_id: str | None = None) -> tuple[MagicCard | None, bool]:
+    """Remove the active field card through the one field implementation."""
 
-    Returns True when the attack budget was recomputed and the caller must
-    emit `attacks_updated`.
-    """
-
-    had_papal = bool(room.game_effects.get("papal_edict"))
-    room.game_effects.pop("demon_contract", None)
-    room.game_effects.pop("papal_edict", None)
-    # A pending "sacrifice" ship-pick belongs to the demon contract; leaving it
-    # queued would make a later click resolve as a sacrifice (legacy fix).
-    room.pending_ship_picks = [
-        pick for pick in (room.pending_ship_picks or [])
-        if not (isinstance(pick, dict) and pick.get("reason") == "demon_contract")
-    ]
-    if getattr(room.state, "value", room.state) != "attacking":
-        return False
-    player_id = room.current_attacker
-    if not player_id or player_id not in room.players:
-        return False
-    if not had_papal and field_name not in ("伊甸园", "教皇旨意"):
-        return False
-    player = room.players[player_id]
-    bonus = int(getattr(player.effect_flags, "subsidy_bonus", 0) or 0)
-    base = max(0, player.remaining_ships - frozen_ship_count(player))
-    room.attacks_remaining = max(0, base + bonus)
-    return True
-
-
-def _tear_down_field_magic(room: Any) -> tuple[MagicCard | None, bool]:
-    """Remove the active field card; returns (torn card, attacks changed)."""
-
-    field = room.field_magic
-    if not field:
+    if not room.field_magic:
         return None, False
-    room.magic_discard.append(field)
-    changed = _clear_field_effects(room, getattr(field, "name", ""))
-    room.field_magic = None
-    room.field_magic_owner = None
-    return field, changed
+    before = int(room.attacks_remaining or 0)
+    torn = field_tear_down(
+        room, caster_id or room.current_attacker or ""
+    )
+    recalc_attacker_attacks(room)
+    return torn, int(room.attacks_remaining or 0) != before
 
 
 async def _emit_field_teardown(ctx: EffectContext, torn: MagicCard,
@@ -99,7 +70,7 @@ async def shiling(ctx: EffectContext) -> EffectResult:
 
     # No chain: tear down an already-placed field card (either owner's).
     if ctx.room.field_magic:
-        torn, attacks_changed = _tear_down_field_magic(ctx.room)
+        torn, attacks_changed = _tear_down_field_magic(ctx.room, ctx.caster_id)
         await _emit_field_teardown(ctx, torn, attacks_changed)
         return EffectResult(True, f"成功无效化场地魔法「{getattr(torn, 'name', '')}」")
 
@@ -142,7 +113,7 @@ async def gabriel(ctx: EffectContext) -> EffectResult:
     torn = None
     attacks_changed = False
     if not chain_negated and ctx.room.field_magic:
-        torn, attacks_changed = _tear_down_field_magic(ctx.room)
+        torn, attacks_changed = _tear_down_field_magic(ctx.room, ctx.caster_id)
         negated_count += 1
 
     if negated_count == 0:

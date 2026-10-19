@@ -46,3 +46,45 @@ def register_magic_handlers(sio: socketio.AsyncServer, magic: MagicService) -> N
     async def cancel_magic_selection(sid: str, data: dict[str, Any] | None = None) -> dict:
         connection = await connection_from_sio(sio, sid)
         return await magic.cancel_magic_selection(connection, data)
+
+    @sio.on("confirm_reinforcement_position")
+    async def confirm_reinforcement_position(
+        sid: str, data: dict[str, Any] | None = None
+    ) -> dict:
+        connection = await connection_from_sio(sio, sid)
+        return await magic.confirm_reinforcement_position(connection, data)
+
+    @sio.on("confirm_sacrifice")
+    async def confirm_sacrifice(sid: str, data: dict[str, Any] | None = None) -> dict:
+        connection = await connection_from_sio(sio, sid)
+        return await magic.confirm_sacrifice(connection, data)
+
+    @sio.on("dice_discard_choose")
+    async def dice_discard_choose(sid: str, data: dict[str, Any] | None = None) -> dict:
+        connection = await connection_from_sio(sio, sid)
+        return await magic.dice_discard_choose(connection, data)
+
+    @sio.on("confirm_shenji_declare")
+    async def confirm_shenji_declare(sid: str, data: dict[str, Any] | None = None) -> dict:
+        connection = await connection_from_sio(sio, sid)
+        return await magic.confirm_shenji_declare(connection, data)
+
+    @sio.on("remove_field_magic")
+    async def remove_field_magic(sid: str, data: dict[str, Any] | None = None) -> dict:
+        connection = await connection_from_sio(sio, sid)
+        return await magic.remove_field_magic(connection, data)
+
+    @sio.on("papal_discard")
+    async def papal_discard(sid: str, data: dict[str, Any] | None = None) -> dict:
+        connection = await connection_from_sio(sio, sid)
+        return await magic.papal_discard(connection, data)
+
+    @sio.on("papal_attack")
+    async def papal_attack(sid: str, data: dict[str, Any] | None = None) -> dict:
+        connection = await connection_from_sio(sio, sid)
+        result = await magic.papal_discard(connection, data)
+        if result.get("status") == "success":
+            result["message"] = (
+                str(result.get("message") or "") + "（旧入口：x/y 已不再使用，请用普通攻击点选格子）"
+            )
+        return result

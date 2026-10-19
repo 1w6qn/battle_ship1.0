@@ -49,11 +49,6 @@ PRIORITY_ACTION_TEXT = {
     "enter_end": "进入结束阶段",
 }
 
-#: Ship-pick reason → priority. Ticket #10/#11 owns the full table; the snapshot
-#: only needs a stable ordering, so unknown reasons sort at 0.
-_SHIP_PICK_PRIORITY: dict[str, int] = {}
-
-
 def room_kind(room: Room) -> RoomKind:
     if room.is_ai_room:
         return RoomKind.AI
@@ -147,9 +142,11 @@ def _top_ship_pick(room: Room, player_id: str) -> dict[str, Any] | None:
         for pick in room.pending_ship_picks
         if isinstance(pick, dict) and pick.get("player") == player_id
     ]
+    from ..magic.interaction import ship_pick_priority
+
     mine.sort(
         key=lambda pick: (
-            -_SHIP_PICK_PRIORITY.get(str(pick.get("reason")), int(pick.get("priority") or 0)),
+            -ship_pick_priority(pick.get("reason")),
             int(pick.get("seq") or 0),
         )
     )
@@ -174,27 +171,11 @@ def _my_pending_sacrifice_ships(room: Room, player_id: str) -> list[dict[str, An
     ]
 
 
-def _own_occupied_cells(player: Player) -> set[tuple[int, int]]:
-    occupied: set[tuple[int, int]] = set()
-    for ship in list(player.ships or []) + list(player.sunken_ships or []):
-        for pos in ship.positions or []:
-            occupied.add((pos.x, pos.y))
-    return occupied
-
-
 def _placement_blocked_cells(room: Room, player_id: str) -> list[dict[str, int]]:
-    blocked: set[tuple[int, int]] = set()
-    other_id = opponent_of(room, player_id)
-    if other_id:
-        for attack in room.players[other_id].attacks or []:
-            blocked.add((attack.x, attack.y))
-    blocked |= _own_occupied_cells(room.players[player_id])
-    for hole in room.game_effects.get("shenwei_holes") or []:
-        if hole.get("player") == player_id:
-            for x in range(hole["x1"], hole["x2"] + 1):
-                for y in range(hole["y1"], hole["y2"] + 1):
-                    blocked.add((x, y))
-    return [{"x": x, "y": y} for (x, y) in sorted(blocked)]
+    # One implementation only: the interaction module owns placement legality.
+    from ..magic.interaction import placement_blocked_cells
+
+    return placement_blocked_cells(room, player_id)
 
 
 def _magic_temp_data(room: Room) -> dict[str, Any]:

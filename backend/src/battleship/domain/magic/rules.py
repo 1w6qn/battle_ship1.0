@@ -20,6 +20,10 @@ from ..room import Room, RoomPhase
 from .cards import MagicCard
 
 END_PHASE_PLAYABLE: tuple[str, ...] = ("Freezing！",)
+
+#: 兵粮寸断: one roll, <3 fails, >=3 grants two skipped draw phases.
+BINGLIANG_FAIL_BELOW = 3
+BINGLIANG_SKIP_PHASES = 2
 _FIELD_NAME = "禁忌果实"
 
 
@@ -179,6 +183,8 @@ def action_wait_reason(room: Room, player_id: str) -> str | None:
 
 
 __all__ = [
+    "BINGLIANG_FAIL_BELOW",
+    "BINGLIANG_SKIP_PHASES",
     "END_PHASE_PLAYABLE",
     "action_wait_reason",
     "blocked_cells",

@@ -161,6 +161,38 @@ def attacks_forced_zero(room: Room) -> bool:
     return False
 
 
+def recalc_attacker_attacks(room: Room) -> int:
+    """Recompute the current attacker's budget under the active field rules.
+
+    Single implementation of the attack-count formula (ticket #11 added the
+    field cards to the same path). Covers:
+    * papal edict: always 0 (attacks are paid with discarded cards);
+    * Eden: 6 - own ships;
+    * otherwise own remaining ships minus living frozen ships;
+    * plus the 百亿补贴 accumulated bonus, unless a hard-zero rule wins.
+    """
+
+    player_id = room.current_attacker
+    player = room.players.get(player_id) if player_id else None
+    if player is None:
+        return int(room.attacks_remaining or 0)
+    if attacks_forced_zero(room):
+        room.attacks_remaining = 0
+        return 0
+    from .magic.rules import field_magic_name
+
+    field = field_magic_name(room)
+    bonus = int(getattr(player.effect_flags, "subsidy_bonus", 0) or 0)
+    if field == "教皇旨意":
+        base = 0
+    elif field == "伊甸园":
+        base = max(0, 6 - int(player.remaining_ships or 0))
+    else:
+        base = max(0, int(player.remaining_ships or 0) - frozen_ship_count(player))
+    room.attacks_remaining = max(0, base + bonus)
+    return room.attacks_remaining
+
+
 def grant_extra_attacks(room: Room, player_id: str, n: int = 1) -> int:
     """Grant extra shots to the current attacker; returns the real delta.
 
@@ -206,7 +238,7 @@ def enter_battle(room: Room, player_id: str) -> str | None:
         return ENTER_BATTLE_ERROR
     room.current_phase = RoomPhase.BATTLE
     player = room.players[player_id]
-    room.attacks_remaining = attacks_remaining_for(player)
+    recalc_attacker_attacks(room)
     if player.effect_flags.double_attacks:
         # 火力全开 doubles the budget that already exists (not a recount).
         room.attacks_remaining = max(0, room.attacks_remaining) * 2
@@ -289,7 +321,7 @@ def resolve_turn_end(room: Room, player_id: str) -> TurnEnd | None:
     room.current_attacker = next_attacker
     room.current_phase = RoomPhase.PREPARATION
     room.players[next_attacker].damage_dealt_this_turn = 0
-    room.attacks_remaining = attacks_remaining_for(room.players[next_attacker])
+    recalc_attacker_attacks(room)
     return TurnEnd("next_player", next_attacker, room.round)
 
 # ===========================================================================

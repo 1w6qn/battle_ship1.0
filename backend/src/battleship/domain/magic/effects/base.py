@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from ..cards import MagicCard
-from ...room import Player, PlayerShip, Room
+from ...room import Player, PlayerShip, Position, Room
 
 
 @dataclass
@@ -22,6 +22,8 @@ class EffectResult:
     temp_data_id: str | None = None
     game_over: bool = False
     affected_positions: list[Any] = field(default_factory=list)
+    #: Extra keys mirrored into the chain_resolved result (cards/max_ships/...).
+    extra: dict[str, Any] = field(default_factory=dict)
     #: True = this effect negates the item directly below it on the chain.
     negate_target: bool = False
 
@@ -33,6 +35,15 @@ AsyncPlayer = Callable[[str], Awaitable[None]]
 AsyncDraw = Callable[[str], Awaitable[Any]]
 AsyncSink = Callable[[str, PlayerShip], Awaitable[None]]
 AsyncFinish = Callable[[str, str, str], Awaitable[None]]
+AsyncShipPick = Callable[[str, str, str, bool, bool], Awaitable[PlayerShip | None]]
+AsyncSacrifice = Callable[[str, PlayerShip, str], Awaitable[None]]
+AsyncShipDestroyed = Callable[[str, PlayerShip], Awaitable[None]]
+AsyncPlacement = Callable[[str, str, int], Awaitable[None]]
+AsyncDiceDiscard = Callable[[str, str, str | None, str], Awaitable[None]]
+AsyncField = Callable[[MagicCard], Awaitable[None]]
+AsyncTearField = Callable[[], Awaitable[MagicCard | None]]
+AsyncFrames = Callable[[str, dict[str, Any]], Awaitable[None]]
+AsyncReveal = Callable[[str, list[Position], str | None], Awaitable[None]]
 
 
 @dataclass
@@ -54,6 +65,26 @@ class EffectContext:
     notify_treasure: AsyncInt
     grant_attacks: AsyncInt
     maybe_wuxian: Callable[[], Awaitable[bool]]
+    request_ship_pick: AsyncShipPick
+    sacrifice_ship: AsyncSacrifice
+    on_ship_destroyed: AsyncShipDestroyed
+    start_placement: AsyncPlacement
+    start_dice_discard: AsyncDiceDiscard
+    open_shenji: Callable[[str], Awaitable[None]]
+    apply_shenji: Callable[[str, int], Awaitable[None]]
+    place_field: AsyncField
+    tear_down_field: AsyncTearField
+    recalc_attacks: Callable[[], Awaitable[None]]
+    clear_board_effects: Callable[[list[str], str], Awaitable[None]]
+    clear_multiturn_effects: Callable[[str], Awaitable[None]]
+    ai_place_board: Callable[[str], Awaitable[bool]]
+    emit_board_attacks: Callable[[], Awaitable[None]]
+    reveal_to: AsyncReveal
+    begin_shenji_redeploy: Callable[[str, int], Awaitable[int]]
+    refresh_replay_ships: Callable[[], Awaitable[None]]
+    emit_frame: AsyncFrames
+    #: Shared dice/shuffle source (module random by default, injectable in tests).
+    rng: Any
 
     @property
     def caster(self) -> Player:

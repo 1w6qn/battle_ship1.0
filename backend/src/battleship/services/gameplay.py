@@ -89,6 +89,13 @@ class GameplayService:
         self.clock = clock or (lambda: time.time())
         self._publisher: EventPublisher = NullPublisher()
         self._task: asyncio.Task | None = None
+        # Ticket #11 hooks: magic owns judgement settling, flag cleanup and the
+        # mid-round reset placement completion. Optional so #8 callers keep working.
+        self.magic: Any = None
+        self.turn_start_hook: Callable[[Room, str], Any] | None = None
+        self.draw_skip_hook: Callable[[Room, str], Any] | None = None
+        self.after_draw_hook: Callable[[Room, str], Any] | None = None
+        self.round_end_hook: Callable[[Room], Any] | None = None
 
     # ------------------------------------------------------------------ wiring
 
@@ -254,16 +261,18 @@ class GameplayService:
                 placement_rules.auto_place_ai(room, seat_id, self.rng)
 
         if placement_rules.all_players_placed(room):
-            # Deliberate direct assignment (DECISIONS D1): the legacy handler has
-            # no state gate, so re-placing during battle falls back to RPS.
-            room.state = RoomState.ROCK_PAPER_SCISSORS
-            room.rps_choices = {}
-            room.rps_processed = False
-            await self._publisher.emit(
-                "game_state",
-                {"state": RoomState.ROCK_PAPER_SCISSORS.value, **rank_payload(room)},
-                room=room.id,
-            )
+            handled = await self._complete_reset_placement(room, player_id)
+            if not handled:
+                # Deliberate direct assignment (DECISIONS D1): the legacy handler
+                # has no state gate, so re-placing during battle falls back to RPS.
+                room.state = RoomState.ROCK_PAPER_SCISSORS
+                room.rps_choices = {}
+                room.rps_processed = False
+                await self._publisher.emit(
+                    "game_state",
+                    {"state": RoomState.ROCK_PAPER_SCISSORS.value, **rank_payload(room)},
+                    room=room.id,
+                )
 
         actor = self._name(room, player_id)
         replay_rules.note_action(
@@ -286,10 +295,8 @@ class GameplayService:
         pending = (room.magic_temp_data or {}).get("pending_placement")
         if not pending or pending.get("caster") != player_id:
             return dict(NO_PENDING_PLACEMENT)
-
-        # Ticket #10 replaces this body with _finish_placement (attack-budget
-        # adjustments for reinforcement / last stand). Opening placement never
-        # creates pending_placement, so today this only clears the panel.
+        if self.magic is not None:
+            return await self.magic.cancel_placement(room, player_id)
         room.magic_temp_data.pop("pending_placement", None)
         player = room.players.get(player_id)
         if player is not None and player.socket_id:
@@ -297,6 +304,93 @@ class GameplayService:
                 "message", {"text": "已放弃剩余放置"}, to=player.socket_id
             )
         return {"status": "success"}
+
+    async def _complete_reset_placement(self, room: Room, player_id: str) -> bool:
+        """Finish a mid-game board reset (回光返照 / 灵气复苏 / 败者食尘)."""
+
+        if getattr(room, "huiguang_awaiting_placement", False):
+            room.huiguang_awaiting_placement = False
+            room.state = RoomState.ATTACKING
+            room.current_attacker = player_id
+            room.current_phase = RoomPhase.PREPARATION
+            room.attacks_remaining = 0
+            room.game_effects["zero_attacks_for"] = {
+                "player": player_id,
+                "round": room.round,
+            }
+            await self._publisher.emit(
+                "game_message",
+                {"message": "回光返照：棋盘已重摆，本回合无法攻击（攻击次数为 0）"},
+                room=room.id,
+            )
+            await self._publisher.emit(
+                "game_state",
+                {
+                    "state": RoomState.ATTACKING.value,
+                    "current_attacker": room.current_attacker,
+                    "current_phase": RoomPhase.PREPARATION.value,
+                    "attacks_remaining": room.attacks_remaining,
+                    "round": room.round,
+                    **rank_payload(room),
+                },
+                room=room.id,
+            )
+            self._start_timer(room)
+            return True
+
+        if getattr(room, "lingqi_resurgence_applied", False):
+            room.lingqi_resurgence_applied = False
+            saved = getattr(room, "lingqi_saved_state", None) or {}
+            room.lingqi_saved_state = None
+            room.attack_order = saved.get("attack_order") or list(room.players)
+            room.current_attacker = saved.get("current_attacker") or room.attack_order[0]
+            room.round = saved.get("round", room.round)
+            phase = saved.get("current_phase", RoomPhase.PREPARATION.value)
+            room.current_phase = RoomPhase(phase) if phase in (
+                item.value for item in RoomPhase
+            ) else RoomPhase.PREPARATION
+            room.state = RoomState.ATTACKING
+            if room.current_phase == RoomPhase.PREPARATION:
+                battle_rules.recalc_attacker_attacks(room)
+            else:
+                room.attacks_remaining = saved.get(
+                    "attacks_remaining", room.attacks_remaining
+                )
+            if getattr(room, "polar_reversal_applied", False):
+                room.polar_reversal_applied = False
+                room.attacks_remaining = 0
+            await self._publisher.emit(
+                "game_message",
+                {"message": "双方已重新摆放战舰，继续当前回合", "type": "info"},
+                room=room.id,
+            )
+            await self._publisher.emit(
+                "game_state",
+                {
+                    "state": RoomState.ATTACKING.value,
+                    "current_attacker": room.current_attacker,
+                    "current_phase": _phase_value(room),
+                    "attacks_remaining": room.attacks_remaining,
+                    "round": room.round,
+                    **rank_payload(room),
+                },
+                room=room.id,
+            )
+            self._start_timer(room)
+            return True
+
+        return False
+
+    async def ai_place_board_now(self, room: Room, player_id: str) -> bool:
+        """Ticket #11 lesson #38: an AI caster must finish its own reset board
+        inside the same stack frame; humans never see a placing screen."""
+
+        if not room.is_ai_room or not str(player_id).startswith("ai-"):
+            return False
+        placement_rules.auto_place_ai(room, player_id, self.rng)
+        if placement_rules.all_players_placed(room):
+            await self._complete_reset_placement(room, player_id)
+        return True
 
     # ------------------------------------------------------------------- RPS
 
@@ -340,14 +434,29 @@ class GameplayService:
             room.attack_order = list(outcome.order)
             winner, loser = outcome.order[0], outcome.order[1]
             room.current_attacker = winner
-            room.attacks_remaining = battle_rules.attacks_remaining_for(
-                room.players[winner]
-            )
+            battle_rules.recalc_attacker_attacks(room)
+
+            if self.turn_start_hook is not None:
+                await self._maybe_await(self.turn_start_hook(room, winner))
 
             # Frozen draw contract: first player 1 card, second player 2 cards.
-            winner_card = await self._draw(room, winner)
-            loser_card1 = await self._draw(room, loser)
-            loser_card2 = await self._draw(room, loser)
+            # 兵粮寸断 only skips this preparation-phase handout, not any other
+            # draw source (the card text is explicit).
+            skip_winner = False
+            if self.draw_skip_hook is not None:
+                skip_winner = bool(await self._maybe_await(self.draw_skip_hook(room, winner)))
+            winner_card = None if skip_winner else await self._draw(room, winner)
+            skip_loser = False
+            if self.draw_skip_hook is not None:
+                skip_loser = bool(await self._maybe_await(self.draw_skip_hook(room, loser)))
+            if skip_loser:
+                loser_card1 = None
+                loser_card2 = None
+            else:
+                loser_card1 = await self._draw(room, loser)
+                loser_card2 = await self._draw(room, loser)
+            if self.after_draw_hook is not None:
+                await self._maybe_await(self.after_draw_hook(room, winner))
 
             room.state = RoomState.ATTACKING
             if not room.match_started_at:
@@ -455,6 +564,8 @@ class GameplayService:
         self._note_end_turn(room, player_id)
 
         if result.kind == "skip_stages":
+            # 神之宣告 skips the opponent inside the same big round; legacy does
+            # not prune per-turn flags here (the skipped seat never acted).
             await self._emit_phase(room)
             await self._publisher.emit(
                 "turn_skipped",
@@ -469,6 +580,14 @@ class GameplayService:
             return {"status": "success", "message": "神之宣告：对方本回合被跳过"}
 
         if result.kind == "new_round":
+            if self.round_end_hook is not None:
+                outcome = await self._maybe_await(self.round_end_hook(room))
+                if isinstance(outcome, dict) and outcome.get("game_over"):
+                    return {
+                        "status": "success",
+                        "game_over": True,
+                        "winner": outcome.get("winner"),
+                    }
             await self._publisher.emit(
                 "game_state",
                 {
@@ -481,6 +600,12 @@ class GameplayService:
             self._start_timer(room)
             return {"status": "success", "new_round": True}
 
+        if self.turn_start_hook is not None:
+            await self._maybe_await(self.turn_start_hook(room, room.current_attacker))
+        if self.after_draw_hook is not None:
+            await self._maybe_await(self.after_draw_hook(room, room.current_attacker))
+        if self.magic is not None:
+            await self.magic.on_turn_switch(room)
         await self._emit_phase(room)
         await self._publisher.emit(
             "turn_change",
