@@ -188,18 +188,24 @@ def logout(request: Request) -> Response:
 
 @router.post("/api/login")
 async def api_login(request: Request, service: AuthService = Depends(get_auth_service)):
+    # Frozen wire shape: the legacy client and the recorded contract expect
+    # {"error": "<message>"} with the legacy status codes and messages.
+    def legacy(status_code: int, message: str) -> JSONResponse:
+        return JSONResponse({"error": message}, status_code=status_code)
+
     if _rate_limited(request, "api_login"):
-        raise api_error(429, "rate_limited", "操作过于频繁，请稍后再试")
+        return legacy(429, "操作过于频繁，请稍后再试")
     payload, _is_json, malformed = await _read_payload(request)
     if malformed:
-        raise api_error(400, "validation_error", "请求格式错误")
+        return legacy(400, "请求格式错误")
     username = payload.get("username")
     password = payload.get("password")
-    _guard_login_fields(username, password)
+    if not username or not password:
+        return legacy(400, "用户名或密码不能为空")
     try:
         token = service.issue_token(username, password)
     except AuthError as exc:
-        raise from_auth_error(exc) from exc
+        return legacy(exc.status_code, exc.message)
     return JSONResponse({"token": token})
 
 

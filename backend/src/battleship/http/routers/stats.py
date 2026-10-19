@@ -37,7 +37,7 @@ def user_stats(request: Request):
             user = uow.users.get_by_username(username)
         else:
             if not viewer_id:
-                raise api_error(401, "unauthorized", "未登录", "username")
+                return JSONResponse({"error": "未登录"}, status_code=401)
             user = uow.users.get(viewer_id)
 
     if user is None:
