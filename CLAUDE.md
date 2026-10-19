@@ -409,3 +409,17 @@ phase:                        preparation → battle → end
 
 > ⚠️ **部署前确认环境变量**：代码新增 `os.environ.get('XXX')` 时，服务器 systemd 必须同步配置 ——
 > 漏配会导致"服务能起来但带着错误默认值运行"（曾因漏配 `CORS_ORIGINS` 让线上所有操作卡十几秒）。
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues（`1w6qn/battle_ship1.0`，用 `gh` CLI）。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+默认五档，标签名 = 角色名（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`）。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+single-context：根目录 `GLOSSARY.md` + `docs/adr/`。见 `docs/agents/domain.md`。
