@@ -14,6 +14,14 @@ import {
   settlementSocketConnected,
   type SettlementEventName,
 } from './realtime/settlement'
+import {
+  applyMatchEvent,
+  MATCH_EVENTS,
+  setMatchAckInterceptor,
+  type MatchEventName,
+} from './realtime/match'
+import { usePlacementStore } from './stores/placement'
+import { useRpsStore } from './stores/rps'
 import { CrashProbe } from './test-crash/CrashProbe'
 import { crashTarget, requestCrash } from './test-crash/state'
 
@@ -46,6 +54,17 @@ export interface SettlementTestApi {
   createSocket: () => Socket
 }
 
+export interface MatchTestApi {
+  /** Mirror of the placement / rps local state (draft board, wait, timeout). */
+  state: () => { placement: Record<string, unknown>; rps: Record<string, unknown> }
+  /** Feed the exact production handler with a frozen payload (test build only). */
+  feed: (event: string, payload: Record<string, unknown>) => void
+  /** Shrink the 6s ack waits so the timeout state is deterministic. */
+  configureAckTiming: (options: { ackTimeoutMs?: number; tickMs?: number }) => void
+  /** Drop the next match command frame, simulating a lost ack. */
+  silenceNextAck: () => void
+}
+
 export interface TestHooksApi {
   version: string
   router: Router
@@ -60,6 +79,7 @@ export interface TestHooksApi {
   defaultGameState: () => unknown
   gameState: () => unknown
   settlement: SettlementTestApi
+  match: MatchTestApi
   crashNext: (routeName: string) => void
 }
 
@@ -124,8 +144,56 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     },
   }
 
+  const placement = usePlacementStore(pinia)
+  const rps = useRpsStore(pinia)
+  let silencedAcks = 0
+  setMatchAckInterceptor(() => {
+    if (silencedAcks > 0) {
+      silencedAcks -= 1
+      return true
+    }
+    return false
+  })
+
+  const match: MatchTestApi = {
+    state: () =>
+      JSON.parse(JSON.stringify({
+        placement: {
+          maxShips: placement.maxShips,
+          cells: placement.cells,
+          placedCount: placement.placedCount,
+          submitted: placement.submitted,
+          pending: placement.pending,
+          countdown: placement.countdown,
+          error: placement.error,
+          resetMessage: placement.resetMessage,
+          resetPhase: placement.resetPhase,
+          canSubmit: placement.canSubmit,
+          hint: placement.hint,
+        },
+        rps: {
+          result: rps.result,
+          pendingChoice: rps.pendingChoice,
+          waiting: rps.waiting,
+          countdown: rps.countdown,
+          error: rps.error,
+        },
+      })),
+    feed: (event, payload) => {
+      if (!MATCH_EVENTS.includes(event as MatchEventName)) throw new Error('unknown match event: ' + event)
+      applyMatchEvent(event as MatchEventName, payload, pinia)
+    },
+    configureAckTiming: (options) => {
+      placement.configureAckTiming(options)
+      rps.configureAckTiming(options)
+    },
+    silenceNextAck: () => {
+      silencedAcks += 1
+    },
+  }
+
   window.__BS_TEST__ = {
-    version: 'ticket-22',
+    version: 'ticket-23',
     router,
     currentRouteName: () => (router.currentRoute.value.name as string | null) ?? null,
     routeLoadingHistory: () => history.slice(),
@@ -140,6 +208,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     defaultGameState: () => defaultGameState(),
     gameState: () => JSON.parse(JSON.stringify(game.state)),
     settlement,
+    match,
     crashNext: (routeName: string) => requestCrash(routeName),
   }
 }
