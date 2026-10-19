@@ -16,6 +16,7 @@ _*.txt
 _*.py
 # 上面的 _*.py 会误伤 Python 包的 __init__.py，这里放行
 !__init__.py
+!__main__.py
 
 # 本地临时目录：pytest 隔离库、无头浏览器 profile 都放这里
 # （放 C:/Windows/Temp 出现过 ACL 损坏 → Edge 起不来、调试端口连不上）
