@@ -169,6 +169,56 @@ export const DEBUG_EVENTS = [
   'test_auto_attack',
 ] as const
 
+export const ROOM_SYNC_FIELDS = [
+  'room_id',
+  'state',
+  'current_phase',
+  'current_attacker',
+  'attacks_remaining',
+  'round',
+  'attack_order',
+  'player_id',
+  'player_seat',
+  'player_name',
+  'opponent_name',
+  'is_ai_room',
+  'ranked',
+  'mode',
+  'winner',
+  'game_over_reason',
+  'field_magic',
+  'remaining_ships',
+  'ships',
+  'opponent_shielded_ships',
+  'hand',
+  'attacks',
+  'opponent_attacks',
+  'opponent_remaining_ships',
+  'shenwei_holes',
+  'chain',
+  'chain_waiting',
+  'chain_window',
+  'priority_waiting',
+  'shenji_waiting',
+  'active_effects',
+  'last_stand_lock',
+  'last_stand_win',
+  'effect_badges',
+  'pending_placement',
+  'pending_placement_blocked',
+  'pending_placement_allowed',
+  'last_stand_cells',
+  'last_stand_owner',
+  'frozen_area',
+  'magic_blocked',
+  'effect_flags',
+  'pending_sacrifice',
+  'pending_sacrifice_ships',
+  'rps_choices',
+] as const
+
+export type RoomSyncField = (typeof ROOM_SYNC_FIELDS)[number]
+
 export type InboundEvent = (typeof INBOUND_EVENTS)[number]
 export type OutboundEvent = (typeof OUTBOUND_EVENTS)[number]
 export type DebugEvent = (typeof DEBUG_EVENTS)[number]
