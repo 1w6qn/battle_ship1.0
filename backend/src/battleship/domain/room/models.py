@@ -206,6 +206,13 @@ class Room:
     winner: str = ""
     current_phase: RoomPhase = RoomPhase.PREPARATION
 
+    # Wall-clock anchors for the turn watchdog (ticket #8). `match_started_at`
+    # is stamped once when RPS ends and the match really starts; the other two
+    # are restarted on every effective action and whenever the attacker changes.
+    match_started_at: float | None = None
+    turn_started_at: float | None = None
+    turn_timer_attacker: str | None = None
+
     field_magic: Any = None
     field_magic_owner: str | None = None
     magic_history: list[dict[str, Any]] = field(default_factory=list)
