@@ -44,6 +44,7 @@ from ..domain.room import (
     room_kind,
     seat_label,
 )
+from .presence import PresenceService
 
 logger = get_logger("rooms")
 
@@ -76,6 +77,8 @@ class EventPublisher(Protocol):
 
     async def enter_room(self, sid: str, room: str) -> None: ...
 
+    async def leave_room(self, sid: str, room: str) -> None: ...
+
 
 class NullPublisher:
     """Used by unit-style callers that only assert state, never wire frames."""
@@ -85,6 +88,9 @@ class NullPublisher:
         return None
 
     async def enter_room(self, sid: str, room: str) -> None:
+        return None
+
+    async def leave_room(self, sid: str, room: str) -> None:
         return None
 
 
@@ -102,9 +108,14 @@ class RoomService:
         grace_initial_delay_seconds: float = DISCONNECT_GRACE_INITIAL_DELAY_SECONDS,
         ended_room_retention_seconds: float = ENDED_ROOM_RETENTION_SECONDS,
         waiting_room_ttl_seconds: float = WAITING_ROOM_TTL_SECONDS,
+        presence: PresenceService | None = None,
     ) -> None:
         self.rooms: dict[str, Room] = {}
         self.match_queue: list[dict[str, Any]] = []
+        # One online table for the whole backend (CLAUDE #17). The room service
+        # only writes the "seated in a room" flag and the name/uid of a seat;
+        # the lobby and the friends service read the same instance.
+        self.presence = presence or PresenceService()
         self.grace_seconds = grace_seconds
         self.grace_initial_delay_seconds = grace_initial_delay_seconds
         self.ended_room_retention_seconds = ended_room_retention_seconds
@@ -189,6 +200,26 @@ class RoomService:
 
     # ------------------------------------------------------------- lifecycle
 
+    async def handle_connect(self, connection: Connection) -> None:
+        """Register the connection in the single online table (legacy connect)."""
+        self.presence.add_connection(
+            connection.sid, name=connection.username, user_id=connection.user_id
+        )
+
+    def _bind_presence_game(self, room: Room) -> None:
+        """Mark every real account in the room as "in a game" (idempotent)."""
+        for player in room.players.values():
+            user_id = getattr(player, "user_id", None)
+            if user_id:
+                self.presence.set_in_game(user_id, True)
+
+    def _release_presence_game(self, room: Room) -> None:
+        """Clear the "in a game" flag for every real account in the room."""
+        for player in room.players.values():
+            user_id = getattr(player, "user_id", None)
+            if user_id:
+                self.presence.set_in_game(user_id, False)
+
     async def create_room(self, connection: Connection, data: dict[str, Any] | None) -> dict:
         data = data if isinstance(data, dict) else {}
         player_id = connection.user_id or connection.sid
@@ -206,6 +237,10 @@ class RoomService:
         )
         self.rooms[room.id] = room
         await self._publisher.enter_room(connection.sid, room.id)
+        self.presence.update_identity(
+            connection.sid, name=room.players[player_id].name, user_id=connection.user_id
+        )
+        self._bind_presence_game(room)
         return {"status": "success", "room_id": room.id}
 
     async def create_ai_room(self, connection: Connection, data: dict[str, Any] | None) -> dict:
@@ -225,11 +260,24 @@ class RoomService:
         room.init_player_magic(ai_id)
         self.rooms[room.id] = room
         await self._publisher.enter_room(connection.sid, room.id)
+        self._bind_presence_game(room)
         return {
             "status": "success",
             "room_id": room.id,
             "message": "人机对战房间创建成功",
         }
+
+    def create_invite_room(self) -> str:
+        """Empty custom room for friend invitations (friend invite HTTP route).
+
+        The inviter and the invitee seat themselves through join_room, exactly
+        like a room shared by id. No player is written here (the legacy
+        create_custom_room_for_invite only allocated the room).
+        """
+        room = Room(id=new_room_id())
+        room.public = True
+        self.rooms[room.id] = room
+        return room.id
 
     async def join_room(self, connection: Connection, data: dict[str, Any] | None) -> dict:
         data = data if isinstance(data, dict) else {}
@@ -253,6 +301,10 @@ class RoomService:
             if player_name:
                 seated.name = player_name
             await self._publisher.enter_room(connection.sid, room.id)
+            self.presence.update_identity(
+                connection.sid, name=seated.name, user_id=connection.user_id
+            )
+            self._bind_presence_game(room)
             return {
                 "status": "success",
                 "player_id": player_id,
@@ -296,11 +348,40 @@ class RoomService:
                     to=seat.socket_id,
                 )
 
+        self.presence.update_identity(
+            connection.sid, name=player_name, user_id=connection.user_id
+        )
+        self._bind_presence_game(room)
         return {
             "status": "success",
             "player_id": player_id,
             "player_seat": seat_label(room, player_id),
         }
+
+    async def close_room(self, connection: Connection,
+                        data: dict[str, Any] | None = None) -> dict:
+        """Let the host dissolve their own waiting room (the lobby escape hatch).
+
+        Three checks, each of which is a hole if removed: the room still exists
+        and is waiting (a started game must not be dissolved under the
+        opponent), exactly one player is seated (nobody is waiting), and that
+        player is the caller (same key rule as create_room).
+        """
+        data = data if isinstance(data, dict) else {}
+        room_id = str(data.get("room_id") or "")
+        player_id = connection.user_id or connection.sid
+        room = self.get_room(room_id) if room_id else None
+        if room is None:
+            return {"status": "error", "message": "房间不存在"}
+        if room.state != RoomState.WAITING:
+            return {"status": "error", "message": "对局已开始，不能解散"}
+        entries = list(room.players.items())
+        if len(entries) != 1 or entries[0][0] != player_id:
+            return {"status": "error", "message": "只能解散自己创建的房间"}
+        # _drop_room releases the "in a game" flag: the player is still
+        # connected, so without it the friend guard would block invites forever.
+        self._drop_room(room_id)
+        return {"status": "success", "room_id": room_id}
 
     # --------------------------------------------------------------- reconn.
 
@@ -431,11 +512,15 @@ class RoomService:
         task so a disconnect can never slow down another room's handler.
         """
 
+        # Presence is the single online table: drop the connection first so a
+        # lobby_state built by the disconnect broadcast no longer lists it.
+        self.presence.remove_connection(sid)
         self._remove_from_match_queue(sid)
         for room_id, room in list(self.rooms.items()):
             for player_id, player in list(room.players.items()):
                 if player.socket_id != sid:
                     continue
+                self.presence.set_in_game(player.user_id, False)
                 if room.state != RoomState.GAME_OVER:
                     self._spawn(self._start_disconnect_grace(room_id, player_id))
                 return
@@ -514,6 +599,12 @@ class RoomService:
     # ------------------------------------------------------------------ rooms
 
     def _drop_room(self, room_id: str) -> bool:
+        room = self.rooms.get(room_id)
+        if room is not None:
+            # Players may still be connected when the room disappears (host
+            # dissolved / opponent dropped / TTL reaping). Release the flag or
+            # the friend invite guard keeps saying "you are in a game".
+            self._release_presence_game(room)
         return self.rooms.pop(room_id, None) is not None
 
     def _recycle_host_waiting_rooms(self, player_id: str) -> list[str]:

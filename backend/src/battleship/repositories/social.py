@@ -227,6 +227,226 @@ class SocialRepository:
         )
         return bool(result.rowcount)
 
+    # ---------------------------------------------------- friend relationships
+
+    def get_friend_relation(self, a: str, b: str) -> str:
+        """a's view of the relationship (check order is the priority).
+
+        none | self | friends | pending_out | pending_in | blocked_by_me |
+        blocked_me.  Matches the legacy db.get_friend_relation verbatim.
+        """
+        a, b = str(a or ""), str(b or "")
+        if not a or not b:
+            return "none"
+        if a == b:
+            return "self"
+        rows = self.session.execute(
+            select(UserFriend.user_id, UserFriend.status).where(
+                or_(
+                    and_(UserFriend.user_id == a, UserFriend.friend_id == b),
+                    and_(UserFriend.user_id == b, UserFriend.friend_id == a),
+                )
+            )
+        ).all()
+        out_status = in_status = None
+        for row in rows:
+            if str(row.user_id) == a:
+                out_status = row.status
+            elif str(row.user_id) == b:
+                in_status = row.status
+        if out_status == "blocked":
+            return "blocked_by_me"
+        if in_status == "blocked":
+            return "blocked_me"
+        if out_status == "accepted" or in_status == "accepted":
+            return "friends"
+        if out_status == "pending":
+            return "pending_out"
+        if in_status == "pending":
+            return "pending_in"
+        return "none"
+
+    def send_friend_request(self, from_uid: str, to_uid: str, *, now: int) -> str:
+        """sent | already_friends | already_pending | blocked | self | error."""
+        from_uid, to_uid = str(from_uid or ""), str(to_uid or "")
+        if not from_uid or not to_uid:
+            return "error"
+        relation = self.get_friend_relation(from_uid, to_uid)
+        if relation == "self":
+            return "self"
+        if relation in ("blocked_by_me", "blocked_me"):
+            return "blocked"
+        if relation == "friends":
+            return "already_friends"
+        if relation in ("pending_out", "pending_in"):
+            return "already_pending"
+        statement = sqlite_insert(UserFriend).values(
+            user_id=from_uid,
+            friend_id=to_uid,
+            status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.execute(statement.on_conflict_do_nothing(
+            index_elements=["user_id", "friend_id"]
+        ))
+        self.session.flush()
+        return "sent"
+
+    def accept_friend_request(self, me_uid: str, other_uid: str, *, now: int) -> bool:
+        """Accept the other -> me pending edge; write both accepted edges at once."""
+        me_uid, other_uid = str(me_uid or ""), str(other_uid or "")
+        if not me_uid or not other_uid or me_uid == other_uid:
+            return False
+        if self.get_friend(me_uid, other_uid) is not None:
+            existing = self.get_friend(me_uid, other_uid)
+            if existing is not None and existing.status == "accepted":
+                return True
+        pending = self.get_friend(other_uid, me_uid)
+        if pending is None or pending.status != "pending":
+            return False
+        pending.status = "accepted"
+        pending.updated_at = now
+        for source, target in ((me_uid, other_uid), (other_uid, me_uid)):
+            edge = self.get_friend(source, target)
+            if edge is None:
+                self.session.add(
+                    UserFriend(
+                        user_id=source,
+                        friend_id=target,
+                        status="accepted",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                edge.status = "accepted"
+                edge.updated_at = now
+        self.session.flush()
+        return True
+
+    def remove_friend(self, a_uid: str, b_uid: str) -> bool:
+        """Delete the accepted edges in both directions (idempotent)."""
+        a_uid, b_uid = str(a_uid or ""), str(b_uid or "")
+        if not a_uid or not b_uid:
+            return False
+        self.session.execute(
+            delete(UserFriend).where(
+                UserFriend.status == "accepted",
+                or_(
+                    and_(UserFriend.user_id == a_uid, UserFriend.friend_id == b_uid),
+                    and_(UserFriend.user_id == b_uid, UserFriend.friend_id == a_uid),
+                ),
+            )
+        )
+        self.session.flush()
+        return True
+
+    def remove_friend_request(self, a_uid: str, b_uid: str) -> bool:
+        """Delete pending edges in both directions; never touches other states."""
+        a_uid, b_uid = str(a_uid or ""), str(b_uid or "")
+        if not a_uid or not b_uid:
+            return False
+        self.session.execute(
+            delete(UserFriend).where(
+                UserFriend.status == "pending",
+                or_(
+                    and_(UserFriend.user_id == a_uid, UserFriend.friend_id == b_uid),
+                    and_(UserFriend.user_id == b_uid, UserFriend.friend_id == a_uid),
+                ),
+            )
+        )
+        self.session.flush()
+        return True
+
+    def block_user(self, me_uid: str, other_uid: str, *, now: int) -> bool:
+        """Clear pending/accepted in both directions, then write me -> other blocked."""
+        me_uid, other_uid = str(me_uid or ""), str(other_uid or "")
+        if not me_uid or not other_uid or me_uid == other_uid:
+            return False
+        self.session.execute(
+            delete(UserFriend).where(
+                UserFriend.status.in_(["pending", "accepted"]),
+                or_(
+                    and_(UserFriend.user_id == me_uid, UserFriend.friend_id == other_uid),
+                    and_(UserFriend.user_id == other_uid, UserFriend.friend_id == me_uid),
+                ),
+            )
+        )
+        edge = self.get_friend(me_uid, other_uid)
+        if edge is None:
+            self.session.add(
+                UserFriend(
+                    user_id=me_uid,
+                    friend_id=other_uid,
+                    status="blocked",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        else:
+            edge.status = "blocked"
+            edge.updated_at = now
+        self.session.flush()
+        return True
+
+    def count_friends(self, user_id: str) -> int:
+        statement = (
+            select(func.count())
+            .select_from(UserFriend)
+            .where(UserFriend.user_id == user_id, UserFriend.status == "accepted")
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def friends_of(self, user_id: str) -> list[dict[str, Any]]:
+        statement = (
+            select(UserFriend.friend_id, UserFriend.created_at)
+            .where(UserFriend.user_id == user_id, UserFriend.status == "accepted")
+            .order_by(UserFriend.created_at.desc(), UserFriend.friend_id)
+        )
+        return [
+            {"user_id": str(row.friend_id or ""), "created_at": int(row.created_at or 0)}
+            for row in self.session.execute(statement)
+            if row.friend_id
+        ]
+
+    def incoming_requests(self, user_id: str) -> list[dict[str, Any]]:
+        statement = (
+            select(UserFriend.user_id, UserFriend.created_at)
+            .where(UserFriend.friend_id == user_id, UserFriend.status == "pending")
+            .order_by(UserFriend.created_at.desc(), UserFriend.user_id)
+        )
+        return [
+            {"user_id": str(row.user_id or ""), "created_at": int(row.created_at or 0)}
+            for row in self.session.execute(statement)
+            if row.user_id
+        ]
+
+    def outgoing_requests(self, user_id: str) -> list[dict[str, Any]]:
+        statement = (
+            select(UserFriend.friend_id, UserFriend.created_at)
+            .where(UserFriend.user_id == user_id, UserFriend.status == "pending")
+            .order_by(UserFriend.created_at.desc(), UserFriend.friend_id)
+        )
+        return [
+            {"user_id": str(row.friend_id or ""), "created_at": int(row.created_at or 0)}
+            for row in self.session.execute(statement)
+            if row.friend_id
+        ]
+
+    def count_requests_since(self, user_id: str, since: int) -> int:
+        """Only pending edges count; accepted/rejected requests free the quota."""
+        statement = (
+            select(func.count())
+            .select_from(UserFriend)
+            .where(
+                UserFriend.user_id == user_id,
+                UserFriend.status == "pending",
+                UserFriend.created_at >= int(since),
+            )
+        )
+        return int(self.session.scalar(statement) or 0)
+
     # ------------------------------------------------------- friend messages
 
     def add_friend_message(
@@ -283,6 +503,64 @@ class SocialRepository:
             )
             or 0
         )
+
+    def count_unread_messages(self, me: str, other: str | None = None) -> int:
+        statement = select(func.count()).select_from(FriendMessage).where(
+            FriendMessage.to_uid == me, FriendMessage.read_at == 0
+        )
+        if other:
+            statement = statement.where(FriendMessage.from_uid == other)
+        return int(self.session.scalar(statement) or 0)
+
+    def unread_by_friend(self, me: str) -> dict[str, int]:
+        statement = (
+            select(FriendMessage.from_uid, func.count())
+            .where(FriendMessage.to_uid == me, FriendMessage.read_at == 0)
+            .group_by(FriendMessage.from_uid)
+        )
+        return {
+            str(sender): int(count)
+            for sender, count in self.session.execute(statement)
+            if sender and int(count) > 0
+        }
+
+    def has_more_friend_messages(self, me: str, other: str, before_id: int) -> bool:
+        statement = (
+            select(FriendMessage.id)
+            .where(
+                or_(
+                    and_(FriendMessage.from_uid == me, FriendMessage.to_uid == other),
+                    and_(FriendMessage.from_uid == other, FriendMessage.to_uid == me),
+                ),
+                FriendMessage.id < int(before_id),
+            )
+            .limit(1)
+        )
+        return self.session.scalar(statement) is not None
+
+    def count_friend_messages_since(self, from_uid: str, since: int) -> int:
+        statement = (
+            select(func.count())
+            .select_from(FriendMessage)
+            .where(
+                FriendMessage.from_uid == from_uid,
+                FriendMessage.created_at >= int(since),
+            )
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def get_friend_message(self, message_id: int) -> dict[str, Any] | None:
+        message = self.session.get(FriendMessage, int(message_id))
+        if message is None:
+            return None
+        return {
+            "id": int(message.id),
+            "from_uid": str(message.from_uid or ""),
+            "to_uid": str(message.to_uid or ""),
+            "body": str(message.body or ""),
+            "created_at": int(message.created_at or 0),
+            "read_at": int(message.read_at or 0),
+        }
 
     def mark_friend_messages_read(self, *, to_uid: str, from_uid: str, read_at: int) -> int:
         result = self.session.execute(
