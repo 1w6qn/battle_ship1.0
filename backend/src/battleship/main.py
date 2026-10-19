@@ -31,9 +31,12 @@ from .http.routers import friends as friends_router
 from .http.routers import health as health_router
 from .http.routers import legacy as legacy_router
 from .http.routers import lobby as lobby_router
+from .http.routers import profile as profile_router
+from .http.routers import progression as progression_router
 from .http.routers import replay as replay_router
 from .http.routers import spectate as spectate_router
 from .http.routers import stats as stats_router
+from .http.routers import wallpapers as wallpapers_router
 from .infra.assets import AssetPaths
 from .infra.health import HealthService
 from .infra.logging import configure_logging, get_logger, log_context
@@ -47,6 +50,7 @@ from .services.friends import FriendsService
 from .services.gameplay import GameplayService
 from .services.lobby import LobbyService
 from .services.presence import PresenceService
+from .services.progression import ProgressionService
 from .services.replays import allowed_for_match, build_replay
 from .services.rooms import RoomService
 from .services.settlement import SettlementService
@@ -81,6 +85,7 @@ class Application:
     gameplay: GameplayService
     battle: BattleService
     settlement: SettlementService
+    progression: ProgressionService
     lobby: LobbyService
     presence: PresenceService
     friends: FriendsService
@@ -157,6 +162,10 @@ def create_application(settings: Settings | None = None,
         replay_builder=build_replay,
         replay_gate=lambda winner, loser: allowed_for_match(database, winner, loser),
     )
+    # #15 owns the progression settlement hooks: XP / rank points / badges are
+    # written inside the same #9 transaction and emitted around game_over.
+    progression = ProgressionService(database)
+    progression.register(settlement)
 
     fastapi_app = FastAPI(
         title="Battleship 1.0 backend",
@@ -211,6 +220,9 @@ def create_application(settings: Settings | None = None,
     # before the legacy page router so those paths resolve to the session-aware
     # handlers rather than the read-only template entry.
     fastapi_app.include_router(auth_router.router)
+    fastapi_app.include_router(profile_router.router)
+    fastapi_app.include_router(progression_router.router)
+    fastapi_app.include_router(wallpapers_router.router)
     fastapi_app.include_router(stats_router.router)
     fastapi_app.include_router(replay_router.router)
     fastapi_app.include_router(lobby_router.router)
@@ -256,6 +268,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.gameplay = gameplay
     fastapi_app.state.battle = battle
     fastapi_app.state.settlement = settlement
+    fastapi_app.state.progression = progression
     fastapi_app.state.lobby = lobby
     fastapi_app.state.presence = presence
     fastapi_app.state.friends = friends
@@ -276,6 +289,7 @@ def create_application(settings: Settings | None = None,
         gameplay=gameplay,
         battle=battle,
         settlement=settlement,
+        progression=progression,
         lobby=lobby,
         presence=presence,
         friends=friends,

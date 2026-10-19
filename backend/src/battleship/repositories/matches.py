@@ -123,5 +123,27 @@ class MatchRepository:
                 break
         return opponents
 
+    def consecutive_losses(self, user_id: str | None, limit: int = 50) -> int:
+        """Number of consecutive losses at the head of this player's history.
+
+        Must be read **before** the match being settled is inserted; the legacy
+        streak-break bonus depends on the pre-match value.
+        """
+
+        if not user_id:
+            return 0
+        statement = (
+            select(Match.winner_id)
+            .where(or_(Match.winner_id == user_id, Match.loser_id == user_id))
+            .order_by(Match.timestamp.desc())
+            .limit(max(1, int(limit)))
+        )
+        streak = 0
+        for winner_id in self.session.scalars(statement):
+            if str(winner_id) == str(user_id):
+                break
+            streak += 1
+        return streak
+
     def count(self) -> int:
         return int(self.session.scalar(select(func.count()).select_from(Match)) or 0)
