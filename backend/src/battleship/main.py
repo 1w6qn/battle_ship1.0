@@ -41,6 +41,7 @@ from .realtime.server import create_socket_server
 from .repositories import Database
 from .services.chat import ChatService
 from .services.friends import FriendsService
+from .services.gameplay import GameplayService
 from .services.lobby import LobbyService
 from .services.presence import PresenceService
 from .services.rooms import RoomService
@@ -71,6 +72,7 @@ class Application:
     assets: AssetPaths
     database: Database
     rooms: RoomService
+    gameplay: GameplayService
     lobby: LobbyService
     presence: PresenceService
     friends: FriendsService
@@ -80,9 +82,16 @@ class Application:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     logger.info("backend starting", extra={"version": __version__})
+    # The turn watchdog needs a running loop, so it starts with the ASGI
+    # lifespan (ticket #8). `TURN_TIMEOUT_SECONDS=0` makes each sweep a no-op.
+    gameplay = getattr(_app.state, "gameplay", None)
+    if gameplay is not None:
+        gameplay.start()
     try:
         yield
     finally:
+        if gameplay is not None:
+            await gameplay.stop()
         database = getattr(_app.state, "database", None)
         if database is not None:
             database.dispose()
@@ -199,11 +208,14 @@ def create_application(settings: Settings | None = None,
     # service (CLAUDE #17: the online table must exist exactly once).
     presence = PresenceService()
     rooms = RoomService(presence=presence)
+    gameplay = GameplayService(
+        rooms, turn_timeout_seconds=settings.turn_timeout_seconds
+    )
     lobby = LobbyService(rooms, presence, database)
     friends = FriendsService(database, presence, rooms)
     chat = ChatService(rooms)
     sio = create_socket_server(
-        settings, metrics, rooms, lobby, presence, friends, chat
+        settings, metrics, rooms, gameplay, lobby, presence, friends, chat
     )
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
@@ -215,6 +227,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.database = database
     fastapi_app.state.rate_limiter = rate_limiter
     fastapi_app.state.rooms = rooms
+    fastapi_app.state.gameplay = gameplay
     fastapi_app.state.lobby = lobby
     fastapi_app.state.presence = presence
     fastapi_app.state.friends = friends
@@ -231,6 +244,7 @@ def create_application(settings: Settings | None = None,
         assets=assets,
         database=database,
         rooms=rooms,
+        gameplay=gameplay,
         lobby=lobby,
         presence=presence,
         friends=friends,
