@@ -34,6 +34,7 @@ from .http.routers import lobby as lobby_router
 from .http.routers import profile as profile_router
 from .http.routers import progression as progression_router
 from .http.routers import replay as replay_router
+from .http.routers import spectate as spectate_router
 from .http.routers import stats as stats_router
 from .http.routers import wallpapers as wallpapers_router
 from .infra.assets import AssetPaths
@@ -54,6 +55,7 @@ from .services.progression import ProgressionService
 from .services.replays import allowed_for_match, build_replay
 from .services.rooms import RoomService
 from .services.settlement import SettlementService
+from .services.spectators import SpectatorService
 
 logger = get_logger("main")
 
@@ -90,6 +92,7 @@ class Application:
     presence: PresenceService
     friends: FriendsService
     chat: ChatService
+    spectators: SpectatorService
 
 
 @asynccontextmanager
@@ -227,6 +230,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.include_router(lobby_router.router)
     fastapi_app.include_router(friends_router.router)
     fastapi_app.include_router(chat_router.router)
+    fastapi_app.include_router(spectate_router.router)
     fastapi_app.include_router(legacy_router.router)
 
     if assets.static_dir.is_dir():
@@ -250,8 +254,11 @@ def create_application(settings: Settings | None = None,
     lobby = LobbyService(rooms, presence, database)
     friends = FriendsService(database, presence, rooms)
     chat = ChatService(rooms)
+    spectators = SpectatorService(rooms, database)
+    lobby.spectators = spectators
     sio = create_socket_server(
-        settings, metrics, rooms, gameplay, battle, magic, lobby, presence, friends, chat
+        settings, metrics, rooms, gameplay, battle, magic, lobby, presence, friends, chat,
+        spectators,
     )
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
@@ -272,6 +279,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.presence = presence
     fastapi_app.state.friends = friends
     fastapi_app.state.chat = chat
+    fastapi_app.state.spectators = spectators
 
     asgi = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
     return Application(
@@ -293,6 +301,7 @@ def create_application(settings: Settings | None = None,
         presence=presence,
         friends=friends,
         chat=chat,
+        spectators=spectators,
     )
 
 

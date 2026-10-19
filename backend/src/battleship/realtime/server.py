@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,7 @@ from ..services.lobby import LobbyService
 from ..services.magic import MagicService
 from ..services.presence import PresenceService
 from ..services.rooms import Connection, RoomService
+from ..services.spectators import SpectatorService
 from .emitter import SocketIoPublisher
 from .handlers.battle import register_battle_handlers
 from .handlers.chat import register_chat_handlers
@@ -35,6 +37,7 @@ from .handlers.lobby import register_lobby_handlers
 from .handlers.magic import register_magic_handlers
 from .handlers.reconnect import register_reconnect_handlers
 from .handlers.room import register_room_handlers
+from .handlers.spectate import register_spectate_handlers
 
 if TYPE_CHECKING:
     from ..config import Settings
@@ -54,11 +57,15 @@ def create_socket_server(
     presence: PresenceService | None = None,
     friends: FriendsService | None = None,
     chat: ChatService | None = None,
+    spectators: SpectatorService | None = None,
 ) -> socketio.AsyncServer:
     presence = presence or (rooms.presence if rooms is not None else None)
     presence = presence or PresenceService()
     rooms = rooms or RoomService(presence=presence)
     lobby = lobby or LobbyService(rooms, presence)
+    # Without a database nobody may be watched: unknown (None) fails closed.
+    spectators = spectators or SpectatorService(rooms)
+    lobby.spectators = spectators
     gameplay = gameplay or GameplayService(
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )
@@ -111,6 +118,9 @@ def create_socket_server(
         # else (the legacy connect handler did this first, so every later
         # branch -- including resume_game -- sees the player as online).
         await rooms.handle_connect(connection)
+        # Remember the serving loop for spectator cleanup triggered outside a
+        # coroutine (the room table is popped synchronously).
+        spectators.bind_loop(asyncio.get_running_loop())
         lobby.ensure_ticker()
         # A returning account may still sit in an unfinished room: push
         # resume_game + a fresh reconnect token so the client can rejoin.
@@ -135,6 +145,12 @@ def create_socket_server(
             await lobby.broadcast()
         except Exception:  # noqa: BLE001
             logger.exception("lobby broadcast on disconnect failed")
+        # A spectator's connection closing must update the spectator count; it
+        # must never start a room grace timer or touch the match seats.
+        try:
+            await spectators.handle_disconnect(sid)
+        except Exception:  # noqa: BLE001
+            logger.exception("spectator cleanup on disconnect failed")
         with log_context(event="disconnect"):
             logger.info("socket disconnected", extra={"socket_id": sid, "reason": str(reason)})
 
@@ -163,12 +179,15 @@ def create_socket_server(
         )
         return {"status": "error", "message": message}
 
-    publisher = SocketIoPublisher(sio)
+    publisher = SocketIoPublisher(sio, mirror=spectators.mirror_event)
     rooms.bind(publisher)
     lobby.bind(publisher)
+    spectators.bind(publisher)
     gameplay.bind(publisher)
     battle.bind(publisher)
     magic.bind(publisher)
+    rooms.room_dropped_hook = spectators.on_room_dropped
+    battle.board_flush_hook = spectators.flush_board
     if friends is not None:
         friends.bind(publisher)
     if chat is not None:
@@ -179,6 +198,7 @@ def create_socket_server(
     register_battle_handlers(sio, gameplay, battle)
     register_magic_handlers(sio, magic)
     register_reconnect_handlers(sio, rooms)
+    register_spectate_handlers(sio, spectators)
     register_debug_implementations(battle, magic)
     register_debug_handlers(sio, settings, metrics)
     return sio

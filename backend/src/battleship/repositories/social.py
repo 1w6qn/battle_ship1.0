@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Mapping
 
 from sqlalchemy import and_, delete, func, or_, select, update
@@ -80,6 +81,35 @@ class SocialRepository:
         profile = self.get_profile(user_id)
         assert profile is not None  # the statement above guarantees the row
         return profile
+
+    def get_allow_spectate(self, user_id: str | None) -> bool | None:
+        """Read the "let others watch my games" switch: True / False / None.
+
+        Legacy semantics: a missing profile row means the default (allowed); an
+        empty id or an unreadable row means unknown (None), which callers must
+        treat as "not allowed". Unknown is never rewritten to allowed.
+        """
+
+        if not user_id:
+            return None
+        profile = self.get_profile(str(user_id))
+        if profile is None:
+            return True
+        flag = profile.get("allow_spectate")
+        if flag is None:
+            return True
+        return bool(int(flag))
+
+    def set_allow_spectate(self, user_id: str | None, allow: bool) -> bool:
+        """Write ONLY the allow_spectate column (never the whole profile row)."""
+
+        if not user_id:
+            return False
+        self.save_profile(
+            str(user_id),
+            {"allow_spectate": 1 if allow else 0, "updated_at": int(time.time())},
+        )
+        return True
 
     # ------------------------------------------------------------------ likes
 
