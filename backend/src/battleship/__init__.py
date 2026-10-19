@@ -1,5 +1,3 @@
-"""backend/src/battleship/__init__.py -- placeholder module.
+"""Battleship 1.0 modern backend."""
 
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+__version__ = "0.1.0"

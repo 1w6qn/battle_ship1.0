@@ -1,5 +1,188 @@
-"""backend/src/battleship/main.py -- placeholder module.
+"""组合根：配置 -> 日志 -> FastAPI(HTTP/静态/旧页面) -> Socket.IO ASGI。
 
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
+一条命令启动（在 worktree 根目录）：
+    python -m battleship
+`app` 是给 uvicorn 用的 ASGI 组合对象，形如：
+    uvicorn battleship.main:app
 """
+
+from __future__ import annotations
+
+import time
+import uuid
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Any
+
+import socketio
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from . import __version__
+from .config import Settings, load_settings
+from .http.routers import contracts as contracts_router
+from .http.routers import health as health_router
+from .http.routers import legacy as legacy_router
+from .infra.assets import AssetPaths
+from .infra.health import HealthService
+from .infra.logging import configure_logging, get_logger, log_context
+from .infra.metrics import MetricsRegistry
+from .realtime.server import create_socket_server
+
+logger = get_logger("main")
+
+_HTTP_CODES = {
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    422: "validation_error",
+    500: "internal_error",
+    503: "service_unavailable",
+}
+
+
+@dataclass
+class Application:
+    settings: Settings
+    fastapi: FastAPI
+    sio: socketio.AsyncServer
+    asgi: Any
+    metrics: MetricsRegistry
+    health: HealthService
+    assets: AssetPaths
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    logger.info("backend starting", extra={"version": __version__})
+    try:
+        yield
+    finally:
+        logger.info("backend stopping", extra={"version": __version__})
+
+
+def _error_response(status_code: int, code: str, message: str, field: str | None = None) -> JSONResponse:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if field:
+        error["field"] = field
+    return JSONResponse({"error": error}, status_code=status_code)
+
+
+async def _http_exception_handler(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        code = str(detail.get("code") or _HTTP_CODES.get(exc.status_code, "http_error"))
+        message = str(detail.get("message") or detail)
+        field = detail.get("field")
+    else:
+        code = _HTTP_CODES.get(exc.status_code, "http_error")
+        message = str(detail)
+        field = None
+    return _error_response(exc.status_code, code, message, field)
+
+
+async def _validation_exception_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    location = [str(part) for part in first.get("loc", ()) if part not in ("body", "query", "path")]
+    field = ".".join(location) or None
+    message = str(first.get("msg") or "请求参数校验失败")
+    return _error_response(422, "validation_error", message, field)
+
+
+async def _unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("unhandled exception", extra={"error_type": type(exc).__name__})
+    return _error_response(500, "internal_error", "服务器内部错误")
+
+
+def create_application(settings: Settings | None = None) -> Application:
+    settings = settings or load_settings()
+    configure_logging(level=settings.log_level, json_output=settings.log_json)
+
+    metrics = MetricsRegistry()
+    assets = AssetPaths.discover()
+
+    fastapi_app = FastAPI(
+        title="Battleship 1.0 backend",
+        version=__version__,
+        lifespan=_lifespan,
+        docs_url="/api/docs",
+        redoc_url=None,
+        openapi_url="/api/openapi.json",
+    )
+
+    if settings.cors_origins:
+        fastapi_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    @fastapi_app.middleware("http")
+    async def _request_context(request: Request, call_next):
+        request_id = (request.headers.get("x-request-id") or "").strip() or uuid.uuid4().hex
+        started = time.perf_counter()
+        with log_context(request_id=request_id, method=request.method, path=request.url.path):
+            try:
+                response = await call_next(request)
+            except Exception:
+                duration_ms = (time.perf_counter() - started) * 1000
+                metrics.record_http(500, duration_ms)
+                logger.exception(
+                    "http request failed",
+                    extra={"status": 500, "duration_ms": round(duration_ms, 3)},
+                )
+                raise
+
+            duration_ms = (time.perf_counter() - started) * 1000
+            metrics.record_http(response.status_code, duration_ms)
+            response.headers["X-Request-ID"] = request_id
+            logger.info(
+                "http request",
+                extra={"status": response.status_code, "duration_ms": round(duration_ms, 3)},
+            )
+            return response
+
+    fastapi_app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
+    fastapi_app.add_exception_handler(RequestValidationError, _validation_exception_handler)
+    fastapi_app.add_exception_handler(Exception, _unhandled_exception_handler)
+
+    fastapi_app.include_router(health_router.router)
+    fastapi_app.include_router(contracts_router.router)
+    fastapi_app.include_router(legacy_router.router)
+
+    if assets.static_dir.is_dir():
+        fastapi_app.mount("/static", StaticFiles(directory=str(assets.static_dir)), name="static")
+
+    sio = create_socket_server(settings, metrics)
+    health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
+
+    fastapi_app.state.settings = settings
+    fastapi_app.state.metrics = metrics
+    fastapi_app.state.health = health
+    fastapi_app.state.assets = assets
+    fastapi_app.state.sio = sio
+
+    asgi = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
+    return Application(
+        settings=settings,
+        fastapi=fastapi_app,
+        sio=sio,
+        asgi=asgi,
+        metrics=metrics,
+        health=health,
+        assets=assets,
+    )
+
+
+# uvicorn battleship.main:app
+app = create_application().asgi
