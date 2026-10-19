@@ -53,6 +53,9 @@ class SettlementContext:
     #: Wire frames produced by hooks. BattleService emits the "before" ones
     #: before game_over and the "after" ones after it (legacy order).
     events: list[dict[str, Any]] = field(default_factory=list)
+    #: True when the anti-cheat pre-hook decided this match must not move rank
+    #: points (ticket #16). It only gates ranking: wins/XP/badges still settle.
+    blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,8 @@ class SettlementResult:
     skipped: bool = False
     error: str | None = None
     events: tuple[dict[str, Any], ...] = ()
+    #: Anti-cheat gate verdict, surfaced for callers/tests and the settlement UI.
+    blocked: bool = False
 
 
 #: A hook runs inside the same unit of work, after the core rows.
@@ -146,6 +151,7 @@ class SettlementService:
                     replay=replay,
                     pre=pre,
                     events=events,
+                    blocked=bool(pre.get("anticheat_blocked")),
                 )
                 with self.database.unit_of_work() as uow:
                     self._write_match(uow, room, context)
@@ -173,7 +179,8 @@ class SettlementService:
             # is already in the context, the room no longer needs the recording.
             replay_rules.reset(room)
             result = SettlementResult(
-                ok=True, match_id=match_id, events=tuple(events)
+                ok=True, match_id=match_id, events=tuple(events),
+                blocked=bool(context.blocked),
             )
             room.match_id = match_id
             room.settled = True
