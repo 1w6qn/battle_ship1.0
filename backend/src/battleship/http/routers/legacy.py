@@ -14,9 +14,20 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ...legacy.render import render_legacy_index
-from ..session import pop_flashes, read_session, session_username, write_session
+from ..session import (
+    pop_flashes,
+    read_session,
+    session_cookie_invalid,
+    session_user_id,
+    session_username,
+    write_session,
+)
 
 router = APIRouter(tags=["legacy"], include_in_schema=False)
+
+# Player-facing one-time notice when a cookie from the old stack is rejected.
+# Kept here (not only in the changelog) because the changelog is behind a click.
+RE_LOGIN_NOTICE = '登录状态已更新，请重新登录一次。'
 
 
 def render_legacy_page(request: Request,
@@ -29,8 +40,15 @@ def render_legacy_page(request: Request,
 
     session_data = read_session(request)
     flashes = messages
+    stale_cookie = False
     if flashes is None:
         flashes = pop_flashes(session_data)
+        # A legacy-signed cookie loads as an empty session. Surface that as a
+        # one-time toast (and replace the cookie) rather than a bare anonymous
+        # page, which players read as "login failed for no reason".
+        if not flashes and not session_user_id(session_data) and session_cookie_invalid(request):
+            flashes = [("message", RE_LOGIN_NOTICE)]
+            stale_cookie = True
     body = render_legacy_index(
         template,
         username=session_username(session_data),
@@ -40,8 +58,9 @@ def render_legacy_page(request: Request,
         messages=flashes,
     )
     response = HTMLResponse(body)
-    if flashes:
-        # The flash was consumed; persist the session without it.
+    if flashes or stale_cookie:
+        # The flash was consumed (or the stale cookie replaced); persist the
+        # session without it so the notice is shown exactly once.
         write_session(response, request, session_data)
     return response
 

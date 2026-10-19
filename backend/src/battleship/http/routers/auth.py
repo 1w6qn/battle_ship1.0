@@ -12,10 +12,11 @@ is no token field and no origin check, because the legacy frontend has no token.
 
 from __future__ import annotations
 
+import html
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from ...infra.ratelimit import client_key
 from ...services.auth import AuthError, AuthService
@@ -74,8 +75,21 @@ def _json_with_session(content: Any, request: Request, data: dict[str, Any],
 
 
 def _redirect_with_session(location: str, request: Request,
-                           data: dict[str, Any], status_code: int = 302) -> RedirectResponse:
-    response = RedirectResponse(location, status_code=status_code)
+                           data: dict[str, Any], status_code: int = 302) -> Response:
+    """Redirect with the legacy HTML self-redirect body.
+
+    Flask's redirect() answers text/html with a tiny link page; the recorded
+    contract stores that content type, so a bare 302 (empty body) is a visible
+    difference even though browsers follow the Location header either way.
+    """
+    escaped = html.escape(location, quote=True)
+    body = (
+        "<!doctype html><html lang=en><title>Redirecting...</title>"
+        f'<h1>Redirecting...</h1><p>You should be redirected automatically to the '
+        f'target URL: <a href="{escaped}">{escaped}</a>. If not, click the link.'
+    )
+    response = HTMLResponse(body, status_code=status_code,
+                            headers={"Location": location})
     write_session(response, request, data)
     return response
 

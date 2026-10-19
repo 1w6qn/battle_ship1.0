@@ -50,6 +50,20 @@ class SessionCodec:
             return {}
         return data if isinstance(data, dict) else {}
 
+    def is_valid(self, raw: str | None) -> bool:
+        """True when the cookie is a live signed payload (even an empty one).
+
+        A signed empty session is what logout leaves behind; only an unreadable
+        or expired cookie means "the browser is carrying the old stack's cookie".
+        """
+        if not raw:
+            return False
+        try:
+            self._serializer.loads(raw, max_age=self.max_age)
+        except (BadSignature, SignatureExpired, ValueError, TypeError):
+            return False
+        return True
+
     def dumps(self, data: Mapping[str, Any]) -> str:
         return self._serializer.dumps(dict(data))
 
@@ -77,6 +91,17 @@ def raw_session_cookie(request: Request) -> str | None:
 
 def read_session(request: Request) -> dict[str, Any]:
     return _codec(request).loads(raw_session_cookie(request))
+
+
+def session_cookie_invalid(request: Request) -> bool:
+    """The request carries a session cookie this stack cannot verify.
+
+    Phase 2 invalidates every cookie signed by the legacy stack (different
+    serialization).  Pages use this to show the re-login notice instead of
+    silently rendering an anonymous screen.
+    """
+    raw = raw_session_cookie(request)
+    return bool(raw) and not _codec(request).is_valid(raw)
 
 
 def session_from_cookie_header(secret_key: str, raw_cookie_header: str | None) -> dict[str, Any]:
