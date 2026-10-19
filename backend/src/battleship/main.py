@@ -12,6 +12,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import socketio
@@ -28,6 +29,7 @@ from .http.routers import admin as admin_router
 from .http.routers import auth as auth_router
 from .http.routers import chat as chat_router
 from .http.routers import contracts as contracts_router
+from .http.routers import frontend as frontend_router
 from .http.routers import friends as friends_router
 from .http.routers import health as health_router
 from .http.routers import leaderboard as leaderboard_router
@@ -250,10 +252,26 @@ def create_application(settings: Settings | None = None,
     fastapi_app.include_router(chat_router.router)
     fastapi_app.include_router(spectate_router.router)
     fastapi_app.include_router(admin_router.router)
-    fastapi_app.include_router(legacy_router.router)
 
+    # Legacy static files are mounted before the SPA catch-all so /static keeps
+    # its owner in both modes.
     if assets.static_dir.is_dir():
         fastapi_app.mount("/static", StaticFiles(directory=str(assets.static_dir)), name="static")
+
+    # Ticket #21: mount the built Vue shell on the same ASGI app. Legacy stays
+    # the default; #20 flips FRONTEND_MODE=spa at the cut-over. Installing the
+    # SPA router before the legacy page router lets /lobby and /leaderboard
+    # resolve to the shell while API routers above still win every /api path.
+    if settings.frontend_mode == "spa":
+        dist = settings.frontend_dist or assets.frontend_dist
+        if not Path(dist).is_absolute():
+            dist = assets.root / dist
+        build_id = frontend_router.install(fastapi_app, dist)
+        logger.info(
+            "frontend shell mounted",
+            extra={"dist": str(dist), "build": build_id},
+        )
+    fastapi_app.include_router(legacy_router.router)
 
     # One presence instance for the room service, the lobby and the friends
     # service (CLAUDE #17: the online table must exist exactly once).
