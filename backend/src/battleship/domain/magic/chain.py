@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from ..ai.difficulty import difficulty_of
 from ..room import Room, RoomState, alive_ships, opponent_of
 from .cards import MagicCard
 from .rules import blocked_cells, lanyu_requirement_reason
@@ -145,7 +146,12 @@ def can_respond(room: Room, player_id: str | None) -> bool:
     if getattr(player.effect_flags, "last_stand", False):
         return False
     if player_id.startswith("ai-"):
-        if getattr(room, "ai_difficulty", "normal") != "hard":
+        # Difficulty is resolved **per seat** (lesson #35): the room-level field
+        # is only the default, and a self-play "master vs hard" room would
+        # otherwise let the hard seat answer exactly like a master seat (or the
+        # other way round). Live AI rooms have one computer seat, so this is the
+        # same answer there.
+        if difficulty_of(room, player_id) != "hard":
             return False
         if not any(card.name == "失灵！" for card in player.magic_hand):
             return False

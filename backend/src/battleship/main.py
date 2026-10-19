@@ -45,6 +45,7 @@ from .infra.metrics import MetricsRegistry
 from .infra.ratelimit import RateLimiter
 from .realtime.server import create_socket_server
 from .repositories import Database
+from .services.ai import AiService
 from .services.anticheat import AnticheatService
 from .services.auth import AuthService
 from .services.battle import BattleService
@@ -100,6 +101,7 @@ class Application:
     friends: FriendsService
     chat: ChatService
     spectators: SpectatorService
+    ai: AiService
 
 
 @asynccontextmanager
@@ -287,10 +289,13 @@ def create_application(settings: Settings | None = None,
     friends = FriendsService(database, presence, rooms)
     chat = ChatService(rooms)
     spectators = SpectatorService(rooms, database)
+    # Ticket #13: the AI turn driver (one executor for every difficulty tier).
+    ai = AiService(rooms, gameplay, battle, magic, timers=magic.timers)
+    gameplay.ai_turn_hook = ai.run_turn
     lobby.spectators = spectators
     sio = create_socket_server(
         settings, metrics, rooms, gameplay, battle, magic, lobby, presence, friends,
-        chat, matchmaking, spectators,
+        chat, matchmaking, spectators, ai,
     )
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
@@ -315,6 +320,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.friends = friends
     fastapi_app.state.chat = chat
     fastapi_app.state.spectators = spectators
+    fastapi_app.state.ai = ai
 
     asgi = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
     return Application(
@@ -340,6 +346,7 @@ def create_application(settings: Settings | None = None,
         friends=friends,
         chat=chat,
         spectators=spectators,
+        ai=ai,
     )
 
 

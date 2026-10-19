@@ -79,8 +79,9 @@ class GameplayService:
         self.tick_seconds = float(tick_seconds)
         self.draw_hook = draw_hook
         self.fire_hook = fire_hook
-        # Ticket #10 owns the real AI layer; until then the fallback below keeps
-        # an AI room playable instead of freezing on the AI seat's turn.
+        # Ticket #13 owns the real AI layer (services.ai installs this hook).
+        # Without the hook the fallback below keeps an AI room playable instead
+        # of freezing on the AI seat's turn.
         self.ai_turn_hook = ai_turn_hook
         self.ai_delay_seconds = max(0.0, float(ai_delay_seconds))
         # Default to the module-level RNG, exactly like the legacy handlers, so
@@ -652,8 +653,9 @@ class GameplayService:
             if not player_id or player_id not in room.players:
                 continue
             # AI seats are never left to the 90s human clock. The real AI layer
-            # (ticket #10) installs ai_turn_hook; the local fallback only picks
-            # a random legal cell / advances the phase so the room cannot stall.
+            # (ticket #13) installs ai_turn_hook; the local fallback below only
+            # picks a random legal cell / advances the phase so a room with no
+            # hook installed still cannot stall.
             if room.is_ai_room and player_id == ai_player_id(room.id):
                 if await self._drive_ai(room, player_id, now):
                     acted.append(room.id)
@@ -687,7 +689,7 @@ class GameplayService:
         return acted
 
     async def _drive_ai(self, room: Room, player_id: str, now: float) -> bool:
-        """One AI-seat fallback action. Ticket #10 replaces this via ai_turn_hook."""
+        """One AI-seat fallback action. Ticket #13 replaces this via ai_turn_hook."""
 
         if room.chain or room.chain_waiting or room.priority_pending:
             return False
