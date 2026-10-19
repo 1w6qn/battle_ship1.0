@@ -34,7 +34,7 @@ from ..domain import battle as battle_rules
 from ..domain import placement as placement_rules
 from ..domain import replay as replay_rules
 from ..domain.placement import PlacementError
-from ..domain.room import Room, RoomPhase, RoomState, rank_payload
+from ..domain.room import Room, RoomPhase, RoomState, card_payload, rank_payload
 from ..infra.logging import get_logger
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
 
@@ -362,8 +362,11 @@ class GameplayService:
                     "current_attacker": winner,
                     "current_phase": RoomPhase.PREPARATION.value,
                     "attacks_remaining": room.attacks_remaining,
-                    "winner_card": winner_card,
-                    "loser_cards": [loser_card1, loser_card2],
+                    "winner_card": card_payload(winner_card) if winner_card else None,
+                    "loser_cards": [
+                        card_payload(card) if card else None
+                        for card in (loser_card1, loser_card2)
+                    ],
                     "round": room.round,
                     "attack_order": list(room.attack_order),
                     **rank_payload(room),

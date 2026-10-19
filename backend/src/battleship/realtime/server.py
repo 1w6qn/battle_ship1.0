@@ -20,6 +20,7 @@ from ..services.chat import ChatService
 from ..services.friends import FriendsService
 from ..services.gameplay import GameplayService
 from ..services.lobby import LobbyService
+from ..services.magic import MagicService
 from ..services.presence import PresenceService
 from ..services.rooms import Connection, RoomService
 from .emitter import SocketIoPublisher
@@ -31,6 +32,7 @@ from .handlers.debug import (
     register_debug_implementations,
 )
 from .handlers.lobby import register_lobby_handlers
+from .handlers.magic import register_magic_handlers
 from .handlers.reconnect import register_reconnect_handlers
 from .handlers.room import register_room_handlers
 
@@ -47,6 +49,7 @@ def create_socket_server(
     rooms: RoomService | None = None,
     gameplay: GameplayService | None = None,
     battle: BattleService | None = None,
+    magic: MagicService | None = None,
     lobby: LobbyService | None = None,
     presence: PresenceService | None = None,
     friends: FriendsService | None = None,
@@ -62,6 +65,20 @@ def create_socket_server(
     battle = battle or BattleService(rooms, touch_turn=gameplay.touch_turn)
     if gameplay.fire_hook is None:
         gameplay.fire_hook = battle.fire
+    # Ticket #10: one magic service holds the shared deck, hand sync, target
+    # channels and the card-effect registry. Wiring lives here so every caller
+    # of create_socket_server (including tests) gets the same seams.
+    magic = magic or MagicService(rooms)
+    if gameplay.draw_hook is None:
+        gameplay.draw_hook = magic.draw
+    if magic.finish_hook is None:
+        magic.finish_hook = battle.finish_game
+    if magic.on_ship_sunk not in battle.sink_hooks:
+        battle.sink_hooks.append(magic.on_ship_sunk)
+    if magic.on_damage not in battle.damage_hooks:
+        battle.damage_hooks.append(magic.on_damage)
+    if magic.on_attacks_exhausted not in battle.attacks_exhausted_hooks:
+        battle.attacks_exhausted_hooks.append(magic.on_attacks_exhausted)
     sio = socketio.AsyncServer(
         async_mode="asgi",
         cors_allowed_origins=settings.cors_origins or [],
@@ -151,6 +168,7 @@ def create_socket_server(
     lobby.bind(publisher)
     gameplay.bind(publisher)
     battle.bind(publisher)
+    magic.bind(publisher)
     if friends is not None:
         friends.bind(publisher)
     if chat is not None:
@@ -159,7 +177,8 @@ def create_socket_server(
     register_room_handlers(sio, rooms, lobby)
     register_lobby_handlers(sio, lobby)
     register_battle_handlers(sio, gameplay, battle)
+    register_magic_handlers(sio, magic)
     register_reconnect_handlers(sio, rooms)
-    register_debug_implementations(battle)
+    register_debug_implementations(battle, magic)
     register_debug_handlers(sio, settings, metrics)
     return sio

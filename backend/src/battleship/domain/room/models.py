@@ -294,8 +294,15 @@ class Room:
         return token
 
     def init_player_magic(self, player_id: str) -> None:
-        """Hand/deck initialisation skeleton; ticket #10 fills the shared deck."""
+        """Reset one hand and create the shared deck on first call (ticket #10).
+
+        The deck is shared by both seats. Hidden cards never enter it, so they
+        cannot be drawn even though the card table and effect registry keep them.
+        """
+
+        from ..magic.deck import init_shared_deck
 
         player = self.players.get(player_id)
         if player is not None:
             player.magic_hand = []
+        init_shared_deck(self)
