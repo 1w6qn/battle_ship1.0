@@ -1,5 +1,17 @@
-"""backend/src/battleship/realtime/identity.py -- placeholder module.
+"""Bridge from a Socket.IO connection to the trusted service identity."""
 
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+from __future__ import annotations
+
+import socketio
+
+from ..http.session import session_user_id, session_username
+from ..services.rooms import Connection
+
+
+async def connection_from_sio(sio: socketio.AsyncServer, sid: str) -> Connection:
+    session = await sio.get_session(sid) or {}
+    return Connection(
+        sid=sid,
+        user_id=session_user_id(session),
+        username=session_username(session),
+    )

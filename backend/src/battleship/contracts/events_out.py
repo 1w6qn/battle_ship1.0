@@ -104,6 +104,66 @@ class OutboundEventEnvelope(BaseModel):
     skip_sid: str | None = None
 
 
+class RoomSync(BaseModel):
+    """The reconnect snapshot (`room_sync`).
+
+    Frozen at 45 top-level keys, matching the legacy `_build_room_sync`
+    (server.py:10498-10639) key-for-key. The legacy client reads every one of
+    them; a missing key shows up as a blank board/hand after reconnect, and an
+    extra key is contract drift, so the model is the single freeze point.
+    """
+
+    room_id: str
+    state: str
+    current_phase: str | None
+    current_attacker: str
+    attacks_remaining: int
+    round: int
+    attack_order: list[str]
+    player_id: str
+    player_seat: str
+    player_name: str | None
+    opponent_name: str | None
+    is_ai_room: bool
+    ranked: bool
+    mode: str
+    winner: str
+    game_over_reason: str | None
+    field_magic: str
+    remaining_ships: int
+    ships: list[dict[str, Any]]
+    opponent_shielded_ships: list[list[dict[str, Any]]]
+    hand: list[dict[str, Any]]
+    attacks: list[dict[str, Any]]
+    opponent_attacks: list[dict[str, Any]]
+    opponent_remaining_ships: int
+    shenwei_holes: list[Any]
+    chain: dict[str, Any]
+    chain_waiting: bool
+    chain_window: str | None
+    priority_waiting: dict[str, Any] | None
+    shenji_waiting: dict[str, Any] | None
+    active_effects: list[str]
+    last_stand_lock: bool
+    last_stand_win: bool
+    effect_badges: dict[str, list[dict[str, Any]]]
+    pending_placement: dict[str, Any] | None
+    pending_placement_blocked: list[dict[str, Any]]
+    pending_placement_allowed: list[Any]
+    last_stand_cells: list[dict[str, Any]]
+    last_stand_owner: str | None
+    frozen_area: dict[str, Any] | None
+    magic_blocked: bool
+    effect_flags: dict[str, Any]
+    pending_sacrifice: dict[str, Any] | None
+    pending_sacrifice_ships: list[dict[str, Any]]
+    rps_choices: dict[str, str]
+
+
+#: Authoritative key order/count for the reconnect snapshot.
+ROOM_SYNC_KEYS: tuple[str, ...] = tuple(RoomSync.model_fields)
+
+
 class AckResponse(BaseModel):
     """Socket.IO ack 的通用形状；旧前端按 status 判断成功/失败。"""
 

@@ -36,6 +36,7 @@ from .infra.metrics import MetricsRegistry
 from .infra.ratelimit import RateLimiter
 from .realtime.server import create_socket_server
 from .repositories import Database
+from .services.rooms import RoomService
 
 logger = get_logger("main")
 
@@ -62,6 +63,7 @@ class Application:
     health: HealthService
     assets: AssetPaths
     database: Database
+    rooms: RoomService
 
 
 @asynccontextmanager
@@ -179,7 +181,8 @@ def create_application(settings: Settings | None = None,
     if assets.static_dir.is_dir():
         fastapi_app.mount("/static", StaticFiles(directory=str(assets.static_dir)), name="static")
 
-    sio = create_socket_server(settings, metrics)
+    rooms = RoomService()
+    sio = create_socket_server(settings, metrics, rooms)
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
     fastapi_app.state.settings = settings
@@ -189,6 +192,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.sio = sio
     fastapi_app.state.database = database
     fastapi_app.state.rate_limiter = rate_limiter
+    fastapi_app.state.rooms = rooms
 
     asgi = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
     return Application(
@@ -200,6 +204,7 @@ def create_application(settings: Settings | None = None,
         health=health,
         assets=assets,
         database=database,
+        rooms=rooms,
     )
 
 
