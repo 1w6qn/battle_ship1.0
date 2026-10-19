@@ -21,7 +21,7 @@ import asyncio
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from ..contracts.identity import (
     IdentityClaim,
@@ -125,6 +125,9 @@ class RoomService:
         # Ticket #9 wires this to BattleService.settle_forfeit; without it the
         # forfeit path only flips the room state (ticket #7 behaviour).
         self.forfeit_hook: Any = None
+        # Ticket #12: per-room background timers (chain window, display delay,
+        # AI response) must die with the room. Hooks are sync and idempotent.
+        self.destroy_hooks: list[Callable[[str], None]] = []
 
     # ------------------------------------------------------------------ wiring
 
@@ -619,7 +622,20 @@ class RoomService:
             # dissolved / opponent dropped / TTL reaping). Release the flag or
             # the friend invite guard keeps saying "you are in a game".
             self._release_presence_game(room)
-        return self.rooms.pop(room_id, None) is not None
+        dropped = self.rooms.pop(room_id, None) is not None
+        if dropped:
+            # Ticket #12: a dropped room owns no live timers. A hook failure
+            # must never keep the room in the map, so each is isolated.
+            for hook in list(self.destroy_hooks):
+                try:
+                    hook(room_id)
+                except Exception as error:  # noqa: BLE001 - cleanup isolation
+                    logger.error(
+                        "room destroy hook failed",
+                        extra={"room_id": room_id, "error_type": type(error).__name__},
+                        exc_info=error,
+                    )
+        return dropped
 
     def _recycle_host_waiting_rooms(self, player_id: str) -> list[str]:
         reaped: list[str] = []

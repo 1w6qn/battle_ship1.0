@@ -100,11 +100,14 @@ async def _lifespan(_app: FastAPI):
     gameplay = getattr(_app.state, "gameplay", None)
     if gameplay is not None:
         gameplay.start()
+    magic = getattr(_app.state, "magic", None)
     try:
         yield
     finally:
         if gameplay is not None:
             await gameplay.stop()
+        if magic is not None:
+            await magic.stop()
         database = getattr(_app.state, "database", None)
         if database is not None:
             database.dispose()
@@ -241,7 +244,10 @@ def create_application(settings: Settings | None = None,
     )
     battle = BattleService(rooms, settlement, touch_turn=gameplay.touch_turn)
     magic = MagicService(
-        rooms, settlement, touch_turn=gameplay.touch_turn
+        rooms,
+        settlement,
+        touch_turn=gameplay.touch_turn,
+        chain_display_delay_seconds=settings.chain_display_delay_seconds,
     )
     # Ticket #8 left two explicit seams; #9 fills both: the turn watchdog fires
     # through the same attack rules, and disconnect forfeits settle for real.
