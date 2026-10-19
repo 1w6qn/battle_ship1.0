@@ -24,14 +24,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .config import Settings, load_settings
+from .http.routers import auth as auth_router
 from .http.routers import contracts as contracts_router
 from .http.routers import health as health_router
 from .http.routers import legacy as legacy_router
+from .http.routers import stats as stats_router
 from .infra.assets import AssetPaths
 from .infra.health import HealthService
 from .infra.logging import configure_logging, get_logger, log_context
 from .infra.metrics import MetricsRegistry
+from .infra.ratelimit import RateLimiter
 from .realtime.server import create_socket_server
+from .repositories import Database
 
 logger = get_logger("main")
 
@@ -57,6 +61,7 @@ class Application:
     metrics: MetricsRegistry
     health: HealthService
     assets: AssetPaths
+    database: Database
 
 
 @asynccontextmanager
@@ -65,6 +70,9 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        database = getattr(_app.state, "database", None)
+        if database is not None:
+            database.dispose()
         logger.info("backend stopping", extra={"version": __version__})
 
 
@@ -102,12 +110,15 @@ async def _unhandled_exception_handler(_request: Request, exc: Exception) -> JSO
     return _error_response(500, "internal_error", "服务器内部错误")
 
 
-def create_application(settings: Settings | None = None) -> Application:
+def create_application(settings: Settings | None = None,
+                       database: Database | None = None) -> Application:
     settings = settings or load_settings()
     configure_logging(level=settings.log_level, json_output=settings.log_json)
 
     metrics = MetricsRegistry()
     assets = AssetPaths.discover()
+    database = database or Database.from_settings(settings)
+    rate_limiter = RateLimiter()
 
     fastapi_app = FastAPI(
         title="Battleship 1.0 backend",
@@ -158,6 +169,11 @@ def create_application(settings: Settings | None = None) -> Application:
 
     fastapi_app.include_router(health_router.router)
     fastapi_app.include_router(contracts_router.router)
+    # Auth owns /login, /register, /logout and /api/login; it must be included
+    # before the legacy page router so those paths resolve to the session-aware
+    # handlers rather than the read-only template entry.
+    fastapi_app.include_router(auth_router.router)
+    fastapi_app.include_router(stats_router.router)
     fastapi_app.include_router(legacy_router.router)
 
     if assets.static_dir.is_dir():
@@ -171,6 +187,8 @@ def create_application(settings: Settings | None = None) -> Application:
     fastapi_app.state.health = health
     fastapi_app.state.assets = assets
     fastapi_app.state.sio = sio
+    fastapi_app.state.database = database
+    fastapi_app.state.rate_limiter = rate_limiter
 
     asgi = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
     return Application(
@@ -181,6 +199,7 @@ def create_application(settings: Settings | None = None) -> Application:
         metrics=metrics,
         health=health,
         assets=assets,
+        database=database,
     )
 
 
