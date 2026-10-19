@@ -27,3 +27,6 @@ class SocketIoPublisher:
 
     async def enter_room(self, sid: str, room: str) -> None:
         await self._sio.enter_room(sid, room)
+
+    async def leave_room(self, sid: str, room: str) -> None:
+        await self._sio.leave_room(sid, room)
