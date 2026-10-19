@@ -1,24 +1,28 @@
-"""Profile reads owned by the session/auth ticket.
+"""Profile reads and card writes (ticket #6 privacy + ticket #15 projections).
 
-Scope note: rank, level and badge projections live in ticket #15. What this
-module must get right now is the **privacy contract** from DECISIONS D13:
+The privacy contract from DECISIONS D13 is unchanged:
 
 * show_stats / show_fav_cards are only flags -- the stats and favourite-card
   data are still sent, exactly like the legacy /user_stats;
 * show_history really does filter the history payload (the legacy endpoint did
   that, and only the server can enforce it);
+* show_rank nulls rank_info for other users, but never hides it from oneself;
 * missing profile rows fall back to the legacy defaults without writing a row.
 
-The self profile is intentionally a superset of what the ticket tests need; #15
-extends the rank/level/badge parts.
+Ticket #15 adds the projections the legacy API built from ranks / leveling /
+achievements / profile_spec. Rules stay in domain/progression; this module only
+assembles facts and applies the read-path cosmetic filter.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
+from ..domain.progression import profile_spec
 from ..repositories import Database
+from .progression import ProgressionService
 
 PROFILE_USER_FIELDS = (
     "id",
@@ -82,6 +86,7 @@ def _parse_tags(raw: Any) -> list[str]:
 
 def profile_extra(uow, user_id: str) -> dict[str, Any]:
     """Read the profile row, filling legacy defaults in memory (never writing)."""
+
     row = uow.social.get_profile(user_id) or {}
     data = dict(PROFILE_DEFAULTS)
     data.update({key: value for key, value in row.items() if value is not None})
@@ -93,19 +98,8 @@ def profile_extra(uow, user_id: str) -> dict[str, Any]:
     return data
 
 
-def fav_cards(uow, user_id: str, limit: int = 3) -> list[dict[str, Any]]:
-    """Favourite cards are data, not a permission decision (D13)."""
-    return [
-        {
-            "name": str(row.get("card_name") or ""),
-            "uses": int(row.get("uses") or 0),
-        }
-        for row in uow.stats.top_user_cards(user_id, limit)
-        if row.get("card_name")
-    ]
-
-
 def build_own_profile(database: Database, user_id: str) -> dict[str, Any] | None:
+    progression = ProgressionService(database)
     with database.unit_of_work() as uow:
         user = uow.users.get(user_id)
         if user is None:
@@ -115,40 +109,117 @@ def build_own_profile(database: Database, user_id: str) -> dict[str, Any] | None
             for field in PROFILE_USER_FIELDS
         }
         extra = profile_extra(uow, user_id)
+        unlock_stats = progression.unlock_stats(uow, user_id, user=user)
+        title_id, frame_id, card_bg_id = profile_spec.effective_equipped(
+            unlock_stats,
+            extra.get("title_id"),
+            extra.get("frame_id"),
+            extra.get("card_bg_id"),
+        )
+        rank = uow.users.wins_rank(user_id)
+        badges, badge_count = progression.badge_view(
+            uow, user_id, user=user, rank=rank
+        )
+
         profile.update(extra)
-        profile["rank"] = uow.stats.get_rank(user_id)
-        profile["counters"] = uow.stats.get_counters(user_id)
-        profile["fav_cards"] = fav_cards(uow, user_id)
+        profile.update({
+            "rank": rank,
+            "counters": uow.stats.get_counters(user_id),
+            "name_style": progression.name_style(uow, user_id),
+            "level_info": progression.level_view_for(uow, user_id),
+            "title_id": title_id,
+            "frame_id": frame_id,
+            "card_bg_id": card_bg_id,
+            "rank_info": progression.rank_view_for(uow, user_id),
+            "fav_cards": progression.fav_cards(uow, user_id),
+            "catalog": profile_spec.catalog(unlock_stats),
+            "achievements": badges,
+            "badge_count": badge_count,
+        })
+        # Interaction counters are read-only here; the viewer is the owner, so
+        # "mine" is always false (legacy: you cannot like your own card).
+        counts = uow.social.reaction_counts(user_id)
+        profile["counts"] = {
+            "like": int(counts.get("like") or 0),
+            "flower": int(counts.get("flower") or 0),
+        }
         profile["mine"] = False
-        profile["counts"] = {"like": 0, "flower": 0}
-        profile["name_style"] = ""
     return profile
 
 
 def public_stats(database: Database, user: Any, viewer_id: str | None,
                  limit: int = 20) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Legacy /user_stats projection with the D13 privacy flags preserved."""
+
+    progression = ProgressionService(database)
     user_id = str(user.id)
     is_self = bool(viewer_id) and str(viewer_id) == user_id
     with database.unit_of_work() as uow:
         stats = {field: getattr(user, field, None) for field in PUBLIC_STATS_FIELDS}
         extra = profile_extra(uow, user_id)
+        unlock_stats = progression.unlock_stats(uow, user_id, user=user)
+        title_id, frame_id, card_bg_id = profile_spec.effective_equipped(
+            unlock_stats,
+            extra.get("title_id"),
+            extra.get("frame_id"),
+            extra.get("card_bg_id"),
+        )
+        stats["rank"] = uow.users.wins_rank(user_id)
         for flag in _FLAG_FIELDS:
             stats[flag] = extra[flag]
-        stats["title_id"] = extra["title_id"]
+        stats["title_id"] = title_id
+        stats["title_name"] = profile_spec.title_name(title_id)
         stats["tags"] = extra["tags"]
+        stats["tag_names"] = [profile_spec.tag_name(tag) for tag in extra["tags"]]
         stats["status_text"] = extra["status_text"]
-        stats["frame_id"] = extra["frame_id"]
-        stats["card_bg_id"] = extra["card_bg_id"]
+        stats["frame_id"] = frame_id
+        stats["card_bg_id"] = card_bg_id
         # D13: flags are sent for the frontend to draw/hide the section, but the
         # data itself keeps flowing exactly as it did in the legacy stack.
-        stats["fav_cards"] = fav_cards(uow, user_id)
-        stats["counts"] = {"like": 0, "flower": 0}
+        stats["fav_cards"] = progression.fav_cards(uow, user_id)
+        counts = uow.social.reaction_counts(user_id)
+        stats["counts"] = {
+            "like": int(counts.get("like") or 0),
+            "flower": int(counts.get("flower") or 0),
+        }
         stats["mine"] = False
-        stats["name_style"] = ""
-        stats["rank_info"] = None
+        stats["name_style"] = progression.name_style(uow, user_id)
+        stats["level_info"] = progression.level_view_for(uow, user_id)
+        stats["rank_info"] = (
+            progression.rank_view_for(uow, user_id)
+            if (is_self or stats["show_rank"])
+            else None
+        )
+        badges, badge_count = progression.badge_view(
+            uow, user_id, user=user, rank=stats["rank"], unlocked_only=not is_self
+        )
+        stats["achievements"] = badges
+        stats["badge_count"] = badge_count
         if is_self or stats["show_history"]:
             history = uow.matches.history_for_user(user_id, limit)
         else:
             history = []
     return stats, history
+
+
+def save_profile_card(database: Database, user_id: str,
+                      payload: Any) -> tuple[int, dict[str, Any]]:
+    """Validate and persist the 11 card fields; reject the whole save on error."""
+
+    if not isinstance(payload, dict):
+        return 400, {"success": False, "error": "请求体必须是 JSON 对象"}
+    with database.unit_of_work() as uow:
+        user = uow.users.get(user_id)
+        if user is None:
+            return 401, {"success": False, "error": "账号不存在"}
+        unlock_stats = ProgressionService(database).unlock_stats(
+            uow, user_id, user=user
+        )
+        fields, errors = profile_spec.validate_payload(payload, unlock_stats)
+        if errors:
+            return 400, {"success": False, "error": "；".join(errors)}
+        stored = dict(fields)
+        stored["tags"] = json.dumps(stored.get("tags") or [], ensure_ascii=False)
+        uow.social.save_profile(user_id, stored, updated_at=int(time.time()))
+    profile = build_own_profile(database, user_id)
+    return 200, {"success": True, "profile": profile}

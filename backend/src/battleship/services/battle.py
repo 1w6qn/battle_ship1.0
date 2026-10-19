@@ -307,8 +307,30 @@ class BattleService:
         # Legacy _finalize_match always released the presence "in a game" flag,
         # even when persistence failed, so friends can invite again immediately.
         self.rooms.release_presence(room)
+        await self._emit_settlement_events(room, result, "before")
         await self._emit_game_over(room, winner_id, reason, result)
+        await self._emit_settlement_events(room, result, "after")
         return result
+
+    async def _emit_settlement_events(self, room: Room, result: SettlementResult,
+                                      phase: str) -> None:
+        """Emit hook-produced frames in the legacy order around game_over."""
+
+        for frame in getattr(result, "events", ()) or ():
+            if frame.get("phase") != phase:
+                continue
+            target = frame.get("to")
+            room_target = frame.get("room")
+            # Never degrade a missing personal target into a broadcast: the
+            # legacy xp/rank frames were always sent to one socket.
+            if not target and not room_target:
+                continue
+            await self._publisher.emit(
+                str(frame.get("event") or ""),
+                frame.get("data") or {},
+                to=target,
+                room=room_target,
+            )
 
     async def _emit_game_over(self, room: Room, winner_id: str,
                               reason: str | None,
@@ -330,7 +352,9 @@ class BattleService:
             self.settlement.settle, room, winner_id, loser_id
         )
         self.rooms.release_presence(room)
+        await self._emit_settlement_events(room, result, "before")
         await self._emit_game_over(room, winner_id, reason, result)
+        await self._emit_settlement_events(room, result, "after")
         return result
 
     async def surrender(self, connection: Connection,
