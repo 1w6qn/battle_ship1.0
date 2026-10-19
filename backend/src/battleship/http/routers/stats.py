@@ -12,7 +12,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ...services.profile import public_stats
-from ..errors import api_error
 from ..session import read_session, session_user_id
 
 router = APIRouter(tags=["stats"])
@@ -47,3 +46,12 @@ def user_stats(request: Request):
 
     stats, history = public_stats(database, user, viewer_id, _limit(request.query_params.get("limit")))
     return JSONResponse({"stats": stats, "history": history})
+
+
+@router.get("/api/card_usage")
+def card_usage(request: Request):
+    """Public lifetime card-use map (catalogue "how popular is this card")."""
+    database = request.app.state.database
+    with database.unit_of_work() as uow:
+        usage = uow.stats.all_card_usage()
+    return JSONResponse({"usage": usage, "total": sum(usage.values())})
