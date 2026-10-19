@@ -74,6 +74,10 @@ class LobbyService:
         self._profile_cache: dict[str, tuple[float, dict[str, str]]] = {}
         self._publisher: EventPublisher = NullPublisher()
         self._ticker_task: asyncio.Task | None = None
+        # Ticket #17 fills lobby_state.matches. Kept as an injected collaborator
+        # (not a constructor argument) so the lobby keeps working in tests that
+        # do not care about spectating.
+        self.spectators: Any = None
 
     # ------------------------------------------------------------------ wiring
 
@@ -277,10 +281,10 @@ class LobbyService:
             "queue": {"casual": len(queue) - ranked_n, "ranked": ranked_n},
             "players": players,
             "rooms": visible_rooms(self._rooms.get_all_rooms().values(), set(presence)),
-            # Live matches are the spectate entry; spectating is a later ticket,
-            # and listing a match that cannot be entered is worse than listing
-            # none. The key stays because the client renders it unconditionally.
-            "matches": [],
+            # The spectate entry: only started, full, non-AI rooms whose two
+            # seats both allow watching. The key is always present because the
+            # client renders it unconditionally.
+            "matches": self.spectators.live_matches() if self.spectators is not None else [],
         }
 
     # ------------------------------------------------------------------- chat

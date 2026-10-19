@@ -17,13 +17,13 @@ from __future__ import annotations
 from typing import Any
 
 from ...contracts.identity import RoomKind
-from ..magic.preview import preview_node
 from .models import (
     PUBLIC_EFFECT_FLAGS,
     Player,
     Room,
     RoomState,
     alive_ships,
+    field_magic_name,
     is_ship_alive,
     opponent_of,
     room_match_mode,
@@ -114,46 +114,16 @@ def _effect_badges(player: Player | None) -> list[dict[str, Any]]:
 def _spectate_chain_payload(room: Room) -> dict[str, Any]:
     """Public chain shape shared by the live stream and the reconnect snapshot.
 
-    This is the one construction point (legacy `_spectate_chain_payload`) used by
-    the live broadcast, the reconnect snapshot and the spectator snapshot.
-
-    Frozen shape: `{'chain': [{'card','seat','negated','preview'}], 'chain_len',
-    'targets_dropped'}`. `card` is the **card name string**, never the full card
-    object: the whitelist allows only the name, and the old client renders the
-    name. Raw client `targets` are never forwarded -- they are replaced by the
-    derived `preview` (`None` when the card has no confirmed area).
+    Delegates to :func:`battleship.domain.spectate.public_chain` so the sanitising
+    (raw `targets` -> public preview, `player_id` -> `p1`/`p2`) has exactly one
+    implementation for the live feed, the reconnect snapshot and the spectator
+    snapshot. Imported lazily: `spectate` imports `room.models`, and this module
+    is imported by the `room` package initialiser.
     """
 
-    chain: list[dict[str, Any]] = []
-    dropped = 0
-    for item in room.chain or []:
-        raw = item if isinstance(item, dict) else getattr(item, "__dict__", {})
-        card = raw.get("card")
-        if isinstance(card, dict):
-            card_name = card.get("name")
-        elif isinstance(card, str):
-            card_name = card
-        else:
-            card_name = getattr(card, "name", None)
-        targets = raw.get("targets")
-        if isinstance(targets, (list, tuple)):
-            dropped += len(targets)
-        seat = seat_label(room, raw.get("player_id"))
-        node = raw.get("preview") if isinstance(raw.get("preview"), dict) else None
-        if node is None and isinstance(targets, dict):
-            node = preview_node(targets, card_name, room=room, board=targets.get("board"))
-        if node is not None:
-            node = dict(node)
-            node["seat"] = seat
-        chain.append(
-            {
-                "card": card_name,
-                "seat": seat,
-                "negated": bool(raw.get("negated")),
-                "preview": node,
-            }
-        )
-    return {"chain": chain, "chain_len": len(chain), "targets_dropped": dropped}
+    from ..spectate import public_chain
+
+    return public_chain(room)
 
 
 def _priority_pending_for(room: Room, player_id: str) -> dict[str, Any] | None:
@@ -262,11 +232,7 @@ def build_room_sync(room: Room, player_id: str) -> dict[str, Any]:
         "mode": room_match_mode(room),
         "winner": room.winner,
         "game_over_reason": room.game_over_reason,
-        "field_magic": (
-            getattr(room.field_magic, "name", None)
-            if room.field_magic is not None
-            else ""
-        ) or "",
+        "field_magic": field_magic_name(room),
         "remaining_ships": player.remaining_ships,
         "ships": [
             {
