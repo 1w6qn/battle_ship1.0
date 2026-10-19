@@ -28,6 +28,7 @@ from ..services.rooms import Connection, RoomService
 from ..services.spectators import SpectatorService
 from .emitter import SocketIoPublisher
 from .handlers.battle import register_battle_handlers
+from .handlers.chain import register_chain_handlers
 from .handlers.chat import register_chat_handlers
 from .handlers.debug import (
     DEBUG_EVENT_DISABLED_MESSAGE,
@@ -79,7 +80,9 @@ def create_socket_server(
     # channels and the card-effect registry. Wiring lives here so every caller
     # of create_socket_server (including tests) gets the same seams.
     matchmaking = matchmaking or MatchmakingService(rooms, lobby=lobby)
-    magic = magic or MagicService(rooms)
+    magic = magic or MagicService(
+        rooms, chain_display_delay_seconds=settings.chain_display_delay_seconds
+    )
     if gameplay.draw_hook is None:
         gameplay.draw_hook = magic.draw
     if magic.finish_hook is None:
@@ -209,6 +212,7 @@ def create_socket_server(
     register_battle_handlers(sio, gameplay, battle)
     register_magic_handlers(sio, magic)
     register_matchmaking_handlers(sio, matchmaking)
+    register_chain_handlers(sio, magic)
     register_reconnect_handlers(sio, rooms)
     register_spectate_handlers(sio, spectators)
     register_debug_implementations(battle, magic)

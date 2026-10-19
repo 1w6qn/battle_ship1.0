@@ -92,12 +92,12 @@ def lanyu_requirement_reason(room: Room, player_id: str, card: MagicCard) -> str
     max_ships = int(getattr(player, "max_ships", 6) or 6)
     if player.remaining_ships >= max_ships:
         return f"自己的船数已满({player.remaining_ships}/{max_ships})，滥竽充数无法发动"
-    if len(_blocked_cells(room, player_id)) >= 36:
+    if len(blocked_cells(room, player_id)) >= 36:
         return "棋盘已无可放置的格子，滥竽充数无法发动"
     return None
 
 
-def _blocked_cells(room: Room, player_id: str) -> set[tuple[int, int]]:
+def blocked_cells(room: Room, player_id: str) -> set[tuple[int, int]]:
     blocked: set[tuple[int, int]] = set()
     opponent_id = room.opponent_of(player_id)
     if opponent_id:
@@ -181,6 +181,7 @@ def action_wait_reason(room: Room, player_id: str) -> str | None:
 __all__ = [
     "END_PHASE_PLAYABLE",
     "action_wait_reason",
+    "blocked_cells",
     "can_play_magic_card",
     "field_magic_name",
     "freezing_block_reason",

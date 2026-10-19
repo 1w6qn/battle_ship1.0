@@ -237,6 +237,9 @@ class Room:
     magic_deck: list[Any] = field(default_factory=list)
 
     chain: list[Any] = field(default_factory=list)
+    #: A resolution is in flight (async card effects yield to the event loop, so
+    #: without this latch a second play could interleave with the same stack).
+    chain_resolving: bool = False
     chain_waiting: bool = False
     chain_timer: int = -1
     chain_window: str | None = None
