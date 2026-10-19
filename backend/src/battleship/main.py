@@ -31,6 +31,7 @@ from .http.routers import friends as friends_router
 from .http.routers import health as health_router
 from .http.routers import legacy as legacy_router
 from .http.routers import lobby as lobby_router
+from .http.routers import replay as replay_router
 from .http.routers import stats as stats_router
 from .infra.assets import AssetPaths
 from .infra.health import HealthService
@@ -45,6 +46,7 @@ from .services.friends import FriendsService
 from .services.gameplay import GameplayService
 from .services.lobby import LobbyService
 from .services.presence import PresenceService
+from .services.replays import allowed_for_match, build_replay
 from .services.rooms import RoomService
 from .services.settlement import SettlementService
 
@@ -145,7 +147,13 @@ def create_application(settings: Settings | None = None,
     assets = AssetPaths.discover()
     database = database or Database.from_settings(settings)
     rate_limiter = RateLimiter()
-    settlement = SettlementService(database)
+    # Ticket #18: the real recorder replaces the ticket-9 placeholder, and the
+    # allow_replay gate is evaluated once inside the settlement transaction.
+    settlement = SettlementService(
+        database,
+        replay_builder=build_replay,
+        replay_gate=lambda winner, loser: allowed_for_match(database, winner, loser),
+    )
 
     fastapi_app = FastAPI(
         title="Battleship 1.0 backend",
@@ -201,6 +209,7 @@ def create_application(settings: Settings | None = None,
     # handlers rather than the read-only template entry.
     fastapi_app.include_router(auth_router.router)
     fastapi_app.include_router(stats_router.router)
+    fastapi_app.include_router(replay_router.router)
     fastapi_app.include_router(lobby_router.router)
     fastapi_app.include_router(friends_router.router)
     fastapi_app.include_router(chat_router.router)

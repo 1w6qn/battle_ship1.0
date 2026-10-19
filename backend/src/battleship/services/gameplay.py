@@ -32,6 +32,7 @@ from typing import Any, Callable
 from ..contracts.identity import ai_player_id
 from ..domain import battle as battle_rules
 from ..domain import placement as placement_rules
+from ..domain import replay as replay_rules
 from ..domain.placement import PlacementError
 from ..domain.room import Room, RoomPhase, RoomState, rank_payload
 from ..infra.logging import get_logger
@@ -140,6 +141,43 @@ class GameplayService:
         return room, str(player_id)
 
     @staticmethod
+    def _name(room: Room, player_id: str) -> str:
+        player = room.players.get(player_id)
+        return (player.name or player_id) if player is not None else str(player_id)
+
+    def _note_enter_battle(self, room: Room, player_id: str) -> None:
+        actor = self._name(room, player_id)
+        replay_rules.note_action(
+            room,
+            "enter_battle",
+            f"{actor} 进入战斗阶段",
+            {"player": player_id, "attacks_remaining": room.attacks_remaining,
+             "round": room.round},
+            actor,
+        )
+
+    def _note_enter_end(self, room: Room, player_id: str) -> None:
+        actor = self._name(room, player_id)
+        replay_rules.note_action(
+            room,
+            "enter_end",
+            f"{actor} 进入结束阶段",
+            {"player": player_id, "round": room.round},
+            actor,
+        )
+
+    def _note_end_turn(self, room: Room, player_id: str) -> None:
+        actor = self._name(room, player_id)
+        replay_rules.note_action(
+            room,
+            "end_turn",
+            f"{actor} 结束了回合",
+            {"player": player_id, "current_attacker": room.current_attacker,
+             "round": room.round},
+            actor,
+        )
+
+    @staticmethod
     def _frozen_reason(room: Room, player_id: str) -> str | None:
         for pid in room.disconnected:
             if pid != player_id:
@@ -227,6 +265,14 @@ class GameplayService:
                 room=room.id,
             )
 
+        actor = self._name(room, player_id)
+        replay_rules.note_action(
+            room,
+            "place_ships",
+            f"{actor} 布好了 {len(ships)} 艘战舰",
+            {"player": player_id, "ships": len(ships)},
+            actor,
+        )
         self._touch_turn(room, player_id)
         return {"status": "success"}
 
@@ -324,6 +370,14 @@ class GameplayService:
                 },
                 room=room.id,
             )
+            actor = self._name(room, winner)
+            replay_rules.note_action(
+                room,
+                "rps_choice",
+                f"{actor} 猜拳取胜，先手",
+                {"first": winner, "round": room.round},
+                actor,
+            )
 
         return {"status": "success"}
 
@@ -364,6 +418,7 @@ class GameplayService:
             room=room.id,
         )
         await self._emit_phase(room)
+        self._note_enter_battle(room, player_id)
         self._touch_turn(room, player_id)
         return {"status": "success"}
 
@@ -384,6 +439,7 @@ class GameplayService:
             return {"status": "error", "message": error}
 
         await self._emit_phase(room)
+        self._note_enter_end(room, player_id)
         self._touch_turn(room, player_id)
         return {"status": "success", "message": "已进入结束阶段"}
 
@@ -391,6 +447,9 @@ class GameplayService:
         result = battle_rules.resolve_turn_end(room, player_id)
         if result is None:
             return None
+        # Same single recording point as legacy's try/finally: all success
+        # branches (new round / next player / skipped) record exactly once.
+        self._note_end_turn(room, player_id)
 
         if result.kind == "skip_stages":
             await self._emit_phase(room)
@@ -543,6 +602,7 @@ class GameplayService:
                 room=room.id,
             )
             await self._emit_phase(room)
+            self._note_enter_battle(room, player_id)
         elif _phase_value(room) == "battle":
             player = room.players[player_id]
             cells = battle_rules.attackable_cells(player)
@@ -550,6 +610,7 @@ class GameplayService:
                 if battle_rules.enter_end(room, player_id) is not None:
                     return False
                 await self._emit_phase(room)
+                self._note_enter_end(room, player_id)
             elif self.fire_hook is None:
                 return False
             else:
@@ -578,6 +639,7 @@ class GameplayService:
                     room=room.id,
                 )
                 await self._emit_phase(room)
+                self._note_enter_battle(room, player_id)
                 note = "思考超时：已自动进入战斗阶段"
 
         elif _phase_value(room) == "battle":
@@ -586,6 +648,7 @@ class GameplayService:
             if not cells or room.attacks_remaining <= 0:
                 if battle_rules.enter_end(room, player_id) is None:
                     await self._emit_phase(room)
+                    self._note_enter_end(room, player_id)
                     note = "思考超时：已自动进入结束阶段"
             else:
                 x, y = self.rng.choice(cells)
