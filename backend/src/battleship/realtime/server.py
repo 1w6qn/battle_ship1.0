@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import socketio
 
 from ..contracts.events_in import is_debug_event
+from ..http.session import session_from_cookie_header, session_user_id, session_username
 from ..infra.logging import get_logger, log_context
 from .handlers.debug import DEBUG_EVENT_DISABLED_MESSAGE, register_debug_handlers
 
@@ -33,8 +34,24 @@ def create_socket_server(settings: "Settings", metrics: "MetricsRegistry") -> so
     @sio.event
     async def connect(sid: str, environ: dict, auth=None) -> bool:
         metrics.connection_opened()
+        # Carry the signed-cookie identity onto the socket. ticket #7 reads this
+        # instead of trusting a client-supplied user_id/player_id claim.
+        cookie_header = (environ or {}).get("HTTP_COOKIE") or (environ or {}).get("COOKIE")
+        session = session_from_cookie_header(
+            settings.secret_key.get_secret_value(), cookie_header
+        )
+        await sio.save_session(
+            sid,
+            {
+                "user_id": session_user_id(session),
+                "username": session_username(session),
+            },
+        )
         with log_context(event="connect"):
-            logger.info("socket connected", extra={"socket_id": sid})
+            logger.info(
+                "socket connected",
+                extra={"socket_id": sid, "authenticated": bool(session_user_id(session))},
+            )
         return True
 
     @sio.event
