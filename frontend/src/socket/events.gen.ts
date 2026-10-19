@@ -1,7 +1,7 @@
 // GENERATED from backend contracts (JSON Schema). Do not edit by hand.
 // Regenerate: python -m battleship.contracts.export_schema --format ts --out frontend/src/socket/events.gen.ts
 export const CONTRACT_SCHEMA_VERSION = 1
-export const CONTRACT_SCHEMA_HASH = '4bf54ade9864c199ee38bdc2732037417469624bdfa1ed465eeb793bee66583c'
+export const CONTRACT_SCHEMA_HASH = 'e5c6d683cf63f3705cbb52745e14c1740decdc2d187b02f2a75d4f052b5213b6'
 
 export const INBOUND_EVENTS = [
   'connect',
@@ -81,10 +81,6 @@ export const OUTBOUND_EVENTS = [
   'dice_rolled',
   'error',
   'field_magic_updated',
-  'friend_accepted',
-  'friend_invite',
-  'friend_message',
-  'friend_request',
   'frozen_area',
   'game_canceled',
   'game_log',
@@ -119,7 +115,6 @@ export const OUTBOUND_EVENTS = [
   'priority_waiting_end',
   'quick_chat',
   'rank_changed',
-  'recent_opponent',
   'reconnect_token',
   'reconnect_warning',
   'reinforcement_activated',

@@ -17,10 +17,12 @@ from ..http.session import session_from_cookie_header, session_user_id, session_
 from ..infra.logging import get_logger, log_context
 from ..services.chat import ChatService
 from ..services.friends import FriendsService
+from ..services.gameplay import GameplayService
 from ..services.lobby import LobbyService
 from ..services.presence import PresenceService
 from ..services.rooms import Connection, RoomService
 from .emitter import SocketIoPublisher
+from .handlers.battle import register_battle_handlers
 from .handlers.chat import register_chat_handlers
 from .handlers.debug import DEBUG_EVENT_DISABLED_MESSAGE, register_debug_handlers
 from .handlers.lobby import register_lobby_handlers
@@ -38,6 +40,7 @@ def create_socket_server(
     settings: "Settings",
     metrics: "MetricsRegistry",
     rooms: RoomService | None = None,
+    gameplay: GameplayService | None = None,
     lobby: LobbyService | None = None,
     presence: PresenceService | None = None,
     friends: FriendsService | None = None,
@@ -47,6 +50,9 @@ def create_socket_server(
     presence = presence or PresenceService()
     rooms = rooms or RoomService(presence=presence)
     lobby = lobby or LobbyService(rooms, presence)
+    gameplay = gameplay or GameplayService(
+        rooms, turn_timeout_seconds=settings.turn_timeout_seconds
+    )
     sio = socketio.AsyncServer(
         async_mode="asgi",
         cors_allowed_origins=settings.cors_origins or [],
@@ -134,6 +140,7 @@ def create_socket_server(
     publisher = SocketIoPublisher(sio)
     rooms.bind(publisher)
     lobby.bind(publisher)
+    gameplay.bind(publisher)
     if friends is not None:
         friends.bind(publisher)
     if chat is not None:
@@ -141,6 +148,7 @@ def create_socket_server(
         register_chat_handlers(sio, chat)
     register_room_handlers(sio, rooms, lobby)
     register_lobby_handlers(sio, lobby)
+    register_battle_handlers(sio, gameplay)
     register_reconnect_handlers(sio, rooms)
     register_debug_handlers(sio, settings, metrics)
     return sio
