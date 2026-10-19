@@ -368,6 +368,10 @@ class SpectatorService:
         room = self._rooms.get_room(room_id)
         if room is None:
             return
+        # The legacy background task ran after Socket.IO had already removed the
+        # dead sid from spectate:<room>, so the departing viewer never saw the
+        # count update. Leaving explicitly here reproduces that recipient set.
+        await self._publisher.leave_room(sid, spectate.spectate_room_name(room_id))
         await self._broadcast_count(room)
         if left_name:
             await self._announce(room, "spectate_left", left_name)
