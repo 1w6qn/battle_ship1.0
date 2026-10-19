@@ -27,6 +27,7 @@ ENV_NAME_BY_FIELD: dict[str, str] = {
     "turn_timeout_seconds": "TURN_TIMEOUT_SECONDS",
     "chain_display_delay_seconds": "CHAIN_DISPLAY_DELAY_SECONDS",
     "enable_test_events": "ENABLE_TEST_EVENTS",
+    "seed": "BS_SEED",
     "frontend_mode": "FRONTEND_MODE",
     "frontend_dist": "FRONTEND_DIST",
     "cors_origins_raw": "CORS_ORIGINS",
@@ -68,6 +69,9 @@ class Settings(BaseSettings):
     turn_timeout_seconds: int = Field(default=90, ge=0)
     chain_display_delay_seconds: float = Field(default=1.2, ge=0)
     enable_test_events: bool = False
+    # Fixed RNG seed for contract replays / headless simulation (legacy BS_SEED).
+    # None keeps the normal random source.
+    seed: int | None = None
 
     # 新 Vue 壳的托管开关（ticket #21）。默认仍是旧模板，切换由 #20 负责；
     # "spa" 时必须存在构建产物，缺失即启动失败（不做静默回退）。

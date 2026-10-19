@@ -16,6 +16,7 @@ import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ...contracts.events_in import DEBUG_EVENTS
+from ...domain.room import RoomState
 
 if TYPE_CHECKING:
     import socketio
@@ -81,8 +82,9 @@ def _make_handler(
     return handler
 
 
-def register_debug_implementations(battle: Any, magic: Any = None) -> None:
-    """Register ticket #9's debug events (only usable behind the gate)."""
+def register_debug_implementations(battle: Any, magic: Any = None,
+                                   rooms: Any = None) -> None:
+    """Register the debug events implemented so far (only behind the gate)."""
 
     async def test_win_game(sid: str, data: dict[str, Any], *,
                             sio: "socketio.AsyncServer", settings: "Settings") -> dict:
@@ -94,8 +96,29 @@ def register_debug_implementations(battle: Any, magic: Any = None) -> None:
 
     DEBUG_IMPLEMENTATIONS["test_win_game"] = test_win_game
     DEBUG_IMPLEMENTATIONS["test_lose_game"] = test_lose_game
-    DEBUG_IMPLEMENTATIONS["test_win_game"] = test_win_game
-    DEBUG_IMPLEMENTATIONS["test_lose_game"] = test_lose_game
+
+    if rooms is not None:
+        async def test_set_ai_rps_choice(
+            sid: str, data: dict[str, Any], *,
+            sio: "socketio.AsyncServer", settings: "Settings",
+        ) -> dict:
+            """Pin the next AI RPS choice (deterministic contract recoding).
+
+            Legacy parity: only an AI room in the RPS phase may be pinned, and
+            an illegal choice is rejected instead of being stored.
+            """
+
+            room = rooms.get_room(data.get("room_id"))
+            choice = data.get("choice")
+            if room is None or not getattr(room, "is_ai_room", False) \
+                    or room.state != RoomState.ROCK_PAPER_SCISSORS:
+                return {"status": "error", "message": "房间不在 AI 猜拳阶段"}
+            if choice not in ("rock", "paper", "scissors"):
+                return {"status": "error", "message": "无效的出拳"}
+            room.test_ai_rps_choice = choice
+            return {"status": "success"}
+
+        DEBUG_IMPLEMENTATIONS["test_set_ai_rps_choice"] = test_set_ai_rps_choice
 
     if magic is not None:
         async def test_add_specific_magic_card(

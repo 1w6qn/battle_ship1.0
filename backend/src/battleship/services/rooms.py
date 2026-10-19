@@ -435,6 +435,30 @@ class RoomService:
         self._drop_room(room_id, "房主解散房间")
         return {"status": "success", "room_id": room_id}
 
+    async def set_decline_priority(self, connection: Connection,
+                                   data: dict[str, Any] | None = None) -> dict:
+        """Toggle the per-seat "decline every phase-conversion prompt" switch.
+
+        Legacy event set_decline_priority: the seat owner may flip it at any
+        time; the ack echoes the new value and a priority_setting_updated event
+        goes to that seat's socket only.
+        """
+        data = data if isinstance(data, dict) else {}
+        room_id = str(data.get("room_id") or "")
+        player_id = str(data.get("player_id") or "")
+        room = self.get_room(room_id) if room_id else None
+        if room is None or player_id not in room.players:
+            return {"status": "error", "message": "无效的房间或玩家"}
+        if not self.identity_ok(room, player_id, connection):
+            return {"status": "error", "message": "无效的房间或玩家"}
+        decline = bool(data.get("decline"))
+        room.decline_priority[player_id] = decline
+        await self._publisher.emit(
+            "priority_setting_updated", {"decline": decline},
+            to=room.players[player_id].socket_id,
+        )
+        return {"status": "success", "decline": decline}
+
     # --------------------------------------------------------------- reconn.
 
     async def get_reconnect_token(self, connection: Connection,
