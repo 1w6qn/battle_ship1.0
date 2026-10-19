@@ -81,6 +81,21 @@ def _make_handler(
     return handler
 
 
+def register_debug_implementations(battle: Any) -> None:
+    """Register ticket #9's debug events (only usable behind the gate)."""
+
+    async def test_win_game(sid: str, data: dict[str, Any], *,
+                            sio: "socketio.AsyncServer", settings: "Settings") -> dict:
+        return await battle.debug_win(data.get("room_id"), data.get("player_id"))
+
+    async def test_lose_game(sid: str, data: dict[str, Any], *,
+                             sio: "socketio.AsyncServer", settings: "Settings") -> dict:
+        return await battle.debug_lose(data.get("room_id"), data.get("player_id"))
+
+    DEBUG_IMPLEMENTATIONS["test_win_game"] = test_win_game
+    DEBUG_IMPLEMENTATIONS["test_lose_game"] = test_lose_game
+
+
 def register_debug_handlers(
     sio: "socketio.AsyncServer",
     settings: "Settings",
