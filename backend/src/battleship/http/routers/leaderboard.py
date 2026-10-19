@@ -1,13 +1,15 @@
-"""Ranked leaderboard (ticket #16).
+"""Leaderboards (ticket #16): the wins board and the ranked board.
 
-Frozen public contract from the legacy `/api/ranked_leaderboard`:
+Both are public reads with the frozen legacy shapes:
 
-* `{leaderboard, total, constants}`; anonymous visitors may read it;
-* only accounts with a `user_rank` row appear (a never-played account must not
-  fill the tail with "二级水手Ⅰ 0分");
-* `position` is the full-server position, and every row's rank view comes from
-  `domain.progression.ranks` -- the client never recomputes a tier or a label.
-
+* `/api/leaderboard` -> a bare array of accounts that have actually played,
+  ordered wins DESC then longest_streak DESC, with name style and level
+  projected from the progression module;
+* `/api/ranked_leaderboard` -> `{leaderboard, total, constants}`; only accounts
+  with a `user_rank` row appear (a never-played account must not fill the tail
+  with "二级水手Ⅰ 0分"), `position` is the full-server position, and every row's
+  rank view comes from `domain.progression.ranks` -- the client never
+  recomputes a tier or a label.
 """
 
 from __future__ import annotations
