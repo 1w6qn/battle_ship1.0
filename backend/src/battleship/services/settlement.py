@@ -4,7 +4,8 @@ One match ending writes, in this order and in one SQLAlchemy unit of work:
 
 1. matches (mode = ranked / casual / ai / custom / NULL)
 2. match_logs
-3. match_replays (a version-1 placeholder until ticket #18 supplies the real blob)
+3. match_replays (ticket #18's real recorder; skipped when any participant
+   disabled replay or the room recorded no steps)
 4. users wins / losses / current_streak / longest_streak
 5. user_counters (sunk_total / matches_played / flawless_wins / fastest_win_sec)
 6. registered settlement hooks (rank / xp / achievements / anticheat, tickets #15/#16)
@@ -26,6 +27,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
+from ..domain import replay as replay_rules
 from ..domain.room import Room
 from ..domain.settlement import SettlementFacts, settlement_facts
 from ..infra.logging import get_logger
@@ -68,10 +70,15 @@ class SettlementService:
         database: Database | None = None,
         *,
         replay_builder: ReplayBuilder | None = None,
+        replay_gate: Callable[[str | None, str | None], bool] | None = None,
         hooks: Sequence[SettlementHook] | None = None,
     ) -> None:
         self.database = database
         self.replay_builder = replay_builder
+        # One gate for "may this match keep a replay" (ticket #18 fills it with
+        # the allow_replay read). The default keeps legacy callers/tests that
+        # wire only a builder working: participants imply a replay.
+        self.replay_gate = replay_gate
         self.hooks: list[SettlementHook] = list(hooks or ())
         self._lock = threading.Lock()
 
@@ -113,12 +120,12 @@ class SettlementService:
             match_id = str(uuid.uuid4())
             timestamp = int(time.time())
             try:
-                replay = self._build_replay(room)
+                replay = self._build_replay(room) if self._replay_allowed(facts) else None
                 context = SettlementContext(
                     match_id=match_id,
                     timestamp=timestamp,
                     facts=facts,
-                    replay_saved=bool(facts.winner_user_id or facts.loser_user_id),
+                    replay_saved=bool(replay),
                     replay=replay,
                 )
                 with self.database.unit_of_work() as uow:
@@ -138,8 +145,14 @@ class SettlementService:
                     },
                     exc_info=error,
                 )
+                # Same memory discipline as legacy: a failed write must not
+                # leave a 512 KB recording hanging on a finished room.
+                replay_rules.reset(room)
                 return SettlementResult(ok=False, error=str(error))
 
+            # Legacy reset the recorder in a finally after record_match: the blob
+            # is already in the context, the room no longer needs the recording.
+            replay_rules.reset(room)
             result = SettlementResult(ok=True, match_id=match_id)
             room.match_id = match_id
             room.settled = True
@@ -147,6 +160,14 @@ class SettlementService:
             return result
 
     # ------------------------------------------------------------------ writes
+
+    def _replay_allowed(self, facts: SettlementFacts) -> bool:
+        """One gate decision, before anything is written (fail-closed)."""
+        if not (facts.winner_user_id or facts.loser_user_id):
+            return False
+        if self.replay_gate is None:
+            return True
+        return bool(self.replay_gate(facts.winner_user_id, facts.loser_user_id))
 
     def _build_replay(self, room: Room) -> Any:
         if self.replay_builder is not None:
