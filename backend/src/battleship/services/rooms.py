@@ -21,7 +21,7 @@ import asyncio
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from ..contracts.identity import (
     IdentityClaim,
@@ -29,6 +29,7 @@ from ..contracts.identity import (
     ai_player_id,
     verify_identity,
 )
+from ..domain.anticheat import suspicion
 from ..infra.logging import get_logger
 from ..domain.room import (
     AI_DIFFICULTIES,
@@ -61,6 +62,9 @@ class Connection:
     sid: str
     user_id: str | None = None
     username: str | None = None
+    #: Peer address (never a forwarded header). Loopback/private addresses are
+    #: normalised to "not judged" by the matchmaking guard.
+    ip: str = ""
 
 
 class EventPublisher(Protocol):
@@ -109,6 +113,7 @@ class RoomService:
         ended_room_retention_seconds: float = ENDED_ROOM_RETENTION_SECONDS,
         waiting_room_ttl_seconds: float = WAITING_ROOM_TTL_SECONDS,
         presence: PresenceService | None = None,
+        capability_gate: Callable[[str | None, str], str] | None = None,
     ) -> None:
         self.rooms: dict[str, Room] = {}
         self.match_queue: list[dict[str, Any]] = []
@@ -120,6 +125,10 @@ class RoomService:
         self.grace_initial_delay_seconds = grace_initial_delay_seconds
         self.ended_room_retention_seconds = ended_room_retention_seconds
         self.waiting_room_ttl_seconds = waiting_room_ttl_seconds
+        # Optional cumulative-ban gate (ticket #16). Kept as a callable so the
+        # room service does not depend on the auth service and unit callers keep
+        # working without a database (None = nobody is banned).
+        self.capability_gate = capability_gate
         self._publisher: EventPublisher = NullPublisher()
         self._tasks: set[asyncio.Task] = set()
         # Ticket #9 wires this to BattleService.settle_forfeit; without it the
@@ -228,8 +237,33 @@ class RoomService:
 
         self._release_presence_game(room)
 
+    def _capability_denied(self, connection: Connection, capability: str) -> str:
+        if self.capability_gate is None or not connection.user_id:
+            return ""
+        try:
+            return self.capability_gate(connection.user_id, capability) or ""
+        except Exception as error:  # noqa: BLE001 - fail open, but leave a signal
+            logger.error(
+                "capability gate failed; allowing room action",
+                extra={"error_type": type(error).__name__},
+                exc_info=error,
+            )
+            return ""
+
+    async def _refuse_capability(self, connection: Connection, capability: str) -> dict | None:
+        denied = self._capability_denied(connection, capability)
+        if not denied:
+            return None
+        await self._publisher.emit("error", {"message": denied}, to=connection.sid)
+        return {"status": "error", "message": denied}
+
     async def create_room(self, connection: Connection, data: dict[str, Any] | None) -> dict:
         data = data if isinstance(data, dict) else {}
+        # Gate before ANY side effect: a refused create must not leave a room in
+        # the lobby that the player can never enter (legacy ordering).
+        refused = await self._refuse_capability(connection, suspicion.CAP_ROOM)
+        if refused is not None:
+            return refused
         player_id = connection.user_id or connection.sid
         # One player may host at most one waiting room; otherwise every click
         # leaks another "same name" room into the lobby (legacy fix retained).
@@ -289,6 +323,9 @@ class RoomService:
 
     async def join_room(self, connection: Connection, data: dict[str, Any] | None) -> dict:
         data = data if isinstance(data, dict) else {}
+        refused = await self._refuse_capability(connection, suspicion.CAP_ROOM)
+        if refused is not None:
+            return refused
         room_id = data.get("room_id")
         player_id = connection.user_id or connection.sid
         player_name = self._player_name(connection, data)
@@ -644,12 +681,16 @@ class RoomService:
                 reaped.append(room_id)
         return reaped
 
-    def _remove_from_match_queue(self, sid: str) -> bool:
+    def remove_from_match_queue(self, sid: str) -> bool:
         for index, entry in enumerate(self.match_queue):
             if entry.get("sid") == sid:
                 self.match_queue.pop(index)
                 return True
         return False
+
+    # Kept for the existing disconnect path; one implementation only.
+    def _remove_from_match_queue(self, sid: str) -> bool:
+        return self.remove_from_match_queue(sid)
 
     def findBySocket(self, sid: str) -> tuple[Room, str] | None:
         for room in self.rooms.values():
