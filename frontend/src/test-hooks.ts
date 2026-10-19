@@ -14,6 +14,14 @@ import {
   settlementSocketConnected,
   type SettlementEventName,
 } from './realtime/settlement'
+import {
+  BATTLE_EVENTS,
+  applyBattleEvent,
+  battleSocketConnected,
+  getBattleSocket,
+  type BattleEventName,
+} from './realtime/battle'
+import { useMatchStore } from './stores/match'
 import { CrashProbe } from './test-crash/CrashProbe'
 import { crashTarget, requestCrash } from './test-crash/state'
 
@@ -46,6 +54,15 @@ export interface SettlementTestApi {
   createSocket: () => Socket
 }
 
+export interface BattleTestApi {
+  socket: () => TypedSocket | null
+  connected: () => boolean
+  /** The live battle store snapshot (log, prompts, marks) plus the game state. */
+  state: () => Record<string, unknown>
+  /** Feed the exact production reducer with a frozen frame (test build only). */
+  feed: (event: string, payload: Record<string, unknown>) => void
+}
+
 export interface TestHooksApi {
   version: string
   router: Router
@@ -60,6 +77,7 @@ export interface TestHooksApi {
   defaultGameState: () => unknown
   gameState: () => unknown
   settlement: SettlementTestApi
+  battle: BattleTestApi
   crashNext: (routeName: string) => void
 }
 
@@ -101,6 +119,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
 
   const game = useGameStore(pinia)
   const result = useResultStore(pinia)
+  const match = useMatchStore(pinia)
 
   const settlement: SettlementTestApi = {
     socket: () => getSettlementSocket(),
@@ -124,6 +143,37 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     },
   }
 
+  const battle: BattleTestApi = {
+    socket: () => getBattleSocket(),
+    connected: () => battleSocketConnected(),
+    state: () =>
+      JSON.parse(
+        JSON.stringify({
+          ...match.snapshot(),
+          game: {
+            hand: game.state.hand,
+            chain: game.state.chain,
+            attacks: game.state.attacks,
+            opponent_attacks: game.state.opponent_attacks,
+            effect_badges: game.state.effect_badges,
+            state: game.state.state,
+            current_phase: game.state.current_phase,
+            attacks_remaining: game.state.attacks_remaining,
+            remaining_ships: game.state.remaining_ships,
+            opponent_remaining_ships: game.state.opponent_remaining_ships,
+            frozen_area: game.state.frozen_area,
+            shenwei_holes: game.state.shenwei_holes,
+          },
+        }),
+      ),
+    feed: (event, payload) => {
+      if (!(BATTLE_EVENTS as readonly string[]).includes(event)) {
+        throw new Error('unknown battle event: ' + event)
+      }
+      applyBattleEvent(event as BattleEventName, payload, pinia)
+    },
+  }
+
   window.__BS_TEST__ = {
     version: 'ticket-22',
     router,
@@ -140,6 +190,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     defaultGameState: () => defaultGameState(),
     gameState: () => JSON.parse(JSON.stringify(game.state)),
     settlement,
+    battle,
     crashNext: (routeName: string) => requestCrash(routeName),
   }
 }

@@ -1,0 +1,502 @@
+import type { Pinia } from 'pinia'
+import type { TypedSocket } from '../socket/client'
+import {
+  acquireSettlementChannel,
+  getSettlementSocket,
+} from './settlement'
+import { useGameStore } from '../stores/game'
+import { useMatchStore } from '../stores/match'
+import type { InboundEvent, OutboundEvent } from '../socket/events.gen'
+import type { CardLike, Point } from '../screens/game/view'
+
+/**
+ * The live battle wire channel (ticket #27).
+ *
+ * The game screen acquires the *settlement* channel first (ref-counted, one
+ * socket), then installs these listeners on that same socket. That order is
+ * load-bearing: game_over/game_state are owned by the settlement channel, so an
+ * in-game ending lands in the result store while the game screen is still
+ * mounted (the #22 deviation, see docs/FRONTEND_GAMEOVER_2026_10_20.md §5).
+ *
+ * The reducer (`applyBattleEvent`) is the single implementation shared by the
+ * wire and by the test build's `battle.feed`, exactly like the settlement
+ * sample. It only merges server frames into the stores; it never re-derives a
+ * rule.
+ */
+
+export const BATTLE_EVENTS = [
+  'attack_result',
+  'attacks_updated',
+  'board_attacks_updated',
+  'turn_change',
+  'phase_updated',
+  'hand_updated',
+  'game_log',
+  'magic_chain_updated',
+  'chain_request',
+  'chain_resolved',
+  'field_magic_updated',
+  'active_effects',
+  'player_ships_updated',
+  'shield_absorbed',
+  'shields_added',
+  'revealed_positions',
+  'shenwei_hole',
+  'shenwei_hole_restored',
+  'frozen_area',
+  'last_stand_cells',
+  'ship_sacrificed',
+  'trap_set',
+  'trap_triggered',
+  'game_message',
+  'message',
+  'error',
+  'quick_chat',
+  'sacrifice_request',
+  'sacrifice_cancelled',
+  'placement_request',
+  'priority_waiting',
+  'priority_waiting_end',
+  'shenji_waiting',
+  'shenji_waiting_end',
+  'dice_discard_request',
+  'opponent_disconnected',
+  'opponent_reconnected',
+] as const satisfies readonly OutboundEvent[]
+
+export type BattleEventName = (typeof BATTLE_EVENTS)[number]
+
+export type BattleEmitEvent =
+  | 'attack'
+  | 'enter_battle_phase'
+  | 'enter_end_phase'
+  | 'end_turn'
+  | 'use_magic_card'
+  | 'chain_response'
+  | 'quick_chat'
+  | 'confirm_sacrifice'
+  | 'request_hand_sync'
+  | 'surrender'
+
+export const BATTLE_EMIT_EVENTS: readonly BattleEmitEvent[] = [
+  'attack',
+  'enter_battle_phase',
+  'enter_end_phase',
+  'end_turn',
+  'use_magic_card',
+  'chain_response',
+  'quick_chat',
+  'confirm_sacrifice',
+  'request_hand_sync',
+  'surrender',
+]
+
+const ALLOWED_EMITS: readonly string[] = BATTLE_EMIT_EVENTS satisfies readonly InboundEvent[]
+
+function numberOrNull(value: unknown): number | null {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function asCardList(value: unknown): CardLike[] {
+  if (!Array.isArray(value)) return []
+  const cards: CardLike[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    if (typeof record.name !== 'string' || !record.name) continue
+    cards.push({
+      name: record.name,
+      speed: (record.speed as number | string) ?? 0,
+      type: String(record.type ?? ''),
+      description: String(record.description ?? ''),
+    })
+  }
+  return cards
+}
+
+function pointList(value: unknown): Point[] {
+  if (!Array.isArray(value)) return []
+  const points: Point[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const x = numberOrNull(record.x)
+    const y = numberOrNull(record.y)
+    if (x !== null && y !== null) points.push({ x, y })
+  }
+  return points
+}
+
+function appendCell(list: unknown, point: Point, hit: boolean): Array<{ x: number; y: number; hit: boolean }> {
+  const cells = Array.isArray(list) ? (list as Array<{ x: number; y: number; hit: boolean }>) : []
+  if (cells.some((cell) => cell && cell.x === point.x && cell.y === point.y)) return cells.slice()
+  return [...cells, { x: point.x, y: point.y, hit }]
+}
+
+/** Apply one battle frame to the stores. Shared by the wire and the test build. */
+export function applyBattleEvent(
+  event: BattleEventName,
+  payload: Record<string, unknown> | null | undefined,
+  pinia?: Pinia,
+): void {
+  if (!payload || typeof payload !== 'object') return
+  const game = useGameStore(pinia)
+  const match = useMatchStore(pinia)
+  const state = game.state
+  const me = state.player_id
+
+  switch (event) {
+    case 'attack_result': {
+      const x = numberOrNull(payload.x)
+      const y = numberOrNull(payload.y)
+      if (x === null || y === null) return
+      const hit = Boolean(payload.hit)
+      const attacker = String(payload.attacker ?? '')
+      const shipSunk = Boolean(payload.ship_sunk)
+      const shieldBlocked = Boolean(payload.shield_blocked)
+      match.lastAttack = { attacker, x, y, hit, shipSunk }
+      const mine = attacker === me
+      if (mine) {
+        // A shield-absorbed shot spends the attack but does not mark the cell
+        // (legacy), so the same cell stays attackable.
+        if (!shieldBlocked) game.applyServerState({ attacks: appendCell(state.attacks, { x, y }, hit) })
+      } else if (!shieldBlocked) {
+        game.applyServerState({ opponent_attacks: appendCell(state.opponent_attacks, { x, y }, hit) })
+      } else {
+        match.markShieldBroken(true, [{ x, y }])
+      }
+      const remaining = numberOrNull(payload.remaining_attacks)
+      if (remaining !== null) game.applyServerState({ attacks_remaining: remaining })
+      const attackerShips = numberOrNull(payload.attacker_remaining_ships)
+      const defenderShips = numberOrNull(payload.defender_remaining_ships)
+      if (attackerShips !== null || defenderShips !== null) {
+        game.applyServerState(
+          mine
+            ? { remaining_ships: attackerShips, opponent_remaining_ships: defenderShips }
+            : { remaining_ships: defenderShips, opponent_remaining_ships: attackerShips },
+        )
+      }
+      break
+    }
+    case 'attacks_updated': {
+      const remaining = numberOrNull(payload.attacks_remaining)
+      game.applyServerState({
+        current_attacker: String(payload.current_attacker ?? state.current_attacker),
+        ...(remaining !== null ? { attacks_remaining: remaining } : {}),
+      })
+      break
+    }
+    case 'turn_change': {
+      const remaining = numberOrNull(payload.attacks_remaining)
+      game.applyServerState({
+        current_attacker: String(payload.current_attacker ?? state.current_attacker),
+        ...(payload.phase ? { current_phase: String(payload.phase) } : {}),
+        ...(remaining !== null ? { attacks_remaining: remaining } : {}),
+      })
+      break
+    }
+    case 'phase_updated': {
+      game.applyServerState({
+        ...(payload.current_phase ? { current_phase: String(payload.current_phase) } : {}),
+        current_attacker: String(payload.current_attacker ?? state.current_attacker),
+      })
+      break
+    }
+    case 'hand_updated': {
+      const hand = asCardList(payload.hand)
+      if (Array.isArray(payload.hand)) game.applyServerState({ hand })
+      break
+    }
+    case 'game_log': {
+      match.appendLog({
+        ts: Number(payload.ts ?? 0) || 0,
+        type: String(payload.type ?? 'info'),
+        text: String(payload.text ?? ''),
+        detail: payload.detail ?? null,
+      })
+      break
+    }
+    case 'magic_chain_updated': {
+      game.applyServerState({ chain: payload })
+      break
+    }
+    case 'chain_request': {
+      match.openChainWindow(payload)
+      break
+    }
+    case 'chain_resolved': {
+      game.applyServerState({ chain: { chain: [], chain_len: 0, targets_dropped: 0 } })
+      match.closeChainWindow()
+      match.chainResolvedAt = Date.now()
+      const results = Array.isArray(payload.results) ? payload.results : []
+      for (const raw of results) {
+        if (!raw || typeof raw !== 'object') continue
+        const result = raw as Record<string, unknown>
+        const card = result.card && typeof result.card === 'object' ? (result.card as Record<string, unknown>) : null
+        const name = card ? String(card.name ?? '') : ''
+        if (result.negated_skip) {
+          match.pushNotice(`「${name}」被「${String(result.negated_by ?? '失灵！')}」无效化`, 'warning')
+        } else if (String(result.message ?? '').trim()) {
+          match.pushNotice(String(result.message), result.success === false ? 'warning' : 'info')
+        }
+      }
+      break
+    }
+    case 'field_magic_updated': {
+      const card = payload.card && typeof payload.card === 'object' ? (payload.card as Record<string, unknown>) : null
+      game.applyServerState({ field_magic: card ? String(card.name ?? '') : '' })
+      break
+    }
+    case 'active_effects': {
+      game.applyServerState({
+        effect_badges: {
+          self: Array.isArray(payload.self) ? (payload.self as Array<Record<string, unknown>>) : [],
+          opponent: Array.isArray(payload.opponent) ? (payload.opponent as Array<Record<string, unknown>>) : [],
+        },
+      })
+      break
+    }
+    case 'player_ships_updated': {
+      if (Array.isArray(payload.ships)) game.applyServerState({ ships: payload.ships })
+      break
+    }
+    case 'board_attacks_updated': {
+      game.applyServerState({
+        ...(Array.isArray(payload.my_attacks) ? { attacks: payload.my_attacks } : {}),
+        ...(Array.isArray(payload.opponent_attacks) ? { opponent_attacks: payload.opponent_attacks } : {}),
+      })
+      break
+    }
+    case 'shield_absorbed': {
+      const owner = String(payload.player ?? '')
+      const mine = owner === me
+      match.markShieldBroken(mine, pointList(payload.positions))
+      if (mine) match.pushNotice('你的护盾挡下了这一炮：该格本回合还能被再次攻击', 'warning')
+      break
+    }
+    case 'shields_added': {
+      const count = numberOrNull(payload.count) ?? 0
+      const owner = String(payload.player ?? '')
+      match.pushNotice(owner === me ? `${count} 艘战舰获得了护盾` : `对手 ${count} 艘战舰获得了护盾`)
+      break
+    }
+    case 'revealed_positions': {
+      match.markRevealed(pointList(payload.positions))
+      break
+    }
+    case 'shenwei_hole': {
+      const area = payload.area && typeof payload.area === 'object' ? (payload.area as Record<string, unknown>) : null
+      if (!area) break
+      const hole = {
+        player: String(payload.player ?? ''),
+        x1: Number(area.x1),
+        y1: Number(area.y1),
+        x2: Number(area.x2),
+        y2: Number(area.y2),
+        return_turn: Number(payload.return_turn ?? 0),
+      }
+      const holes = Array.isArray(state.shenwei_holes) ? state.shenwei_holes.slice() : []
+      holes.push(hole)
+      game.applyServerState({ shenwei_holes: holes })
+      match.pushNotice(
+        hole.player === me ? '神威！：你的这片 3×3 区域被暂时扣掉，无法攻击' : '神威！：对方一片 3×3 区域被暂时扣掉',
+        'warning',
+      )
+      break
+    }
+    case 'shenwei_hole_restored': {
+      const owner = String(payload.player ?? '')
+      const holes = (Array.isArray(state.shenwei_holes) ? state.shenwei_holes : []).filter(
+        (hole) => !(hole && typeof hole === 'object' && (hole as Record<string, unknown>).player === owner),
+      )
+      game.applyServerState({ shenwei_holes: holes })
+      match.pushNotice('神威！：被扣掉的战舰已回到棋盘')
+      break
+    }
+    case 'frozen_area': {
+      if (payload.cleared) {
+        game.applyServerState({ frozen_area: null })
+        break
+      }
+      game.applyServerState({ frozen_area: { ...payload } })
+      const count = numberOrNull(payload.frozen) ?? 0
+      match.pushNotice(
+        String(payload.owner ?? '') === me
+          ? `对方冻结了你的 3×3 区域${count ? `（${count} 艘被冻）` : ''}`
+          : `你冻结了对方 3×3 区域${count ? `（${count} 艘被冻）` : ''}`,
+        'warning',
+      )
+      break
+    }
+    case 'last_stand_cells': {
+      game.applyServerState({
+        last_stand_cells: Array.isArray(payload.cells) ? payload.cells : [],
+        last_stand_owner: payload.owner ? String(payload.owner) : null,
+      })
+      break
+    }
+    case 'ship_sacrificed': {
+      const owner = String(payload.player ?? '')
+      match.pushNotice(owner === me ? '你的一艘战舰被牺牲了' : '对方的一艘战舰被牺牲了', 'warning')
+      break
+    }
+    case 'trap_set': {
+      match.pushNotice(
+        String(payload.player ?? '') === me ? '你为一艘战舰设置了陷阱' : '对手为一艘战舰设置了陷阱',
+      )
+      break
+    }
+    case 'trap_triggered': {
+      match.pushNotice('陷阱触发', 'warning')
+      break
+    }
+    case 'game_message': {
+      match.pushNotice(String(payload.message ?? ''), payload.type === 'warning' ? 'warning' : 'info')
+      break
+    }
+    case 'message': {
+      match.pushNotice(String(payload.text ?? payload.message ?? ''))
+      break
+    }
+    case 'error': {
+      match.pushNotice(String(payload.message ?? ''), 'error')
+      break
+    }
+    case 'quick_chat': {
+      match.recordQuickChat(payload)
+      break
+    }
+    case 'sacrifice_request': {
+      match.setPickRequest(payload)
+      break
+    }
+    case 'sacrifice_cancelled': {
+      match.clearPickRequest()
+      break
+    }
+    case 'placement_request': {
+      match.pushNotice(
+        String(payload.message ?? '需要重新摆放战舰（放置面板见布船屏）'),
+        'warning',
+      )
+      break
+    }
+    case 'priority_waiting': {
+      game.applyServerState({
+        priority_waiting: {
+          action: String(payload.action ?? ''),
+          action_text: String(payload.action_text ?? '阶段转换'),
+        },
+      })
+      break
+    }
+    case 'priority_waiting_end': {
+      game.applyServerState({ priority_waiting: null })
+      break
+    }
+    case 'shenji_waiting': {
+      game.applyServerState({ shenji_waiting: { text: String(payload.text ?? '等待对方神机妙算宣言中') } })
+      break
+    }
+    case 'shenji_waiting_end': {
+      game.applyServerState({ shenji_waiting: null })
+      break
+    }
+    case 'dice_discard_request': {
+      match.pushNotice(String(payload.message ?? '请选择一张手牌弃置'), 'warning')
+      break
+    }
+    case 'opponent_disconnected': {
+      match.pushNotice('对手已掉线，等待重连中', 'warning')
+      break
+    }
+    case 'opponent_reconnected': {
+      match.pushNotice('对手已重新连接')
+      break
+    }
+  }
+}
+
+const isBattleEvent = (event: string): event is BattleEventName =>
+  (BATTLE_EVENTS as readonly string[]).includes(event)
+
+export function installBattleListeners(socket: TypedSocket, pinia?: Pinia): () => void {
+  const offs = (BATTLE_EVENTS as readonly string[]).map((event) =>
+    socket.on(event as OutboundEvent, (payload) => {
+      if (isBattleEvent(event)) applyBattleEvent(event, payload, pinia)
+    }),
+  )
+  return () => {
+    for (const off of offs) off()
+  }
+}
+
+interface ActiveChannel {
+  socket: TypedSocket
+  releaseSettlement: () => void
+  stop: () => void
+  refs: number
+}
+
+let active: ActiveChannel | null = null
+
+/** Acquire the battle channel (opens the shared settlement socket first). */
+export function acquireBattleChannel(pinia?: Pinia): () => void {
+  if (!active) {
+    const releaseSettlement = acquireSettlementChannel(pinia)
+    const socket = getSettlementSocket()
+    if (!socket) {
+      releaseSettlement()
+      throw new Error('settlement channel did not open a socket')
+    }
+    const stopListeners = installBattleListeners(socket, pinia)
+    active = {
+      socket,
+      releaseSettlement,
+      stop: () => {
+        stopListeners()
+        releaseSettlement()
+      },
+      refs: 0,
+    }
+  }
+  const channel = active
+  channel.refs += 1
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    channel.refs -= 1
+    if (channel.refs <= 0 && active === channel) {
+      channel.stop()
+      active = null
+    }
+  }
+}
+
+export function getBattleSocket(): TypedSocket | null {
+  return active?.socket ?? null
+}
+
+export function battleSocketConnected(): boolean {
+  return active?.socket.socket.connected ?? false
+}
+
+/** Send one battle action through the shared typed socket. */
+export function sendBattleEvent(
+  event: BattleEmitEvent,
+  data: Record<string, unknown>,
+): Promise<{ status: string; message?: string | null; data?: Record<string, unknown> | null }> {
+  const socket = active?.socket ?? null
+  if (!socket) return Promise.reject(new Error('battle channel is not connected'))
+  if (!ALLOWED_EMITS.includes(event)) return Promise.reject(new Error(`event not allowed: ${event}`))
+  return socket.emitEvent(event, data)
+}
+
+/** Test-build helper: drop the singleton between browser checks. */
+export function resetBattleChannelForTest(): void {
+  if (!active) return
+  active.stop()
+  active = null
+}

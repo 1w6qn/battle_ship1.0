@@ -30,6 +30,8 @@ export interface ShipSnapshot {
   frozen: boolean
   shield: boolean
   alive: boolean
+  /** Only `player_ships_updated` carries it; room_sync ships omit the flag. */
+  invincible?: boolean
 }
 
 export interface CellAttack {
