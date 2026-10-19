@@ -122,6 +122,9 @@ class RoomService:
         self.waiting_room_ttl_seconds = waiting_room_ttl_seconds
         self._publisher: EventPublisher = NullPublisher()
         self._tasks: set[asyncio.Task] = set()
+        # Ticket #9 wires this to BattleService.settle_forfeit; without it the
+        # forfeit path only flips the room state (ticket #7 behaviour).
+        self.forfeit_hook: Any = None
 
     # ------------------------------------------------------------------ wiring
 
@@ -219,6 +222,11 @@ class RoomService:
             user_id = getattr(player, "user_id", None)
             if user_id:
                 self.presence.set_in_game(user_id, False)
+
+    def release_presence(self, room: Room) -> None:
+        """Ticket #9 settlement calls this on every ending (legacy finalize did)."""
+
+        self._release_presence_game(room)
 
     async def create_room(self, connection: Connection, data: dict[str, Any] | None) -> dict:
         data = data if isinstance(data, dict) else {}
@@ -583,13 +591,19 @@ class RoomService:
         room.state = RoomState.GAME_OVER
         room.winner = other_id
         room.game_over_reason = "opponent_disconnected"
-        # Match settlement / stats / replay persistence is ticket #12; this
-        # ticket owns the room state and the player-visible game_over frame.
-        await self._publisher.emit(
-            "game_over",
-            {"winner": other_id, "reason": "opponent_disconnected"},
-            room=room_id,
-        )
+        # One ending funnel (ticket #9): the hook performs the real settlement
+        # and emits game_over; the fallback keeps #7's state-only behaviour for
+        # callers that did not wire a battle service.
+        if self.forfeit_hook is not None:
+            await self.forfeit_hook(
+                room, other_id, player_id, "opponent_disconnected"
+            )
+        else:
+            await self._publisher.emit(
+                "game_over",
+                {"winner": other_id, "reason": "opponent_disconnected"},
+                room=room_id,
+            )
         self._spawn(self._cleanup_room_after(room_id, self.ended_room_retention_seconds))
 
     async def _cleanup_room_after(self, room_id: str, delay: float) -> None:

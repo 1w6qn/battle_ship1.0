@@ -11,10 +11,15 @@ from typing import Any
 import socketio
 
 from ..identity import connection_from_sio
+from ...services.battle import BattleService
 from ...services.gameplay import GameplayService
 
 
-def register_battle_handlers(sio: socketio.AsyncServer, gameplay: GameplayService) -> None:
+def register_battle_handlers(
+    sio: socketio.AsyncServer,
+    gameplay: GameplayService,
+    battle: BattleService | None = None,
+) -> None:
     @sio.on("place_ships")
     async def place_ships(sid: str, data: dict[str, Any] | None = None) -> dict:
         connection = await connection_from_sio(sio, sid)
@@ -44,3 +49,14 @@ def register_battle_handlers(sio: socketio.AsyncServer, gameplay: GameplayServic
     async def end_turn(sid: str, data: dict[str, Any] | None = None) -> dict:
         connection = await connection_from_sio(sio, sid)
         return await gameplay.end_turn(connection, data)
+
+    if battle is not None:
+        @sio.on("attack")
+        async def attack(sid: str, data: dict[str, Any] | None = None) -> dict:
+            connection = await connection_from_sio(sio, sid)
+            return await battle.attack(connection, data)
+
+        @sio.on("surrender")
+        async def surrender(sid: str, data: dict[str, Any] | None = None) -> dict:
+            connection = await connection_from_sio(sio, sid)
+            return await battle.surrender(connection, data)

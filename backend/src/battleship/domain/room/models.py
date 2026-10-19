@@ -252,6 +252,10 @@ class Room:
     reconnect_tokens: dict[str, str] = field(default_factory=dict)
     game_over_reason: str | None = None
     match_id: str | None = None
+    # Ticket #9 settlement latch: one room may only be written to the database
+    # once (surrender vs disconnect races must not double-count a match).
+    settled: bool = False
+    settlement_result: Any = None
 
     priority_pending: dict[str, Any] | None = None
     priority_token: int = 0
