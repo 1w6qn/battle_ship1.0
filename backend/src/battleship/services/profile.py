@@ -73,6 +73,10 @@ _FLAG_FIELDS = (
     "friend_requests_open",
 )
 
+# Public stats carry exactly the five legacy display flags.  The friend-request
+# switch is owner-only (legacy comment: "只下发给本人，不进 public_stats").
+_PUBLIC_FLAG_FIELDS = _FLAG_FIELDS[:5]
+
 
 def _parse_tags(raw: Any) -> list[str]:
     if isinstance(raw, list):
@@ -137,13 +141,17 @@ def build_own_profile(database: Database, user_id: str) -> dict[str, Any] | None
             "badge_count": badge_count,
         })
         # Interaction counters are read-only here; the viewer is the owner, so
-        # "mine" is always false (legacy: you cannot like your own card).
+        # "mine" is always false for both kinds (legacy: you cannot like your own
+        # card).  The legacy payload is an object, not a bool.
         counts = uow.social.reaction_counts(user_id)
         profile["counts"] = {
             "like": int(counts.get("like") or 0),
             "flower": int(counts.get("flower") or 0),
         }
-        profile["mine"] = False
+        profile["mine"] = {"like": False, "flower": False}
+        # /api/profile builds its own key set; updated_at is internal bookkeeping
+        # and was never part of the legacy response.
+        profile.pop("updated_at", None)
     return profile
 
 
@@ -165,7 +173,7 @@ def public_stats(database: Database, user: Any, viewer_id: str | None,
             extra.get("card_bg_id"),
         )
         stats["rank"] = uow.users.wins_rank(user_id)
-        for flag in _FLAG_FIELDS:
+        for flag in _PUBLIC_FLAG_FIELDS:
             stats[flag] = extra[flag]
         stats["title_id"] = title_id
         stats["title_name"] = profile_spec.title_name(title_id)
@@ -182,7 +190,9 @@ def public_stats(database: Database, user: Any, viewer_id: str | None,
             "like": int(counts.get("like") or 0),
             "flower": int(counts.get("flower") or 0),
         }
-        stats["mine"] = False
+        # Legacy /user_stats put the viewer's own reaction state here (an object
+        # with two bools), not a single bool.
+        stats["mine"] = uow.social.my_reactions(str(viewer_id or ""), user_id)
         stats["name_style"] = progression.name_style(uow, user_id)
         stats["level_info"] = progression.level_view_for(uow, user_id)
         stats["rank_info"] = (
@@ -190,8 +200,10 @@ def public_stats(database: Database, user: Any, viewer_id: str | None,
             if (is_self or stats["show_rank"])
             else None
         )
+        # Legacy /user_stats never sends locked badges -- not even to the owner.
+        # The full catalogue is only exposed by /api/achievements and /api/profile.
         badges, badge_count = progression.badge_view(
-            uow, user_id, user=user, rank=stats["rank"], unlocked_only=not is_self
+            uow, user_id, user=user, rank=stats["rank"], unlocked_only=True
         )
         stats["achievements"] = badges
         stats["badge_count"] = badge_count
