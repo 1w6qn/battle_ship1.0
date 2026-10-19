@@ -22,6 +22,7 @@ from ..services.friends import FriendsService
 from ..services.gameplay import GameplayService
 from ..services.lobby import LobbyService
 from ..services.magic import MagicService
+from ..services.matchmaking import MatchmakingService
 from ..services.presence import PresenceService
 from ..services.rooms import Connection, RoomService
 from ..services.spectators import SpectatorService
@@ -36,6 +37,7 @@ from .handlers.debug import (
 )
 from .handlers.lobby import register_lobby_handlers
 from .handlers.magic import register_magic_handlers
+from .handlers.matchmaking import register_matchmaking_handlers
 from .handlers.reconnect import register_reconnect_handlers
 from .handlers.room import register_room_handlers
 from .handlers.spectate import register_spectate_handlers
@@ -58,6 +60,7 @@ def create_socket_server(
     presence: PresenceService | None = None,
     friends: FriendsService | None = None,
     chat: ChatService | None = None,
+    matchmaking: MatchmakingService | None = None,
     spectators: SpectatorService | None = None,
 ) -> socketio.AsyncServer:
     presence = presence or (rooms.presence if rooms is not None else None)
@@ -76,6 +79,7 @@ def create_socket_server(
     # Ticket #10: one magic service holds the shared deck, hand sync, target
     # channels and the card-effect registry. Wiring lives here so every caller
     # of create_socket_server (including tests) gets the same seams.
+    matchmaking = matchmaking or MatchmakingService(rooms, lobby=lobby)
     magic = magic or MagicService(
         rooms, chain_display_delay_seconds=settings.chain_display_delay_seconds
     )
@@ -116,17 +120,23 @@ def create_socket_server(
         session = session_from_cookie_header(
             settings.secret_key.get_secret_value(), cookie_header
         )
+        # REMOTE_ADDR is the only trustworthy peer address (legacy _client_ip;
+        # no reverse proxy in front of the app). Matchmaking normalises private
+        # and loopback addresses to "not judged".
+        remote_ip = str((environ or {}).get("REMOTE_ADDR") or "").strip()
         await sio.save_session(
             sid,
             {
                 "user_id": session_user_id(session),
                 "username": session_username(session),
+                "ip": remote_ip,
             },
         )
         connection = Connection(
             sid=sid,
             user_id=session_user_id(session),
             username=session_username(session),
+            ip=remote_ip,
         )
         # Register the connection in the single online table before anything
         # else (the legacy connect handler did this first, so every later
@@ -200,6 +210,7 @@ def create_socket_server(
     gameplay.bind(publisher)
     battle.bind(publisher)
     magic.bind(publisher)
+    matchmaking.bind(publisher)
     rooms.room_dropped_hook = spectators.on_room_dropped
     battle.board_flush_hook = spectators.flush_board
     if friends is not None:
@@ -211,6 +222,7 @@ def create_socket_server(
     register_lobby_handlers(sio, lobby)
     register_battle_handlers(sio, gameplay, battle)
     register_magic_handlers(sio, magic)
+    register_matchmaking_handlers(sio, matchmaking)
     register_chain_handlers(sio, magic)
     register_reconnect_handlers(sio, rooms)
     register_spectate_handlers(sio, spectators)

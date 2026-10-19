@@ -224,6 +224,30 @@ class StatsRepository:
         self.session.flush()
         return self.get_xp(user_id)
 
+    def xp_for(self, user_ids: list[str]) -> dict[str, int]:
+        """Bulk XP lookup for a leaderboard page (one query, not one per row)."""
+        ids = [str(user_id) for user_id in user_ids if user_id]
+        if not ids:
+            return {}
+        statement = select(UserXp.user_id, UserXp.xp).where(UserXp.user_id.in_(ids))
+        return {
+            str(user_id): int(xp or 0)
+            for user_id, xp in self.session.execute(statement)
+        }
+
+    def perks_for(self, user_ids: list[str]) -> dict[str, set[str]]:
+        """Bulk perk lookup for a leaderboard page."""
+        ids = [str(user_id) for user_id in user_ids if user_id]
+        if not ids:
+            return {}
+        statement = select(UserPerk.user_id, UserPerk.perk).where(
+            UserPerk.user_id.in_(ids)
+        )
+        result: dict[str, set[str]] = {}
+        for user_id, perk in self.session.execute(statement):
+            result.setdefault(str(user_id), set()).add(str(perk))
+        return result
+
     # ------------------------------------------------------------------ perks
 
     def grant_perk(self, user_id: str, perk: str, *, granted_at: int) -> bool:
@@ -298,7 +322,8 @@ class StatsRepository:
         self.session.flush()
         return self.get_rank(user_id)
 
-    def rank_leaderboard(self, limit: int = 10) -> list[dict[str, Any]]:
+    def rank_leaderboard(self, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
+        safe_offset = max(0, int(offset))
         statement = (
             select(
                 UserRank.user_id,
@@ -313,6 +338,7 @@ class StatsRepository:
                 func.coalesce(UserRank.updated_at, 0),
                 UserRank.user_id,
             )
+            .offset(safe_offset)
             .limit(_limit(limit))
         )
         return [dict(row._mapping) for row in self.session.execute(statement)]
@@ -442,7 +468,9 @@ class StatsRepository:
             )
             .where(MatchSuspicion.user_id == user_id)
             .order_by(MatchSuspicion.created_at.desc())
-            .limit(_limit(limit))
+            # Legacy reads up to 500 rows for accumulation; the default 100 cap
+            # would silently shrink every banned account's score.
+            .limit(_limit(limit, 500))
         )
         return [dict(row._mapping) for row in self.session.execute(statement)]
 
@@ -450,7 +478,7 @@ class StatsRepository:
         self,
         *,
         user_id: str,
-        level: int,
+        level: int | None,
         cleared: int,
         reason: str,
         actor: str,
@@ -467,6 +495,16 @@ class StatsRepository:
         self.session.add(override)
         self.session.flush()
         return int(override.id)
+
+    def list_overrides(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Append-only admin audit history, newest first."""
+        statement = (
+            select(AnticheatOverride)
+            .where(AnticheatOverride.user_id == user_id)
+            .order_by(AnticheatOverride.id.desc())
+            .limit(_limit(limit, 500))
+        )
+        return [instance_dict(row) for row in self.session.scalars(statement)]
 
     def latest_override(self, user_id: str) -> dict[str, Any] | None:
         statement = (
