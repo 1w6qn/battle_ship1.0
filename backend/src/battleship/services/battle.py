@@ -20,6 +20,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
+from ..domain import replay as replay_rules
 from ..domain.battle import AttackOutcome
 from ..domain.room import Player, PlayerShip, Room, RoomState
 from ..infra.logging import get_logger
@@ -91,6 +92,9 @@ class BattleService:
             "detail": detail,
         }
         room.game_logs.append(entry)
+        # The recorder's single 38-point feed: every game log is also a replay
+        # step (it never writes back to game_logs and never emits).
+        replay_rules.note(room, entry)
         await self._publisher.emit("game_log", entry, room=room.id)
         return entry
 
@@ -370,6 +374,16 @@ class BattleService:
         opponent_id = room.opponent_of(player_id)
         if not opponent_id:
             return {"status": "error", "message": "你不在这个房间"}
+        # Record the surrender step before settlement finalizes/resets the
+        # recorder (legacy did exactly this, and the order is load-bearing).
+        actor = self._name(room, player_id)
+        replay_rules.note_action(
+            room,
+            "surrender",
+            f"{actor} 投降了",
+            {"player": player_id, "winner": opponent_id},
+            actor,
+        )
         await self._finish_game(
             room, opponent_id, player_id, reason="surrender"
         )
