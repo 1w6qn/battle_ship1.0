@@ -24,7 +24,7 @@ class EffectResult:
     affected_positions: list[Any] = field(default_factory=list)
     #: Extra keys mirrored into the chain_resolved result (cards/max_ships/...).
     extra: dict[str, Any] = field(default_factory=dict)
-    #: True = invalidate the item directly below this one on the chain stack.
+    #: True = this effect negates the item directly below it on the chain.
     negate_target: bool = False
 
 
