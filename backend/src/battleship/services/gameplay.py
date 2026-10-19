@@ -564,8 +564,8 @@ class GameplayService:
         self._note_end_turn(room, player_id)
 
         if result.kind == "skip_stages":
-            if self.magic is not None:
-                await self.magic.on_turn_switch(room)
+            # 神之宣告 skips the opponent inside the same big round; legacy does
+            # not prune per-turn flags here (the skipped seat never acted).
             await self._emit_phase(room)
             await self._publisher.emit(
                 "turn_skipped",
