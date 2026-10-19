@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .config import Settings, load_settings
+from .http.routers import admin as admin_router
 from .http.routers import auth as auth_router
 from .http.routers import chat as chat_router
 from .http.routers import contracts as contracts_router
@@ -248,6 +249,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.include_router(friends_router.router)
     fastapi_app.include_router(chat_router.router)
     fastapi_app.include_router(spectate_router.router)
+    fastapi_app.include_router(admin_router.router)
     fastapi_app.include_router(legacy_router.router)
 
     if assets.static_dir.is_dir():

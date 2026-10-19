@@ -62,7 +62,8 @@ def legacy_spa(request: Request, path: str = "") -> HTMLResponse:
 
 
 # 旧栈里这些路径都是 render_template('index.html')；窗口期保持同一入口。
-for _page in ("leaderboard",):
+# /lobby 在旧栈里由 server.py 单独注册，但渲染的是同一份模板。
+for _page in ("leaderboard", "lobby"):
     router.add_api_route(
         f"/{_page}",
         legacy_index,
