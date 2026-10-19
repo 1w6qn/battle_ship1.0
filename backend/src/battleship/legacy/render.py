@@ -25,6 +25,17 @@ _COMMENT = re.compile(r"\{#.*?#\}", re.S)
 _ASSET_CALL = re.compile(r"asset_v\(\s*['\"]([^'\"]+)['\"]\s*\)")
 
 
+def _render_flash_toast(messages: list[tuple[str, str]]) -> str:
+    if not messages:
+        return ""
+    items = "".join(
+        f'<div class="flash-item flash-{html.escape(category)}">'
+        f"{html.escape(message)}</div>"
+        for category, message in messages
+    )
+    return f'<div id="flash-toast" class="flash-toast" role="alert">{items}</div>'
+
+
 def render_legacy_index(
     template_path: str | Path,
     *,
@@ -32,10 +43,14 @@ def render_legacy_index(
     asset_v: Callable[[str], str] | None = None,
     arena_mode: str = "v2",
     arena_screen_list: str = "",
+    messages: list[tuple[str, str]] | None = None,
 ) -> str:
     template = Path(template_path).read_text(encoding="utf-8")
     text = _COMMENT.sub("", template)
-    text = _WITH_MESSAGES.sub("", text)
+    # Flask's flash block is replaced by a server-rendered toast so the legacy
+    # frontend's extractFlashMessages() sees the same #flash-toast/.flash-item
+    # markup it has always parsed.
+    text = _WITH_MESSAGES.sub(lambda match: _render_flash_toast(messages or []), text)
     text = _IF_MESSAGES.sub("", text)
     text = _IF_USERNAME.sub(lambda m: m.group(1) if username else m.group(2), text)
 
