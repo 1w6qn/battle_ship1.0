@@ -13,6 +13,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from ..domain.progression.ranks import CAPTAIN_FLOOR
 from .mapping import instance_dict
 from .models import (
     AnticheatFlag,
@@ -110,6 +111,20 @@ class StatsRepository:
             .limit(_limit(limit))
         )
         return [dict(row._mapping) for row in self.session.execute(statement)]
+
+    def card_uses_total(self, user_id: str) -> int:
+        """Sum of all card uses (the legacy cardmaster threshold input)."""
+
+        statement = select(func.coalesce(func.sum(UserCardUsage.uses), 0)).where(
+            UserCardUsage.user_id == user_id
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def distinct_cards_used(self, user_id: str) -> int:
+        statement = select(func.count(func.distinct(UserCardUsage.card_name))).where(
+            UserCardUsage.user_id == user_id
+        )
+        return int(self.session.scalar(statement) or 0)
 
     # -------------------------------------------------------------- counters
 
@@ -301,6 +316,68 @@ class StatsRepository:
             .limit(_limit(limit))
         )
         return [dict(row._mapping) for row in self.session.execute(statement)]
+
+    def count_rank_at_least(self, points: int) -> int:
+        statement = select(func.count()).select_from(UserRank).where(
+            UserRank.points >= max(0, int(points))
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def captains_ordered(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Captain-pool rows ordered like the leaderboard, each with pool_position."""
+
+        safe_limit = min(max(1, int(limit)), 500)
+        statement = (
+            select(
+                UserRank.user_id,
+                UserRank.points,
+                UserRank.is_admiral,
+                UserRank.ranked_wins,
+                UserRank.ranked_losses,
+                UserRank.updated_at,
+            )
+            .where(UserRank.points >= int(CAPTAIN_FLOOR))
+            .order_by(
+                UserRank.points.desc(),
+                func.coalesce(UserRank.updated_at, 0),
+                UserRank.user_id,
+            )
+            .limit(safe_limit)
+        )
+        rows = [dict(row._mapping) for row in self.session.execute(statement)]
+        for position, row in enumerate(rows, start=1):
+            row["pool_position"] = position
+        return rows
+
+    def rank_position(self, user_id: str) -> int:
+        """Full-server rank position by points (1-based); 0 when no row exists."""
+
+        row = self.session.execute(
+            select(UserRank.points, UserRank.updated_at, UserRank.user_id).where(
+                UserRank.user_id == user_id
+            )
+        ).first()
+        if row is None:
+            return 0
+        points, updated_at, uid = int(row.points or 0), int(row.updated_at or 0), str(row.user_id)
+        ahead = self.session.scalar(
+            select(func.count())
+            .select_from(UserRank)
+            .where(
+                (UserRank.points > points)
+                | (
+                    (UserRank.points == points)
+                    & (
+                        (func.coalesce(UserRank.updated_at, 0) < updated_at)
+                        | (
+                            (func.coalesce(UserRank.updated_at, 0) == updated_at)
+                            & (UserRank.user_id < uid)
+                        )
+                    )
+                )
+            )
+        )
+        return int(ahead or 0) + 1
 
     # ------------------------------------------------------------- anticheat
 
