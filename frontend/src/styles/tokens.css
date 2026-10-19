@@ -1,1 +1,18 @@
-/* Design tokens: colors, spacing, radii, typography. Keep in sync with the C+ baseline. */
+/* Design tokens: shell only for now; the arena palette arrives with the screens. */
+:root {
+  color-scheme: dark;
+  --bg: #071018;
+  --bg-elevated: #0d1b26;
+  --border: #1d3747;
+  --text: #dcecf5;
+  --text-muted: #8aa6b8;
+  --accent: #37c2d9;
+  --accent-strong: #1f9fb6;
+  --danger: #ff7a6b;
+  --radius: 10px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --font: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}

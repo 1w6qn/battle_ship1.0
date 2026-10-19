@@ -28,6 +28,8 @@ ENV_NAME_BY_FIELD: dict[str, str] = {
     "chain_display_delay_seconds": "CHAIN_DISPLAY_DELAY_SECONDS",
     "enable_test_events": "ENABLE_TEST_EVENTS",
     "seed": "BS_SEED",
+    "frontend_mode": "FRONTEND_MODE",
+    "frontend_dist": "FRONTEND_DIST",
     "cors_origins_raw": "CORS_ORIGINS",
     "debug_admin_user_ids_raw": "DEBUG_ADMIN_USER_IDS",
     "arena_screens_mode": "ARENA_SCREENS_MODE",
@@ -71,6 +73,11 @@ class Settings(BaseSettings):
     # None keeps the normal random source.
     seed: int | None = None
 
+    # 新 Vue 壳的托管开关（ticket #21）。默认仍是旧模板，切换由 #20 负责；
+    # "spa" 时必须存在构建产物，缺失即启动失败（不做静默回退）。
+    frontend_mode: str = Field(default="legacy", validation_alias="FRONTEND_MODE")
+    frontend_dist: Path | None = Field(default=None, validation_alias="FRONTEND_DIST")
+
     # 环境变量是逗号分隔字符串；对外暴露解析后的列表/集合。
     cors_origins_raw: str = Field(default=DEFAULT_CORS_ORIGINS, validation_alias="CORS_ORIGINS")
     debug_admin_user_ids_raw: str = Field(default="", validation_alias="DEBUG_ADMIN_USER_IDS")
@@ -90,6 +97,14 @@ class Settings(BaseSettings):
         if not value.get_secret_value().strip():
             raise ValueError("SECRET_KEY 不能为空")
         return value
+
+    @field_validator("frontend_mode")
+    @classmethod
+    def _known_frontend_mode(cls, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in {"legacy", "spa"}:
+            raise ValueError(f"FRONTEND_MODE 非法: {value!r}（可选 legacy / spa）")
+        return mode
 
     @field_validator("log_level")
     @classmethod

@@ -16,6 +16,7 @@ import socketio
 from ..contracts.events_in import is_debug_event
 from ..http.session import session_from_cookie_header, session_user_id, session_username
 from ..infra.logging import get_logger, log_context
+from ..services.ai import AiService
 from ..services.battle import BattleService
 from ..services.chat import ChatService
 from ..services.friends import FriendsService
@@ -62,6 +63,7 @@ def create_socket_server(
     chat: ChatService | None = None,
     matchmaking: MatchmakingService | None = None,
     spectators: SpectatorService | None = None,
+    ai: AiService | None = None,
 ) -> socketio.AsyncServer:
     presence = presence or (rooms.presence if rooms is not None else None)
     presence = presence or PresenceService()
@@ -96,6 +98,12 @@ def create_socket_server(
         gameplay.round_end_hook = magic.on_new_big_round
     if magic.ai_place_hook is None:
         magic.ai_place_hook = gameplay.ai_place_board_now
+    # Ticket #13: one turn driver for every AI tier. It shares the magic timer
+    # registry so a destroyed room also cancels a running AI turn, and it is the
+    # only place that installs the gameplay hook.
+    ai = ai or AiService(rooms, gameplay, battle, magic, timers=magic.timers)
+    if gameplay.ai_turn_hook is None:
+        gameplay.ai_turn_hook = ai.run_turn
     if magic.finish_hook is None:
         magic.finish_hook = battle.finish_game
     if magic.on_ship_sunk not in battle.sink_hooks:

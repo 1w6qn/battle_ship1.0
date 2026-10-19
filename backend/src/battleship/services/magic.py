@@ -24,6 +24,7 @@ from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
 from ..domain import replay as replay_rules
+from ..domain.ai import policies
 from ..domain.magic import deck as deck_rules
 from ..domain.magic import field as field_rules
 from ..domain.magic import interaction as interaction_rules
@@ -171,6 +172,16 @@ class MagicService:
                 return OPPONENT_DISCONNECTED
         return None
 
+    async def log_action(self, room: Room, text: str,
+                        event_type: str = "magic") -> None:
+        """Public logging seam for other services (the AI turn driver).
+
+        One implementation of "append to the room log + feed the replay recorder
+        + emit game_log"; a second copy elsewhere would drift from this one.
+        """
+
+        await self._add_log(room, text, event_type)
+
     async def _add_log(self, room: Room, text: str, event_type: str = "magic",
                        detail: dict | None = None) -> None:
         entry = {
@@ -306,7 +317,13 @@ class MagicService:
         if not alive:
             return None
         if room.is_ai_room and str(chooser_id).startswith("ai-"):
-            return self.rng.choice(alive)
+            # Master seats value the pick (sacrifice the ship whose neighbourhood
+            # the opponent already probed); the other tiers keep the legacy
+            # uniform random choice. Never return None here: leaving a ship pick
+            # unanswered is what freezes the AI's turn (lesson #38).
+            return policies.resolve_ship_pick(
+                room, chooser_id, reason, alive, rng=self.rng
+            )
 
         existing = interaction_rules.register_ship_pick(
             room, chooser_id, reason, message,
