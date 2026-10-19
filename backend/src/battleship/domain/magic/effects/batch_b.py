@@ -495,24 +495,6 @@ async def kraken_eye(ctx: EffectContext) -> EffectResult:
     return EffectResult(True, "已暴露自己一艘战舰的位置，等待对方选择要暴露的战舰")
 
 
-@register("加百列之光")
-async def gabriel(ctx: EffectContext) -> EffectResult:
-    if ctx.room.chain:
-        target = ctx.room.chain[-1]
-        target.negated = True
-        target.negated_by = ctx.card.name
-        return EffectResult(True, "成功无效化连锁中的魔法卡")
-    if ctx.room.field_magic is not None:
-        torn = await ctx.tear_down_field()
-        return EffectResult(
-            True, f"成功无效化场地魔法「{getattr(torn, 'name', '')}」"
-        )
-    if ctx.room.magic_history and ctx.room.magic_history[-1].get("caster") != ctx.caster_id:
-        ctx.room.magic_history.pop()
-        return EffectResult(True, "成功无效化对方上一张魔法卡")
-    return EffectResult(False, "没有可无效化的魔法卡或场地魔法")
-
-
 # --------------------------------------------------------------------- fields
 
 
@@ -669,7 +651,7 @@ async def bingliang(ctx: EffectContext) -> EffectResult:
 BATCH_B_CARDS: tuple[str, ...] = (
     "桃园结义", "亡羊补牢", "灵气复苏", "明智埋葬", "仁王之盾", "神之宣告",
     "绝处逢生", "死者苏生", "回光返照", "败者食尘", "守株待兔", "神机妙算",
-    "增援", "滥竽充数", "克苏鲁之眼", "加百列之光",
+    "增援", "滥竽充数", "克苏鲁之眼",
     "恶魔契约", "禁忌果实", "伊甸园", "教皇旨意",
     "命运骰子", "无忧梦呓", "兵粮寸断",
 )

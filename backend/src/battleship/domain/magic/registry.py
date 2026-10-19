@@ -47,6 +47,7 @@ def implemented_cards() -> tuple[str, ...]:
 # the bottom so the decorator exists before the modules import it.
 from .effects import batch_a as _batch_a  # noqa: E402,F401
 from .effects import batch_b as _batch_b  # noqa: E402,F401
+from .effects import chain_cards as _chain_cards  # noqa: E402,F401
 
 __all__ = [
     "EffectFn",

@@ -1,5 +1,10 @@
-"""backend/src/battleship/realtime/timers.py -- placeholder module.
+"""Cancellable background timers (re-export; ticket #12).
 
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
+The registry itself lives in :mod:`battleship.infra.timers` so services can use
+it without importing the socket layer (domain/services must not depend on
+realtime). This module is the realtime-facing export point.
 """
+
+from ..infra.timers import TaskRegistry
+
+__all__ = ["TaskRegistry"]
