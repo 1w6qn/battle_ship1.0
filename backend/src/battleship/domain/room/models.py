@@ -175,6 +175,22 @@ def room_match_mode(room: "Room") -> str:
     return "ranked" if bool(getattr(room, "ranked", False)) else "casual"
 
 
+def field_magic_name(room: "Room") -> str:
+    """Public card name of the active field magic (one implementation).
+
+    The room stores the card *instance* (legacy behaviour); later tickets may
+    also store a plain dict, so both shapes are accepted and an unknown shape
+    degrades to the empty string rather than crashing a snapshot.
+    """
+
+    card = getattr(room, "field_magic", None)
+    if card is None:
+        return ""
+    if isinstance(card, dict):
+        return str(card.get("name") or "")
+    return str(getattr(card, "name", "") or "")
+
+
 def rank_payload(room: "Room") -> dict[str, Any]:
     return {"ranked": bool(getattr(room, "ranked", False)), "mode": room_match_mode(room)}
 

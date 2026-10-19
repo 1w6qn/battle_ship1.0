@@ -23,6 +23,7 @@ from .models import (
     Room,
     RoomState,
     alive_ships,
+    field_magic_name,
     is_ship_alive,
     opponent_of,
     room_match_mode,
@@ -109,26 +110,16 @@ def _effect_badges(player: Player | None) -> list[dict[str, Any]]:
 def _spectate_chain_payload(room: Room) -> dict[str, Any]:
     """Public chain shape shared by the live stream and the reconnect snapshot.
 
-    Legacy sanitises through `spectate.sanitize_event`; the chain engine is ticket
-    #12, so the empty shape is the only one reachable today. The function is kept
-    as the single construction point so #12 replaces one body, not four callers.
+    Delegates to :func:`battleship.domain.spectate.public_chain` so the sanitising
+    (raw `targets` -> public preview, `player_id` -> `p1`/`p2`) has exactly one
+    implementation for the live feed, the reconnect snapshot and the spectator
+    snapshot. Imported lazily: `spectate` imports `room.models`, and this module
+    is imported by the `room` package initialiser.
     """
 
-    chain: list[dict[str, Any]] = []
-    for item in room.chain or []:
-        if isinstance(item, dict):
-            raw = item
-        else:
-            raw = getattr(item, "__dict__", {})
-        chain.append(
-            {
-                "card": card_payload(raw.get("card")),
-                "seat": seat_label(room, raw.get("player_id")),
-                "negated": bool(raw.get("negated")),
-                "preview": raw.get("preview"),
-            }
-        )
-    return {"chain": chain, "chain_len": len(chain), "targets_dropped": 0}
+    from ..spectate import public_chain
+
+    return public_chain(room)
 
 
 def _priority_pending_for(room: Room, player_id: str) -> dict[str, Any] | None:
@@ -237,11 +228,7 @@ def build_room_sync(room: Room, player_id: str) -> dict[str, Any]:
         "mode": room_match_mode(room),
         "winner": room.winner,
         "game_over_reason": room.game_over_reason,
-        "field_magic": (
-            getattr(room.field_magic, "name", None)
-            if room.field_magic is not None
-            else ""
-        ) or "",
+        "field_magic": field_magic_name(room),
         "remaining_ships": player.remaining_ships,
         "ships": [
             {
