@@ -69,8 +69,19 @@ def create_socket_server(
     # channels and the card-effect registry. Wiring lives here so every caller
     # of create_socket_server (including tests) gets the same seams.
     magic = magic or MagicService(rooms)
+    gameplay.magic = magic
     if gameplay.draw_hook is None:
         gameplay.draw_hook = magic.draw
+    if gameplay.turn_start_hook is None:
+        gameplay.turn_start_hook = lambda room, _pid: magic.settle_wuyou_dream(room)
+    if gameplay.draw_skip_hook is None:
+        gameplay.draw_skip_hook = magic.consume_bingliang_skip
+    if gameplay.after_draw_hook is None:
+        gameplay.after_draw_hook = lambda room, _pid: magic.settle_bingliang(room)
+    if gameplay.round_end_hook is None:
+        gameplay.round_end_hook = magic.on_new_big_round
+    if magic.ai_place_hook is None:
+        magic.ai_place_hook = gameplay.ai_place_board_now
     if magic.finish_hook is None:
         magic.finish_hook = battle.finish_game
     if magic.on_ship_sunk not in battle.sink_hooks:
