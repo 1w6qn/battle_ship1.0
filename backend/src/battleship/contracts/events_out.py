@@ -93,18 +93,20 @@ OUTBOUND_EVENTS: tuple[str, ...] = (
 )
 
 
-#: The legacy friend pushes were emitted through one parameterised helper
-#: (socketio.emit(name, ...)), so a freeze built from emit('...') literals could
-#: not see them. They are recorded legacy events (port map 10 section 4.3), not
-#: new names; they are listed separately so OUTBOUND_EVENTS keeps its frozen 82
-#: entries. Ticket #14 delivers the first four; recent_opponent belongs to match
-#: settlement (ticket #12).
+#: Events emitted through parameterised helpers (socketio.emit(name, ...)), so a
+#: freeze built from emit('...') literals could not see them. They are recorded
+#: legacy events (port map 10 sections 4.3 and 3.4), not new names; they are
+#: listed separately so OUTBOUND_EVENTS keeps its frozen 82 entries.
+#: Ticket #14 delivers the friend pushes; ticket #17 delivers the spectator
+#: presence announcements. Total outbound baseline (D21): 82 + 7 = 89.
 PARAMETERISED_OUTBOUND_EVENTS: tuple[str, ...] = (
     "friend_request",
     "friend_accepted",
     "friend_invite",
     "friend_message",
     "recent_opponent",
+    "spectate_joined",
+    "spectate_left",
 )
 
 

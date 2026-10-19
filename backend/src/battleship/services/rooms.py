@@ -125,6 +125,10 @@ class RoomService:
         # Ticket #9 wires this to BattleService.settle_forfeit; without it the
         # forfeit path only flips the room state (ticket #7 behaviour).
         self.forfeit_hook: Any = None
+        # Ticket #17 wires this to SpectatorService.on_room_dropped: spectators
+        # still seated on a room that is about to disappear must receive
+        # spectate_ended instead of waiting on a channel that will never update.
+        self.room_dropped_hook: Any = None
 
     # ------------------------------------------------------------------ wiring
 
@@ -388,7 +392,7 @@ class RoomService:
             return {"status": "error", "message": "只能解散自己创建的房间"}
         # _drop_room releases the "in a game" flag: the player is still
         # connected, so without it the friend guard would block invites forever.
-        self._drop_room(room_id)
+        self._drop_room(room_id, "房主解散房间")
         return {"status": "success", "room_id": room_id}
 
     # --------------------------------------------------------------- reconn.
@@ -585,7 +589,7 @@ class RoomService:
                 },
                 room=room_id,
             )
-            self._drop_room(room_id)
+            self._drop_room(room_id, "对局已取消（对手掉线）")
             return
 
         room.state = RoomState.GAME_OVER
@@ -606,19 +610,30 @@ class RoomService:
             )
         self._spawn(self._cleanup_room_after(room_id, self.ended_room_retention_seconds))
 
-    async def _cleanup_room_after(self, room_id: str, delay: float) -> None:
+    async def _cleanup_room_after(self, room_id: str, delay: float,
+                                  reason: str = "对局已结束") -> None:
         await asyncio.sleep(delay)
-        self._drop_room(room_id)
+        self._drop_room(room_id, reason)
 
     # ------------------------------------------------------------------ rooms
 
-    def _drop_room(self, room_id: str) -> bool:
+    def _drop_room(self, room_id: str, reason: str = "对局已结束") -> bool:
         room = self.rooms.get(room_id)
         if room is not None:
             # Players may still be connected when the room disappears (host
             # dissolved / opponent dropped / TTL reaping). Release the flag or
             # the friend invite guard keeps saying "you are in a game".
             self._release_presence_game(room)
+            # Tell still-seated spectators BEFORE the room leaves the table: a
+            # spectator is never kicked by the game, so this frame is the only
+            # signal that the feed has ended.
+            if self.room_dropped_hook is not None:
+                try:
+                    self.room_dropped_hook(room, reason)
+                except Exception:  # noqa: BLE001 - never block room cleanup
+                    logger.exception(
+                        "room_dropped_hook failed", extra={"room_id": room_id}
+                    )
         return self.rooms.pop(room_id, None) is not None
 
     def _recycle_host_waiting_rooms(self, player_id: str) -> list[str]:
@@ -629,7 +644,7 @@ class RoomService:
             entries = list(room.players.items())
             if len(entries) != 1 or entries[0][0] != player_id:
                 continue
-            self._drop_room(room_id)
+            self._drop_room(room_id, "等待房已回收")
             reaped.append(room_id)
         return reaped
 
@@ -640,7 +655,7 @@ class RoomService:
                 continue
             seats = list(room.players)
             if len(seats) == 1 and seats[0] == player_id:
-                self._drop_room(room_id)
+                self._drop_room(room_id, "等待房已回收")
                 reaped.append(room_id)
         return reaped
 
