@@ -29,6 +29,7 @@ from .http.routers import chat as chat_router
 from .http.routers import contracts as contracts_router
 from .http.routers import friends as friends_router
 from .http.routers import health as health_router
+from .http.routers import leaderboard as leaderboard_router
 from .http.routers import legacy as legacy_router
 from .http.routers import lobby as lobby_router
 from .http.routers import profile as profile_router
@@ -44,12 +45,15 @@ from .infra.metrics import MetricsRegistry
 from .infra.ratelimit import RateLimiter
 from .realtime.server import create_socket_server
 from .repositories import Database
+from .services.anticheat import AnticheatService
+from .services.auth import AuthService
 from .services.battle import BattleService
 from .services.chat import ChatService
 from .services.friends import FriendsService
 from .services.gameplay import GameplayService
 from .services.lobby import LobbyService
 from .services.magic import MagicService
+from .services.matchmaking import MatchmakingService
 from .services.presence import PresenceService
 from .services.progression import ProgressionService
 from .services.replays import allowed_for_match, build_replay
@@ -88,6 +92,9 @@ class Application:
     magic: MagicService
     settlement: SettlementService
     progression: ProgressionService
+    anticheat: AnticheatService
+    auth: AuthService
+    matchmaking: MatchmakingService
     lobby: LobbyService
     presence: PresenceService
     friends: FriendsService
@@ -167,6 +174,10 @@ def create_application(settings: Settings | None = None,
         replay_builder=build_replay,
         replay_gate=lambda winner, loser: allowed_for_match(database, winner, loser),
     )
+    # #16 registers first so the anti-cheat verdict exists before the rank hook:
+    # a blocked match still settles wins/XP/badges but must not move rank points.
+    anticheat = AnticheatService(database)
+    anticheat.register(settlement)
     # #15 owns the progression settlement hooks: XP / rank points / badges are
     # written inside the same #9 transaction and emitted around game_over.
     progression = ProgressionService(database)
@@ -229,6 +240,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.include_router(progression_router.router)
     fastapi_app.include_router(wallpapers_router.router)
     fastapi_app.include_router(stats_router.router)
+    fastapi_app.include_router(leaderboard_router.router)
     fastapi_app.include_router(replay_router.router)
     fastapi_app.include_router(lobby_router.router)
     fastapi_app.include_router(friends_router.router)
@@ -242,7 +254,8 @@ def create_application(settings: Settings | None = None,
     # One presence instance for the room service, the lobby and the friends
     # service (CLAUDE #17: the online table must exist exactly once).
     presence = PresenceService()
-    rooms = RoomService(presence=presence)
+    auth = AuthService(database, settings)
+    rooms = RoomService(presence=presence, capability_gate=auth.capability_denied)
     gameplay = GameplayService(
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )
@@ -266,13 +279,18 @@ def create_application(settings: Settings | None = None,
     gameplay.fire_hook = battle.fire
     rooms.forfeit_hook = battle.settle_forfeit
     lobby = LobbyService(rooms, presence, database)
+    # Ticket #16: queue/pairing plus the ban gates live in the service; the ban
+    # gate is the same AuthService instance used by the HTTP dependencies.
+    matchmaking = MatchmakingService(
+        rooms, database=database, auth=auth, lobby=lobby
+    )
     friends = FriendsService(database, presence, rooms)
     chat = ChatService(rooms)
     spectators = SpectatorService(rooms, database)
     lobby.spectators = spectators
     sio = create_socket_server(
-        settings, metrics, rooms, gameplay, battle, magic, lobby, presence, friends, chat,
-        spectators,
+        settings, metrics, rooms, gameplay, battle, magic, lobby, presence, friends,
+        chat, matchmaking, spectators,
     )
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
@@ -289,6 +307,9 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.magic = magic
     fastapi_app.state.settlement = settlement
     fastapi_app.state.progression = progression
+    fastapi_app.state.anticheat = anticheat
+    fastapi_app.state.auth = auth
+    fastapi_app.state.matchmaking = matchmaking
     fastapi_app.state.lobby = lobby
     fastapi_app.state.presence = presence
     fastapi_app.state.friends = friends
@@ -311,6 +332,9 @@ def create_application(settings: Settings | None = None,
         magic=magic,
         settlement=settlement,
         progression=progression,
+        anticheat=anticheat,
+        auth=auth,
+        matchmaking=matchmaking,
         lobby=lobby,
         presence=presence,
         friends=friends,
