@@ -15,8 +15,10 @@ import socketio
 from ..contracts.events_in import is_debug_event
 from ..http.session import session_from_cookie_header, session_user_id, session_username
 from ..infra.logging import get_logger, log_context
+from ..services.gameplay import GameplayService
 from ..services.rooms import Connection, RoomService
 from .emitter import SocketIoPublisher
+from .handlers.battle import register_battle_handlers
 from .handlers.debug import DEBUG_EVENT_DISABLED_MESSAGE, register_debug_handlers
 from .handlers.reconnect import register_reconnect_handlers
 from .handlers.room import register_room_handlers
@@ -32,8 +34,12 @@ def create_socket_server(
     settings: "Settings",
     metrics: "MetricsRegistry",
     rooms: RoomService | None = None,
+    gameplay: GameplayService | None = None,
 ) -> socketio.AsyncServer:
     rooms = rooms or RoomService()
+    gameplay = gameplay or GameplayService(
+        rooms, turn_timeout_seconds=settings.turn_timeout_seconds
+    )
     sio = socketio.AsyncServer(
         async_mode="asgi",
         cors_allowed_origins=settings.cors_origins or [],
@@ -107,8 +113,11 @@ def create_socket_server(
         )
         return {"status": "error", "message": message}
 
-    rooms.bind(SocketIoPublisher(sio))
+    publisher = SocketIoPublisher(sio)
+    rooms.bind(publisher)
+    gameplay.bind(publisher)
     register_room_handlers(sio, rooms)
+    register_battle_handlers(sio, gameplay)
     register_reconnect_handlers(sio, rooms)
     register_debug_handlers(sio, settings, metrics)
     return sio
