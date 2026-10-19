@@ -1,18 +1,633 @@
 <script setup lang="ts">
-import ScreenScaffold from '../../components/ScreenScaffold.vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  acquireSpectateChannel,
+  joinSpectate,
+  leaveSpectate,
+  sendSpectateChat,
+} from '../../realtime/spectate'
+import { useSpectateStore } from '../../stores/spectate'
+import {
+  boardCells,
+  chainRows,
+  chatTestid,
+  displayName,
+  phaseText,
+  rosterTestid,
+  seatName,
+  statusText,
+  turnText,
+  type SeatLabel,
+  type SpectateCell,
+  type SpectateChatLine,
+  type SpectateRosterRow,
+} from './view'
+
+/**
+ * Ticket #28: the spectate screen.
+ *
+ * A separate screen by design (never the game screen): the boards are rebuilt
+ * from "cells this seat shot at", so there is no code path that could draw a
+ * fleet. Counts / roster / chat / the ending come from the spectator channel;
+ * the two players only ever see a count.
+ */
+const route = useRoute()
+const router = useRouter()
+const store = useSpectateStore()
+
+const SIDES: readonly SeatLabel[] = ['p1', 'p2']
+
+const roomId = computed(() => {
+  const raw = route.query.room_id
+  return Array.isArray(raw) ? String(raw[0] ?? '') : String(raw ?? '')
+})
+
+// A deep link carries room_id; a lobby entry may also join from the store (the
+// test hook and future in-app entries use that path). One gate for both.
+const activeRoom = computed(() => roomId.value || store.roomId)
+const joined = computed(() => store.phase === 'joined' || store.phase === 'ended')
+const hasSnapshot = computed(
+  () => Boolean(store.sides.p1 || store.sides.p2) || Object.keys(store.seatLabels).length > 0,
+)
+
+const status = computed(() =>
+  statusText({
+    phase: store.phase,
+    error: store.error,
+    stateValue: store.stateValue,
+    ranked: store.ranked,
+    endedReason: store.endedReason,
+    winnerLabel: store.winnerLabel,
+  }),
+)
+
+function nameOf(side: SeatLabel): string {
+  return seatName(store.sides, side)
+}
+
+function boardTitle(side: SeatLabel): string {
+  return nameOf(side) + ' 的棋盘'
+}
+
+function boardLabel(side: SeatLabel): string {
+  return nameOf(side) + ' 的棋盘（只显示已轰过的格）'
+}
+
+function chainName(seat: string): string {
+  return seat === 'p1' || seat === 'p2' ? nameOf(seat) : '未知座位'
+}
+
+interface CellView {
+  key: string
+  testid: string
+  x: number
+  y: number
+  className: string
+  glyph: string
+  label: string
+}
+
+function cellsFor(side: SeatLabel): CellView[] {
+  const marks = boardCells(store.attacks, side)
+  const cells: CellView[] = []
+  for (let y = 0; y < 6; y += 1) {
+    for (let x = 0; x < 6; x += 1) {
+      const mark: SpectateCell | undefined = marks.get(x + ',' + y)
+      let className = 'cell spectate-cell'
+      let glyph = ''
+      let label = '海面：没有船，也没被打过'
+      if (mark) {
+        if (mark.ship_sunk) {
+          className += ' hit sunk'
+          glyph = '✕'
+          label = '已轰过：命中并击沉了战舰'
+        } else if (mark.hit) {
+          className += ' hit'
+          glyph = '✕'
+          label = '已轰过：命中'
+        } else {
+          className += ' miss'
+          glyph = '○'
+          label = '已轰过：未命中'
+        }
+      }
+      cells.push({
+        key: side + '-' + x + '-' + y,
+        testid: 'spectate-cell-' + side + '-' + x + '-' + y,
+        x,
+        y,
+        className,
+        glyph,
+        label,
+      })
+    }
+  }
+  return cells
+}
+
+const boardViews = computed(() => ({ p1: cellsFor('p1'), p2: cellsFor('p2') }))
+
+const turn = computed(() => turnText(store.seatLabels, store.sides, store.currentAttacker))
+const phaseLabel = computed(() => phaseText(store.currentPhase))
+const fieldMagicText = computed(() => store.fieldMagic || '无')
+const chain = computed(() => chainRows(store.chain))
+
+interface RosterView {
+  key: string
+  testid: string
+  name: string
+  isMe: boolean
+}
+
+const rosterViews = computed<RosterView[]>(() => {
+  const seen = new Map<string, number>()
+  const rows: RosterView[] = []
+  for (const row of store.roster as SpectateRosterRow[]) {
+    const base = rosterTestid(row.name)
+    const count = (seen.get(base) ?? 0) + 1
+    seen.set(base, count)
+    rows.push({
+      key: base + '#' + count,
+      testid: count > 1 ? base + '-' + count : base,
+      name: row.name,
+      isMe: Boolean(store.me) && row.name === store.me,
+    })
+  }
+  return rows
+})
+
+const chatLines = computed(() => store.chat as SpectateChatLine[])
+
+const chatDraft = ref('')
+
+function submitChat(): void {
+  const text = chatDraft.value
+  void sendSpectateChat(text).then((result) => {
+    if (result.ok) chatDraft.value = ''
+  })
+}
+
+let releaseChannel: (() => void) | null = null
+
+function startJoin(id: string): void {
+  if (!id) {
+    store.reset()
+    return
+  }
+  void joinSpectate(id)
+}
+
+onMounted(() => {
+  releaseChannel = acquireSpectateChannel()
+  startJoin(roomId.value)
+})
+
+watch(roomId, (next, previous) => {
+  if (next === previous) return
+  void leaveSpectate().then(() => startJoin(next))
+})
+
+onBeforeUnmount(() => {
+  const release = releaseChannel
+  releaseChannel = null
+  void leaveSpectate().finally(() => release?.())
+})
+
+function leaveScreen(): void {
+  void leaveSpectate().finally(() => {
+    void router.push({ name: 'lobby' })
+  })
+}
+
+function startOver(): void {
+  void router.push({ name: 'lobby' })
+}
 </script>
 
 <template>
-  <ScreenScaffold
-    screen="spectate"
-    title="观战"
-    hint="独立观战屏，绝不复用对局屏（#26 迁移）。"
+  <section
+    class="screen spectate-screen"
+    data-screen="spectate"
+    data-testid="screen-spectate"
+    aria-labelledby="screen-spectate-title"
   >
-    <div class="screen__actions">
-      <button type="button" class="button" data-testid="spectate-primary-action">离开观战</button>
-      <p class="screen__note">
-        占位组件：路由 / 错误边界 / 构建产物门禁可用；业务逻辑见后续票据。
-      </p>
-    </div>
-  </ScreenScaffold>
+    <header class="spectate__head">
+      <p class="spectate__eyebrow">只读 · 实时观战</p>
+      <h1 id="screen-spectate-title" class="spectate__title" data-testid="spectate-heading">观战</h1>
+      <p class="spectate__status" data-testid="spectate-status" role="status" aria-live="polite">{{ status }}</p>
+      <p v-if="store.phase === 'ended'" class="spectate__ended" data-testid="spectate-ended">{{ status }}</p>
+    </header>
+
+    <section v-if="!activeRoom" class="spectate__notice" data-testid="spectate-empty">
+      <h2>还没有选择要观战的对局</h2>
+      <p>请从大厅「进行中的对局」点观战进入；观战只限登录用户，且双方都开放观战。</p>
+      <button type="button" class="button" data-testid="spectate-leave" @click="startOver">返回大厅</button>
+    </section>
+
+    <section v-else-if="store.phase === 'error'" class="spectate__notice spectate__notice--error" data-testid="spectate-error" role="alert">
+      <h2>进不去这一局</h2>
+      <p>{{ store.error }}</p>
+      <button type="button" class="button" data-testid="spectate-leave" @click="startOver">返回大厅</button>
+    </section>
+
+    <template v-else-if="joined && hasSnapshot">
+      <div class="spectate__topbar">
+        <span class="spectate__stat">第 <b data-testid="spectate-round">{{ store.round }}</b> 回合</span>
+        <span class="spectate__stat">阶段 <b data-testid="spectate-phase">{{ phaseLabel }}</b></span>
+        <span class="spectate__stat">当前 <b data-testid="spectate-turn">{{ turn }}</b></span>
+        <span class="spectate__stat">剩余攻击 <b data-testid="spectate-attacks">{{ store.attacksRemaining }}</b></span>
+        <span class="spectate__stat">场地魔法 <b data-testid="spectate-field-magic">{{ fieldMagicText }}</b></span>
+        <span class="spectate__stat">观战 <b data-testid="spectate-count">{{ store.count }}</b>/<b data-testid="spectate-limit">{{ store.limit }}</b> 人</span>
+      </div>
+
+      <div class="spectate__body">
+        <div class="spectate__main">
+          <div class="spectate__boards">
+            <div v-for="side in SIDES" :key="'board-' + side" class="spectate__board-wrap">
+              <h2 class="spectate__board-title" :data-testid="'spectate-board-title-' + side">{{ boardTitle(side) }}</h2>
+              <p class="spectate__board-meta">
+                <span :data-testid="'spectate-name-' + side">{{ nameOf(side) }}</span>
+                · 剩余战舰 <b :data-testid="'spectate-ships-' + side">{{ store.sides[side] ? store.sides[side].remainingShips : 0 }}</b>
+                · 手牌 <b :data-testid="'spectate-hand-' + side">{{ store.sides[side] ? store.sides[side].handCount : 0 }}</b> 张
+              </p>
+              <div
+                class="spectate__board"
+                :data-testid="'spectate-board-' + side"
+                role="img"
+                :aria-label="boardLabel(side)"
+              >
+                <div
+                  v-for="cell in boardViews[side]"
+                  :key="cell.key"
+                  :class="cell.className"
+                  :data-testid="cell.testid"
+                  :data-x="cell.x"
+                  :data-y="cell.y"
+                  :title="cell.label"
+                  :aria-label="cell.label"
+                >{{ cell.glyph }}</div>
+              </div>
+            </div>
+          </div>
+
+          <p class="spectate__hint">观众只能看到已经轰过的格子；船位与手牌内容不会下发到这台设备。</p>
+
+          <section class="spectate__panel" aria-label="当前连锁">
+            <h2 class="spectate__panel-title">当前连锁</h2>
+            <div class="spectate__chain" data-testid="spectate-chain">
+              <span v-if="!chain.length" class="spectate__muted">当前没有连锁</span>
+              <div
+                v-for="row in chain"
+                :key="row.key"
+                class="spectate__chain-item"
+                :class="{ negated: row.negated }"
+              >{{ chainName(row.seat) }}：{{ row.card }}{{ row.negated ? '（已被康）' : '' }}</div>
+            </div>
+          </section>
+
+          <section class="spectate__panel" aria-label="对局日志">
+            <h2 class="spectate__panel-title">对局记录</h2>
+            <div class="spectate__logs" data-testid="spectate-logs">
+              <p v-if="!store.logs.length" class="spectate__muted">暂无日志</p>
+              <div v-for="(entry, index) in store.logs" :key="index" class="spectate__log">{{ entry.text }}</div>
+            </div>
+          </section>
+        </div>
+
+        <aside class="spectate__side">
+          <section class="spectate__panel" aria-label="观战席">
+            <h2 class="spectate__panel-title">
+              观战席 <span data-testid="spectate-roster-count">({{ store.count }}/{{ store.limit }})</span>
+            </h2>
+            <div class="spectate__roster" data-testid="spectate-roster">
+              <span v-if="!rosterViews.length" class="spectate__muted" data-testid="spectate-roster-empty">还没有人来看</span>
+              <div
+                v-for="row in rosterViews"
+                :key="row.key"
+                class="spectate__roster-item"
+                :class="{ me: row.isMe }"
+                :data-testid="row.testid"
+                :data-me="row.isMe ? 'true' : 'false'"
+              >{{ row.name }}{{ row.isMe ? '（你）' : '' }}</div>
+            </div>
+          </section>
+
+          <section class="spectate__panel" aria-label="观战席聊天">
+            <h2 class="spectate__panel-title">观战席聊天</h2>
+            <div class="spectate__chat" data-testid="spectate-chat">
+              <p v-if="!chatLines.length" class="spectate__muted">还没有人说话</p>
+              <div
+                v-for="line in chatLines"
+                :key="line.seq"
+                class="spectate__chat-line"
+                :class="'kind-' + line.kind"
+                :data-testid="chatTestid(line.seq)"
+              >{{ line.kind === 'notice' || line.kind === 'error' ? line.text : line.name + '：' + line.text }}</div>
+            </div>
+            <form class="spectate__chat-form" @submit.prevent="submitChat">
+              <input
+                v-model="chatDraft"
+                class="spectate__chat-input"
+                data-testid="spectate-chat-input"
+                type="text"
+                maxlength="100"
+                placeholder="和观众说点什么…"
+                aria-label="观战席发言"
+              />
+              <button type="submit" class="button" data-testid="spectate-chat-send">发送</button>
+            </form>
+            <p class="spectate__chat-note" data-testid="spectate-chat-notice">观战席的话只有观众看得到，对局双方听不见。</p>
+          </section>
+        </aside>
+      </div>
+
+      <footer class="spectate__actions">
+        <button type="button" class="button button--ghost" data-testid="spectate-leave" @click="leaveScreen">离开观战</button>
+      </footer>
+    </template>
+
+    <section v-else class="spectate__notice" data-testid="spectate-loading">
+      <p>{{ status }}</p>
+    </section>
+  </section>
 </template>
+
+<style scoped>
+.spectate-screen {
+  gap: 12px;
+}
+
+.spectate__eyebrow {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.spectate__title {
+  margin: 0;
+  font-size: 26px;
+}
+
+.spectate__status {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.spectate__ended {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border: 1px solid #b8872e;
+  border-radius: 8px;
+  background: #2a2312;
+  color: #ffd76a;
+  font-size: 13px;
+}
+
+.spectate__notice {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 20px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: rgb(13 27 38 / 60%);
+}
+
+.spectate__notice h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.spectate__notice p {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.spectate__notice--error {
+  border-color: var(--danger);
+}
+
+.spectate__notice--error h2 {
+  color: var(--danger);
+}
+
+.spectate__topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  font-size: 13px;
+}
+
+.spectate__stat b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.spectate__body {
+  display: grid;
+  gap: 12px;
+}
+
+.spectate__main {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.spectate__boards {
+  display: grid;
+  gap: 12px;
+}
+
+.spectate__board-wrap {
+  min-width: 0;
+}
+
+.spectate__board-title {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.spectate__board-meta {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.spectate__board-meta b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.spectate__board {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 2px;
+  width: min(100%, 300px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #081824;
+}
+
+.spectate__board .cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border: 1px solid #123243;
+  border-radius: 4px;
+  background: #0d2433;
+  color: var(--text-muted);
+  font-size: clamp(11px, 3.4vw, 15px);
+  line-height: 1;
+}
+
+.spectate__board .cell.hit {
+  border-color: #ff8a7a;
+  background: #4a1d1d;
+  color: #ffd0c8;
+}
+
+.spectate__board .cell.miss {
+  color: #7fb3c8;
+}
+
+.spectate__board .cell.sunk {
+  border-color: #ff5b47;
+  background: #611f1a;
+  color: #ffe1db;
+}
+
+.spectate__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.spectate__panel {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  min-width: 0;
+}
+
+.spectate__panel-title {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+}
+
+.spectate__chain,
+.spectate__logs,
+.spectate__roster,
+.spectate__chat {
+  display: grid;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.spectate__chain-item,
+.spectate__log,
+.spectate__roster-item,
+.spectate__chat-line {
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: #0b1a24;
+}
+
+.spectate__chain-item.negated {
+  color: #ff9b8a;
+  text-decoration: line-through;
+}
+
+.spectate__roster-item.me {
+  border: 1px solid var(--accent-strong);
+  color: var(--accent);
+}
+
+.spectate__chat-line.kind-player {
+  border-left: 2px solid #4d8fa8;
+}
+
+.spectate__chat-line.kind-notice,
+.spectate__chat-line.kind-error {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.spectate__chat-line.kind-error {
+  color: #ff9b8a;
+  font-style: normal;
+}
+
+.spectate__muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.spectate__chat-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.spectate__chat-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #081824;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.spectate__chat-note {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.spectate__actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+@media (min-width: 900px) {
+  .spectate__boards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .spectate__body {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+    align-items: start;
+  }
+}
+
+@media (max-width: 520px) {
+  .spectate__title {
+    font-size: 22px;
+  }
+}
+</style>

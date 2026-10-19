@@ -6,8 +6,21 @@ import { routeLoading } from './router'
 import { fetchRemoteContractHash, type TypedSocket } from './socket/client'
 import { CONTRACT_SCHEMA_HASH, ROOM_SYNC_FIELDS } from './socket/events.gen'
 import { useGameStore } from './stores/game'
+import { useReplayStore } from './stores/replay'
 import { useResultStore } from './stores/result'
+import { useSpectateStore } from './stores/spectate'
 import { GAME_STATE_SCHEMA, defaultGameState } from './stores/gameStateSchema'
+import {
+  SPECTATE_EVENTS,
+  applySpectateEvent,
+  getSpectateSocket,
+  joinSpectate,
+  leaveSpectate,
+  resetSpectateChannelForTest,
+  sendSpectateChat,
+  spectateSocketConnected,
+  type SpectateEventName,
+} from './realtime/spectate'
 import {
   applySettlementEvent,
   getSettlementSocket,
@@ -46,6 +59,34 @@ export interface SettlementTestApi {
   createSocket: () => Socket
 }
 
+export interface ReplayTestApi {
+  state: () => {
+    status: string
+    error: string
+    matchId: string
+    youAre: string | null
+    k: number
+    playing: boolean
+    speed: number
+    stepCount: number
+    truncated: string
+  }
+  payload: () => unknown
+  frame: () => unknown
+  load: (matchId: string) => Promise<void>
+}
+
+export interface SpectateTestApi {
+  state: () => Record<string, unknown>
+  feed: (event: string, payload: Record<string, unknown>) => void
+  socket: () => TypedSocket | null
+  connected: () => boolean
+  join: (roomId: string) => Promise<{ ok: boolean; message: string }>
+  leave: () => Promise<void>
+  chat: (message: string) => Promise<{ ok: boolean; message: string }>
+  resetChannel: () => void
+}
+
 export interface TestHooksApi {
   version: string
   router: Router
@@ -60,6 +101,8 @@ export interface TestHooksApi {
   defaultGameState: () => unknown
   gameState: () => unknown
   settlement: SettlementTestApi
+  replay: ReplayTestApi
+  spectate: SpectateTestApi
   crashNext: (routeName: string) => void
 }
 
@@ -101,6 +144,8 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
 
   const game = useGameStore(pinia)
   const result = useResultStore(pinia)
+  const replay = useReplayStore(pinia)
+  const spectate = useSpectateStore(pinia)
 
   const settlement: SettlementTestApi = {
     socket: () => getSettlementSocket(),
@@ -124,8 +169,66 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     },
   }
 
+  const replayApi: ReplayTestApi = {
+    state: () =>
+      JSON.parse(JSON.stringify({
+        status: replay.status,
+        error: replay.error,
+        matchId: replay.matchId,
+        youAre: replay.youAre,
+        k: replay.k,
+        playing: replay.playing,
+        speed: replay.speed,
+        stepCount: replay.stepCount,
+        truncated: replay.payload?.truncated ?? '',
+      })),
+    payload: () => JSON.parse(JSON.stringify(replay.payload)),
+    frame: () => JSON.parse(JSON.stringify(replay.frame)),
+    load: (matchId: string) => replay.load(matchId),
+  }
+
+  const spectateApi: SpectateTestApi = {
+    state: () =>
+      JSON.parse(JSON.stringify({
+        phase: spectate.phase,
+        error: spectate.error,
+        roomId: spectate.roomId,
+        endedReason: spectate.endedReason,
+        winnerLabel: spectate.winnerLabel,
+        stateValue: spectate.stateValue,
+        currentPhase: spectate.currentPhase,
+        currentAttacker: spectate.currentAttacker,
+        attacksRemaining: spectate.attacksRemaining,
+        round: spectate.round,
+        fieldMagic: spectate.fieldMagic,
+        ranked: spectate.ranked,
+        seatLabels: spectate.seatLabels,
+        sides: spectate.sides,
+        attacks: spectate.attacks,
+        count: spectate.count,
+        limit: spectate.limit,
+        me: spectate.me,
+        roster: spectate.roster,
+        chat: spectate.chat,
+        chain: spectate.chain,
+        logs: spectate.logs,
+      })),
+    feed: (event: string, payload: Record<string, unknown>) => {
+      if (!SPECTATE_EVENTS.includes(event as SpectateEventName)) {
+        throw new Error('unknown spectate event: ' + event)
+      }
+      applySpectateEvent(event as SpectateEventName, payload, pinia)
+    },
+    socket: () => getSpectateSocket(),
+    connected: () => spectateSocketConnected(),
+    join: (roomId: string) => joinSpectate(roomId, pinia),
+    leave: () => leaveSpectate(pinia),
+    chat: (message: string) => sendSpectateChat(message, pinia),
+    resetChannel: () => resetSpectateChannelForTest(),
+  }
+
   window.__BS_TEST__ = {
-    version: 'ticket-22',
+    version: 'ticket-28',
     router,
     currentRouteName: () => (router.currentRoute.value.name as string | null) ?? null,
     routeLoadingHistory: () => history.slice(),
@@ -140,6 +243,8 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     defaultGameState: () => defaultGameState(),
     gameState: () => JSON.parse(JSON.stringify(game.state)),
     settlement,
+    replay: replayApi,
+    spectate: spectateApi,
     crashNext: (routeName: string) => requestCrash(routeName),
   }
 }
