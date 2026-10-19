@@ -154,6 +154,11 @@ class GameplayService:
         if room.current_attacker == player_id:
             self._start_timer(room)
 
+    def touch_turn(self, room: Room, player_id: str) -> None:
+        """Public seam for the battle service: a successful action restarts 90s."""
+
+        self._touch_turn(room, player_id)
+
     @staticmethod
     async def _maybe_await(value: Any) -> Any:
         if inspect.isawaitable(value):

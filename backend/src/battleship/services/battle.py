@@ -43,10 +43,12 @@ class BattleService:
         settlement: SettlementService | None = None,
         *,
         clock: Callable[[], float] | None = None,
+        touch_turn: Callable[[Room, str], None] | None = None,
     ) -> None:
         self.rooms = rooms
         self.settlement = settlement or SettlementService(None)
         self.clock = clock or time.time
+        self.touch_turn = touch_turn
         self._publisher: EventPublisher = NullPublisher()
         self.sink_hooks: list[SinkHook] = []
         self.damage_hooks: list[DamageHook] = []
@@ -124,6 +126,11 @@ class BattleService:
     async def attack(self, connection: Connection,
                      data: dict[str, Any] | None = None) -> dict:
         data = data if isinstance(data, dict) else {}
+        # Legacy _require_live_room runs before the handler identity check: an
+        # already-finished room always answers "对局已结束".
+        existing = self.rooms.get_room(data.get("room_id"))
+        if existing is not None and existing.state == RoomState.GAME_OVER:
+            return dict(FINISHED_GAME)
         room, player_id = self._seat(connection, data)
         if room is None:
             return dict(INVALID_SEAT)
@@ -153,6 +160,11 @@ class BattleService:
         error = battle_rules.attack_error(room, player_id, raw_x, raw_y)
         if error:
             return {"status": "error", "message": error}
+        # Ticket #8's _require_live_room reset the 90s clock on every effective
+        # action by the current attacker; the battle handler bypasses that
+        # decorator, so it must call the same seam explicitly.
+        if self.touch_turn is not None:
+            self.touch_turn(room, player_id)
         coords = battle_rules.normalize_attack_coords(raw_x, raw_y)
         assert not isinstance(coords, str)
         x, y = coords
@@ -320,6 +332,14 @@ class BattleService:
     async def surrender(self, connection: Connection,
                         data: dict[str, Any] | None = None) -> dict:
         data = data if isinstance(data, dict) else {}
+        # Legacy surrender falls back to the session identity when player_id is
+        # omitted (unlike attack, which always requires the explicit seat id).
+        if not data.get("player_id"):
+            data = dict(data)
+            data["player_id"] = connection.user_id or connection.sid
+        existing = self.rooms.get_room(data.get("room_id"))
+        if existing is not None and existing.state == RoomState.GAME_OVER:
+            return dict(FINISHED_GAME)
         room, player_id = self._seat(connection, data)
         if room is None:
             return {"status": "error", "message": "你不在这个房间"}
