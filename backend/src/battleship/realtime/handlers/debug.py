@@ -81,7 +81,7 @@ def _make_handler(
     return handler
 
 
-def register_debug_implementations(battle: Any) -> None:
+def register_debug_implementations(battle: Any, magic: Any = None) -> None:
     """Register ticket #9's debug events (only usable behind the gate)."""
 
     async def test_win_game(sid: str, data: dict[str, Any], *,
@@ -94,6 +94,28 @@ def register_debug_implementations(battle: Any) -> None:
 
     DEBUG_IMPLEMENTATIONS["test_win_game"] = test_win_game
     DEBUG_IMPLEMENTATIONS["test_lose_game"] = test_lose_game
+    DEBUG_IMPLEMENTATIONS["test_win_game"] = test_win_game
+    DEBUG_IMPLEMENTATIONS["test_lose_game"] = test_lose_game
+
+    if magic is not None:
+        async def test_add_specific_magic_card(
+            sid: str, data: dict[str, Any], *,
+            sio: "socketio.AsyncServer", settings: "Settings",
+        ) -> dict:
+            return await magic.debug_add_card(
+                data.get("room_id"), data.get("player_id"), data.get("card_name")
+            )
+
+        async def test_add_all_magic_cards(
+            sid: str, data: dict[str, Any], *,
+            sio: "socketio.AsyncServer", settings: "Settings",
+        ) -> dict:
+            return await magic.debug_add_all_cards(
+                data.get("room_id"), data.get("player_id")
+            )
+
+        DEBUG_IMPLEMENTATIONS["test_add_specific_magic_card"] = test_add_specific_magic_card
+        DEBUG_IMPLEMENTATIONS["test_add_all_magic_cards"] = test_add_all_magic_cards
 
 
 def register_debug_handlers(

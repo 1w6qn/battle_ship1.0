@@ -123,6 +123,64 @@ def attacks_remaining_for(player: Player) -> int:
 #: Readable alias for callers that ask "how many attacks does this player get?".
 attacks_for_player = attacks_remaining_for
 
+def attacks_forced_zero(room: Room) -> bool:
+    """Any rule that pins the current attacker's budget to zero (ticket #10).
+
+    Three scopes, deliberately separate (port map 13 section 3.1):
+    * zero_attacks_round -- room-wide (败者食尘)
+    * zero_attacks_for   -- player / big-round (回光返照), only while they act
+    * zero_attacks_turn  -- player / turn (无忧梦呓)
+    """
+
+    effects = getattr(room, "game_effects", None)
+    if not isinstance(effects, dict):
+        return False
+    try:
+        current_round = int(room.round)
+    except (TypeError, ValueError):
+        return False
+    try:
+        if int(effects.get("zero_attacks_round") or -1) == current_round:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        entry = effects.get("zero_attacks_for")
+        if isinstance(entry, dict):
+            if int(entry.get("round") or -1) == current_round and entry.get("player") == room.current_attacker:
+                return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        turn_entry = effects.get("zero_attacks_turn")
+        if isinstance(turn_entry, dict):
+            if int(turn_entry.get(room.current_attacker) or -1) == current_round:
+                return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def grant_extra_attacks(room: Room, player_id: str, n: int = 1) -> int:
+    """Grant extra shots to the current attacker; returns the real delta.
+
+    Field cards and forced-zero rules win: adding to a budget that the rules
+    pinned to zero would make those effects look like they did nothing.
+    """
+
+    if int(n) <= 0 or room.state != RoomState.ATTACKING:
+        return 0
+    if room.current_attacker != player_id:
+        return 0
+    from .magic.rules import field_magic_name
+
+    if attacks_forced_zero(room) or field_magic_name(room) == "教皇旨意":
+        return 0
+    before = int(room.attacks_remaining or 0)
+    room.attacks_remaining = max(0, before + int(n))
+    return room.attacks_remaining - before
+
+
 
 def attackable_cells(player: Player) -> list[tuple[int, int]]:
     """Cells this player has not fired at yet (the legacy `_attackable_cells`)."""
