@@ -59,7 +59,7 @@ def create_socket_server(
     gameplay = gameplay or GameplayService(
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )
-    battle = battle or BattleService(rooms)
+    battle = battle or BattleService(rooms, touch_turn=gameplay.touch_turn)
     if gameplay.fire_hook is None:
         gameplay.fire_hook = battle.fire
     sio = socketio.AsyncServer(

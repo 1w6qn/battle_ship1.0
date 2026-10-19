@@ -216,7 +216,7 @@ def create_application(settings: Settings | None = None,
     gameplay = GameplayService(
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )
-    battle = BattleService(rooms, settlement)
+    battle = BattleService(rooms, settlement, touch_turn=gameplay.touch_turn)
     # Ticket #8 left two explicit seams; #9 fills both: the turn watchdog fires
     # through the same attack rules, and disconnect forfeits settle for real.
     gameplay.fire_hook = battle.fire
