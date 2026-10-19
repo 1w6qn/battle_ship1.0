@@ -11,16 +11,21 @@ Legacy reference: port map 13-domain-rules §2/§3 (server.py:4252-4290,
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
-from typing import Literal, Sequence
+from typing import Any, Literal, Sequence
 
 from .room import (
     BOARD_SIZE,
     Player,
+    PlayerShip,
+    Position,
     Room,
     RoomPhase,
     RoomState,
     alive_ships,
+    is_ship_alive,
+    opponent_of,
 )
 
 
@@ -228,3 +233,505 @@ def resolve_turn_end(room: Room, player_id: str) -> TurnEnd | None:
     room.players[next_attacker].damage_dealt_this_turn = 0
     room.attacks_remaining = attacks_remaining_for(room.players[next_attacker])
     return TurnEnd("next_player", next_attacker, room.round)
+
+# ===========================================================================
+# Attack effects (ticket #9)
+# ===========================================================================
+# Everything below is pure room mutation: no socket emit, no database, no
+# asyncio. The service layer turns an AttackOutcome into wire frames and
+# settlement. Magic-card side effects (subsidy / trap / demon contract /
+# vampire / battle spirit) are injected as hooks by tickets #10-#12; keeping
+# them out of this module is what lets the same sink path be reused by normal
+# shots, splash and area cards without three drifting copies.
+
+ATTACK_COORDS_INVALID = "非法的攻击坐标"
+ATTACK_OUT_OF_BOUNDS = "攻击坐标超出棋盘范围"
+ATTACK_NOT_YOUR_TURN = "还没到你的攻击回合"
+ATTACK_NOT_BATTLE_PHASE = "当前不是战斗阶段"
+ATTACK_CHAIN_BUSY = "连锁结算中，请等待响应窗口结束后再攻击"
+ATTACK_NO_ATTACKS = "本回合攻击次数已用尽"
+ATTACK_CELL_USED = "你已经攻击过这个位置了"
+ATTACK_SHENWEI_HOLE = "该区域已被神威！扣掉，无法攻击"
+
+
+@dataclass
+class AttackOutcome:
+    """Result of one legal shot. Payload keys mirror legacy AttackResult."""
+
+    attacker: str
+    defender: str
+    x: int
+    y: int
+    hit: bool
+    ship_sunk: bool
+    shield_blocked: bool
+    forced_kill: bool
+    invincible: bool
+    damage_dealt: bool
+    sunk_ship: PlayerShip | None
+    remaining_attacks: int
+    attacker_remaining_ships: int
+    defender_remaining_ships: int
+    last_chance: bool = False
+    last_stand_win: bool = False
+    defender_wiped_out: bool = False
+
+    def to_payload(self) -> dict:
+        """Frozen attack_result shape (server.py AttackResult.to_dict)."""
+
+        return {
+            "attacker": self.attacker,
+            "x": self.x,
+            "y": self.y,
+            "hit": self.hit,
+            "ship_sunk": self.ship_sunk,
+            "remaining_attacks": self.remaining_attacks,
+            "attacker_remaining_ships": self.attacker_remaining_ships,
+            "defender_remaining_ships": self.defender_remaining_ships,
+            "shield_blocked": self.shield_blocked,
+        }
+
+
+def normalize_attack_coords(x: Any, y: Any) -> tuple[int, int] | str:
+    """Return integer coords or a legacy error message.
+
+    Legacy accepts numeric strings / floats but rejects fractions (1.9 used to
+    be truncated to 1, silently firing at another cell) and out-of-board values.
+    """
+
+    try:
+        fx, fy = float(x), float(y)
+    except (TypeError, ValueError):
+        return ATTACK_COORDS_INVALID
+    if not (fx.is_integer() and fy.is_integer()):
+        return ATTACK_COORDS_INVALID
+    ix, iy = int(fx), int(fy)
+    if not (0 <= ix < BOARD_SIZE and 0 <= iy < BOARD_SIZE):
+        return ATTACK_OUT_OF_BOUNDS
+    return ix, iy
+
+
+def cell_in_shenwei_hole(room: Room, player_id: str, x: int, y: int) -> bool:
+    for hole in room.game_effects.get("shenwei_holes") or []:
+        if not isinstance(hole, dict) or hole.get("player") != player_id:
+            continue
+        if hole["x1"] <= x <= hole["x2"] and hole["y1"] <= y <= hole["y2"]:
+            return True
+    return False
+
+
+def priority_wait_reason(room: Room, player_id: str) -> str | None:
+    """The initiator cannot keep acting while the opponent answers a request."""
+
+    pending = room.priority_pending
+    if not pending or pending.get("actor") != player_id:
+        return None
+    action = {"enter_battle": "进入战斗阶段", "enter_end": "进入结束阶段"}.get(
+        pending.get("action"), "阶段转换"
+    )
+    return f"正在等待对方响应「{action}」，请稍候再操作"
+
+
+def action_wait_reason(room: Room, player_id: str) -> str | None:
+    """Legacy _action_wait_reason: shenji declaration > dice discard > priority."""
+
+    pending = (room.magic_temp_data or {}).get("pending_shenji") or {}
+    caster = pending.get("caster") if isinstance(pending, dict) else None
+    if caster and caster != player_id:
+        return "对方正在宣言神机妙算，请等待宣言完成"
+    if (room.pending_dice_discard or {}).get(player_id) is False:
+        return "命运骰子生效中，请先选择一张手牌弃置"
+    return priority_wait_reason(room, player_id)
+
+
+def attack_error(room: Room, attacker_id: str, x: Any, y: Any) -> str | None:
+    """All legacy attack guards, in the same order as handle_attack."""
+
+    coords = normalize_attack_coords(x, y)
+    if isinstance(coords, str):
+        return coords
+    ix, iy = coords
+    if attacker_id != room.current_attacker:
+        return ATTACK_NOT_YOUR_TURN
+    if _value(room.current_phase) != "battle":
+        return ATTACK_NOT_BATTLE_PHASE
+    if room.chain or room.chain_waiting:
+        return ATTACK_CHAIN_BUSY
+    wait = action_wait_reason(room, attacker_id)
+    if wait:
+        return wait
+    if room.attacks_remaining <= 0:
+        return ATTACK_NO_ATTACKS
+    player = room.players[attacker_id]
+    if any(cell.x == ix and cell.y == iy for cell in (player.attacks or [])):
+        return ATTACK_CELL_USED
+    defender_id = opponent_of(room, attacker_id)
+    if defender_id and cell_in_shenwei_hole(room, defender_id, ix, iy):
+        return ATTACK_SHENWEI_HOLE
+    return None
+
+
+def mark_ship_sunken(player: Player, ship: PlayerShip | None) -> bool:
+    """Register a sunk ship once (revive -> sink loops must not duplicate)."""
+
+    if ship is None:
+        return False
+    if player.sunken_ships is None:
+        player.sunken_ships = []
+    if ship in player.sunken_ships:
+        return False
+    player.sunken_ships.append(ship)
+    return True
+
+
+def apply_ship_sunk(room: Room, defender_id: str, ship: PlayerShip) -> bool:
+    """Core sink bookkeeping shared by every damage source.
+
+    * remaining_ships is the authoritative count (dead ships stay in ships);
+    * the ship is registered in sunken_ships exactly once.
+    """
+
+    defender = room.players[defender_id]
+    defender.remaining_ships = max(0, int(defender.remaining_ships) - 1)
+    mark_ship_sunken(defender, ship)
+    return True
+
+
+def _find_hit_ship(defender: Player, x: int, y: int) -> PlayerShip | None:
+    cell = Position(x=x, y=y)
+    for ship in defender.ships or []:
+        if not is_ship_alive(defender, ship):
+            continue
+        if cell in (ship.positions or []):
+            return ship
+    return None
+
+
+def resolve_attack(room: Room, attacker_id: str, x: int, y: int) -> AttackOutcome:
+    """Apply one ordinary shot. Callers must run attack_error first."""
+
+    attacker = room.players[attacker_id]
+    defender_id = opponent_of(room, attacker_id)
+    assert defender_id is not None
+    defender = room.players[defender_id]
+
+    hit = False
+    ship_sunk = False
+    shield_blocked = False
+    forced_kill = bool(attacker.effect_flags.forced_kill)
+    invincible = False
+    damage_dealt = False
+    sunk_ship: PlayerShip | None = None
+
+    target = _find_hit_ship(defender, x, y)
+    if target is not None:
+        hit = True
+        if "holy_heart" in room.game_effects and not target.invincible:
+            room.game_effects["holy_heart"]["no_damage"] = False
+
+        if forced_kill:
+            target.hits = list(target.hits or []) + [Position(x=x, y=y)]
+            ship_sunk = True
+            sunk_ship = target
+            apply_ship_sunk(room, defender_id, target)
+            damage_dealt = True
+        elif target.invincible:
+            invincible = True
+        elif target.shield:
+            target.shield = False
+            shield_blocked = True
+        else:
+            target.hits = list(target.hits or []) + [Position(x=x, y=y)]
+            damage_dealt = True
+            if len(target.hits) == len(target.positions):
+                ship_sunk = True
+                sunk_ship = target
+                apply_ship_sunk(room, defender_id, target)
+
+    outcome = AttackOutcome(
+        attacker=attacker_id,
+        defender=defender_id,
+        x=x,
+        y=y,
+        hit=hit,
+        ship_sunk=ship_sunk,
+        shield_blocked=shield_blocked,
+        forced_kill=forced_kill,
+        invincible=invincible,
+        damage_dealt=damage_dealt,
+        sunk_ship=sunk_ship,
+        remaining_attacks=room.attacks_remaining,
+        attacker_remaining_ships=attacker.remaining_ships,
+        defender_remaining_ships=defender.remaining_ships,
+    )
+
+    if not damage_dealt:
+        # A shield / invincible hit is still a shot: spend one attack. The
+        # legacy quirk is the opposite for shields: the *cell* is not recorded
+        # (so it can be re-shot), but the attack is still spent.
+        room.last_attack = {
+            "attacker": attacker_id,
+            "x": x,
+            "y": y,
+            "hit": hit,
+            "ship_sunk": ship_sunk,
+            "round": room.round,
+        }
+        room.attacks_remaining = max(0, room.attacks_remaining - 1)
+        if not shield_blocked:
+            attacker.attacks.append(Position(x=x, y=y, hit=hit, ship_sunk=False))
+        outcome.remaining_attacks = room.attacks_remaining
+        return outcome
+
+    # 回光返照: damaging that caster's ships loses immediately. Legacy returns
+    # before recording the shot / spending the attack / emitting attack_result.
+    last_chance = room.game_effects.get("last_chance")
+    if (
+        isinstance(last_chance, dict)
+        and last_chance.get("caster") == defender_id
+        and last_chance.get("round", room.round) == room.round
+    ):
+        outcome.last_chance = True
+        return outcome
+
+    attacker.damage_dealt_this_turn += 1
+    room.last_attack = {
+        "attacker": attacker_id,
+        "x": x,
+        "y": y,
+        "hit": hit,
+        "ship_sunk": ship_sunk,
+        "round": room.round,
+    }
+    room.attacks_remaining = max(0, room.attacks_remaining - 1)
+    attacker.attacks.append(Position(x=x, y=y, hit=hit, ship_sunk=ship_sunk))
+
+    # 绝处逢生: a real kill wins immediately (legacy returns before
+    # attack_result and before spending the attack).
+    if attacker.effect_flags.last_stand_win and (ship_sunk or forced_kill):
+        outcome.last_stand_win = True
+        return outcome
+
+    outcome.remaining_attacks = room.attacks_remaining
+    outcome.attacker_remaining_ships = attacker.remaining_ships
+    outcome.defender_remaining_ships = defender.remaining_ships
+    outcome.defender_wiped_out = (
+        defender.remaining_ships <= 0 and len(defender.ships or []) > 0
+    )
+    return outcome
+
+
+def player_ships_payload(player: Player) -> list[dict[str, Any]]:
+    """Frozen player_ships_updated.ships shape (legacy _emit_player_ships)."""
+
+    return [
+        {
+            "positions": [{"x": pos.x, "y": pos.y} for pos in ship.positions],
+            "hits": [],
+            "frozen": bool(getattr(ship, "frozen", None)),
+            "alive": is_ship_alive(player, ship),
+            "shield": bool(getattr(ship, "shield", False)),
+            "invincible": bool(getattr(ship, "invincible", False)),
+        }
+        for ship in player.ships
+    ]
+
+
+def dead_ship_count(player: Player) -> int:
+    """Legacy _dead_ship_count: union of dead-in-ships and removed-sunken."""
+
+    ships = player.ships or []
+    dead: set[int] = set()
+    for ship in ships:
+        if ship is not None and not is_ship_alive(player, ship):
+            dead.add(id(ship))
+    for ship in player.sunken_ships or []:
+        if ship is not None and ship not in ships:
+            dead.add(id(ship))
+    return len(dead)
+
+
+def took_any_damage(player: Player) -> bool:
+    return any(bool(getattr(ship, "hits", None)) for ship in (player.ships or []))
+
+
+def match_duration_seconds(room: Room, now: float | None = None) -> int:
+    start = room.match_started_at
+    if not start:
+        return 0
+    elapsed = int((now if now is not None else time.time()) - start)
+    return elapsed if elapsed > 0 else 0
+
+# ---------------------------------------------------------------------------
+# Splash / bomb / sulfur cell rules (reused by the magic layer, ticket #10)
+# ---------------------------------------------------------------------------
+
+SPLASH_NEEDS_HIT = "必须在击中对方后使用"
+
+
+@dataclass
+class AreaCellOutcome:
+    """One recorded cell from splash / bomb / sulfur."""
+
+    x: int
+    y: int
+    hit: bool
+    ship_sunk: bool
+    sunk_ship: PlayerShip | None = None
+
+
+@dataclass
+class AreaStrikeResult:
+    cells: list[AreaCellOutcome] = field(default_factory=list)
+    ships_sunk: int = 0
+    last_chance: bool = False
+
+    @property
+    def hit_count(self) -> int:
+        return sum(1 for cell in self.cells if cell.hit)
+
+
+def splash_error(room: Room, caster_id: str) -> str | None:
+    last = room.last_attack
+    if not isinstance(last, dict) or last.get("attacker") != caster_id:
+        return SPLASH_NEEDS_HIT
+    if not last.get("hit"):
+        return SPLASH_NEEDS_HIT
+    return None
+
+
+def splash_cells(room: Room) -> list[tuple[int, int]]:
+    last = room.last_attack or {}
+    x, y = int(last.get("x", -1)), int(last.get("y", -1))
+    return [
+        (nx, ny)
+        for nx, ny in ((x, y - 1), (x, y + 1), (x - 1, y), (x + 1, y))
+        if 0 <= nx < BOARD_SIZE and 0 <= ny < BOARD_SIZE
+    ]
+
+
+def _area_sink(room: Room, defender_id: str, ship: PlayerShip, *,
+               remove_from_ships: bool) -> None:
+    defender = room.players[defender_id]
+    if remove_from_ships and ship in defender.ships:
+        defender.ships.remove(ship)
+    apply_ship_sunk(room, defender_id, ship)
+
+
+def _mark_area_attack(attacker: Player, x: int, y: int, hit: bool,
+                      ship_sunk: bool, flag: str) -> Position:
+    position = Position(x=x, y=y, hit=hit, ship_sunk=ship_sunk)
+    setattr(position, flag, True)
+    attacker.attacks.append(position)
+    return position
+
+
+def resolve_splash(room: Room, caster_id: str) -> AreaStrikeResult:
+    """Splash: four orthogonal neighbours; ignores shield/invincibility and
+    sinks the whole ship on the first unhit cell. Callers run splash_error."""
+
+    caster = room.players[caster_id]
+    defender_id = opponent_of(room, caster_id)
+    assert defender_id is not None
+    defender = room.players[defender_id]
+    result = AreaStrikeResult()
+
+    for x, y in splash_cells(room):
+        cell = Position(x=x, y=y)
+        hit = False
+        sunk_ship: PlayerShip | None = None
+        for ship in list(defender.ships or []):
+            if not is_ship_alive(defender, ship):
+                continue
+            if cell in (ship.positions or []) and cell not in (ship.hits or []):
+                hit = True
+                ship.shield = False
+                ship.hits = list(ship.hits or []) + [Position(x=x, y=y)]
+                _area_sink(room, defender_id, ship, remove_from_ships=False)
+                sunk_ship = ship
+                caster.damage_dealt_this_turn += 1
+                result.ships_sunk += 1
+                if "holy_heart" in room.game_effects:
+                    room.game_effects["holy_heart"]["no_damage"] = False
+                break
+        _mark_area_attack(caster, x, y, hit, sunk_ship is not None, "is_splash")
+        result.cells.append(
+            AreaCellOutcome(x=x, y=y, hit=hit, ship_sunk=sunk_ship is not None,
+                            sunk_ship=sunk_ship)
+        )
+        if hit:
+            last_chance = room.game_effects.get("last_chance")
+            if (
+                isinstance(last_chance, dict)
+                and last_chance.get("caster") == defender_id
+                and last_chance.get("round", room.round) == room.round
+            ):
+                result.last_chance = True
+                break
+    return result
+
+
+def line_cells(line_type: str, index: int) -> list[tuple[int, int]]:
+    if line_type == "row":
+        return [(x, int(index)) for x in range(BOARD_SIZE)]
+    return [(int(index), y) for y in range(BOARD_SIZE)]
+
+
+def resolve_area_strike(room: Room, caster_id: str,
+                        cells: list[Any], *, kind: str) -> AreaStrikeResult:
+    """Bomb / sulfur: sink every living ship intersecting the selected cells.
+
+    All positions of a sunk ship are recorded as hit cells with is_bomb /
+    is_sulfur, and every selected cell that hit nothing is recorded as a miss,
+    exactly like the legacy branches.
+    """
+
+    flag = "is_bomb" if kind == "bomb" else "is_sulfur"
+    caster = room.players[caster_id]
+    defender_id = opponent_of(room, caster_id)
+    assert defender_id is not None
+    defender = room.players[defender_id]
+    result = AreaStrikeResult()
+
+    normalized: list[tuple[int, int]] = []
+    for raw in cells or []:
+        if isinstance(raw, Position):
+            x, y = raw.x, raw.y
+        elif isinstance(raw, dict):
+            x, y = int(raw.get("x")), int(raw.get("y"))
+        else:
+            x, y = int(raw[0]), int(raw[1])
+        if 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE and (x, y) not in normalized:
+            normalized.append((x, y))
+
+    chosen = {Position(x=x, y=y) for x, y in normalized}
+    doomed: list[PlayerShip] = []
+    for ship in list(defender.ships or []):
+        if not is_ship_alive(defender, ship):
+            continue
+        if any(pos in chosen for pos in (ship.positions or [])):
+            doomed.append(ship)
+
+    removed_positions: set[tuple[int, int]] = set()
+    for ship in doomed:
+        _area_sink(room, defender_id, ship, remove_from_ships=True)
+        caster.damage_dealt_this_turn += 1
+        result.ships_sunk += 1
+        if "holy_heart" in room.game_effects:
+            room.game_effects["holy_heart"]["no_damage"] = False
+        for pos in ship.positions or []:
+            removed_positions.add((pos.x, pos.y))
+            _mark_area_attack(caster, pos.x, pos.y, True, True, flag)
+            result.cells.append(
+                AreaCellOutcome(x=pos.x, y=pos.y, hit=True, ship_sunk=True,
+                                sunk_ship=ship)
+            )
+
+    for x, y in normalized:
+        if (x, y) in removed_positions:
+            continue
+        _mark_area_attack(caster, x, y, False, False, flag)
+        result.cells.append(
+            AreaCellOutcome(x=x, y=y, hit=False, ship_sunk=False)
+        )
+    return result

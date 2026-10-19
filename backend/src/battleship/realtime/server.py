@@ -15,11 +15,16 @@ import socketio
 from ..contracts.events_in import is_debug_event
 from ..http.session import session_from_cookie_header, session_user_id, session_username
 from ..infra.logging import get_logger, log_context
+from ..services.battle import BattleService
 from ..services.gameplay import GameplayService
 from ..services.rooms import Connection, RoomService
 from .emitter import SocketIoPublisher
 from .handlers.battle import register_battle_handlers
-from .handlers.debug import DEBUG_EVENT_DISABLED_MESSAGE, register_debug_handlers
+from .handlers.debug import (
+    DEBUG_EVENT_DISABLED_MESSAGE,
+    register_debug_handlers,
+    register_debug_implementations,
+)
 from .handlers.reconnect import register_reconnect_handlers
 from .handlers.room import register_room_handlers
 
@@ -35,11 +40,15 @@ def create_socket_server(
     metrics: "MetricsRegistry",
     rooms: RoomService | None = None,
     gameplay: GameplayService | None = None,
+    battle: BattleService | None = None,
 ) -> socketio.AsyncServer:
     rooms = rooms or RoomService()
     gameplay = gameplay or GameplayService(
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )
+    battle = battle or BattleService(rooms)
+    if gameplay.fire_hook is None:
+        gameplay.fire_hook = battle.fire
     sio = socketio.AsyncServer(
         async_mode="asgi",
         cors_allowed_origins=settings.cors_origins or [],
@@ -116,8 +125,10 @@ def create_socket_server(
     publisher = SocketIoPublisher(sio)
     rooms.bind(publisher)
     gameplay.bind(publisher)
+    battle.bind(publisher)
     register_room_handlers(sio, rooms)
-    register_battle_handlers(sio, gameplay)
+    register_battle_handlers(sio, gameplay, battle)
     register_reconnect_handlers(sio, rooms)
+    register_debug_implementations(battle)
     register_debug_handlers(sio, settings, metrics)
     return sio
