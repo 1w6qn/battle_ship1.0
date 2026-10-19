@@ -33,6 +33,7 @@ from .http.routers import legacy as legacy_router
 from .http.routers import lobby as lobby_router
 from .http.routers import profile as profile_router
 from .http.routers import progression as progression_router
+from .http.routers import replay as replay_router
 from .http.routers import stats as stats_router
 from .http.routers import wallpapers as wallpapers_router
 from .infra.assets import AssetPaths
@@ -49,6 +50,7 @@ from .services.gameplay import GameplayService
 from .services.lobby import LobbyService
 from .services.presence import PresenceService
 from .services.progression import ProgressionService
+from .services.replays import allowed_for_match, build_replay
 from .services.rooms import RoomService
 from .services.settlement import SettlementService
 
@@ -150,7 +152,13 @@ def create_application(settings: Settings | None = None,
     assets = AssetPaths.discover()
     database = database or Database.from_settings(settings)
     rate_limiter = RateLimiter()
-    settlement = SettlementService(database)
+    # Ticket #18: the real recorder replaces the ticket-9 placeholder, and the
+    # allow_replay gate is evaluated once inside the settlement transaction.
+    settlement = SettlementService(
+        database,
+        replay_builder=build_replay,
+        replay_gate=lambda winner, loser: allowed_for_match(database, winner, loser),
+    )
     # #15 owns the progression settlement hooks: XP / rank points / badges are
     # written inside the same #9 transaction and emitted around game_over.
     progression = ProgressionService(database)
@@ -213,6 +221,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.include_router(progression_router.router)
     fastapi_app.include_router(wallpapers_router.router)
     fastapi_app.include_router(stats_router.router)
+    fastapi_app.include_router(replay_router.router)
     fastapi_app.include_router(lobby_router.router)
     fastapi_app.include_router(friends_router.router)
     fastapi_app.include_router(chat_router.router)
