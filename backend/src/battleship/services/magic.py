@@ -29,7 +29,7 @@ from ..domain.magic.cards import MagicCard, card_from_payload
 from ..domain.magic import chain as chain_rules
 from ..domain.magic.chain import CHAIN_RESPONSE_SECONDS, ChainItem, ChainResult
 from ..domain.magic.effects.base import EffectContext, EffectResult
-from ..domain.magic.preview import AREA_TARGET_BOARDS
+from ..domain.spectate.rules import AREA_TARGET_BOARDS
 from ..domain.magic.rules import (
     action_wait_reason,
     can_play_magic_card,
