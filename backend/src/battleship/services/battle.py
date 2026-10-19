@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
 from ..domain import replay as replay_rules
+from ..domain.magic import interaction as interaction_rules
 from ..domain.battle import AttackOutcome
 from ..domain.room import Player, PlayerShip, Room, RoomState
 from ..infra.logging import get_logger
@@ -328,6 +329,14 @@ class BattleService:
 
         room.state = RoomState.GAME_OVER
         room.winner = winner_id
+        # Clear every pending magic interaction in the same ending funnel.
+        interaction_rules.clear_ship_picks(room)
+        room.pending_dice_discard = {}
+        room.pending_dice_discard_label = {}
+        room.pending_wuyou_dreams = {}
+        room.pending_bingliang = {}
+        room.bingliang_skip_draw = {}
+        room.magic_temp_data = {}
         if log_text:
             await self._add_log(
                 room,
