@@ -1,7 +1,8 @@
 """Socket.IO ASGI 适配层。
 
-新的 socket 事件适配层会逐步迁移到 `handlers/*`；本票只搭：
-连接计数、未登记事件的明确拒绝、调试事件门禁、以及 `/metrics` 需要的事件计数。
+新的 socket 事件适配层按领域迁移到 `handlers/*`。当前负责：
+连接计数、会话身份落盘、续局提示/重连 token、房间与重连事件接线、
+未登记事件的明确拒绝，以及 `/metrics` 需要的事件计数。
 """
 
 from __future__ import annotations
@@ -14,7 +15,11 @@ import socketio
 from ..contracts.events_in import is_debug_event
 from ..http.session import session_from_cookie_header, session_user_id, session_username
 from ..infra.logging import get_logger, log_context
+from ..services.rooms import Connection, RoomService
+from .emitter import SocketIoPublisher
 from .handlers.debug import DEBUG_EVENT_DISABLED_MESSAGE, register_debug_handlers
+from .handlers.reconnect import register_reconnect_handlers
+from .handlers.room import register_room_handlers
 
 if TYPE_CHECKING:
     from ..config import Settings
@@ -23,7 +28,12 @@ if TYPE_CHECKING:
 logger = get_logger("realtime")
 
 
-def create_socket_server(settings: "Settings", metrics: "MetricsRegistry") -> socketio.AsyncServer:
+def create_socket_server(
+    settings: "Settings",
+    metrics: "MetricsRegistry",
+    rooms: RoomService | None = None,
+) -> socketio.AsyncServer:
+    rooms = rooms or RoomService()
     sio = socketio.AsyncServer(
         async_mode="asgi",
         cors_allowed_origins=settings.cors_origins or [],
@@ -47,6 +57,15 @@ def create_socket_server(settings: "Settings", metrics: "MetricsRegistry") -> so
                 "username": session_username(session),
             },
         )
+        # A returning account may still sit in an unfinished room: push
+        # resume_game + a fresh reconnect token so the client can rejoin.
+        await rooms.notify_resume(
+            Connection(
+                sid=sid,
+                user_id=session_user_id(session),
+                username=session_username(session),
+            )
+        )
         with log_context(event="connect"):
             logger.info(
                 "socket connected",
@@ -57,6 +76,9 @@ def create_socket_server(settings: "Settings", metrics: "MetricsRegistry") -> so
     @sio.event
     async def disconnect(sid: str, reason=None) -> None:
         metrics.connection_closed()
+        # Start the 30s grace in a background task. This handler must never emit
+        # or wait on the grace window (the legacy eventlet hub deadlock).
+        await rooms.handle_disconnect(sid)
         with log_context(event="disconnect"):
             logger.info("socket disconnected", extra={"socket_id": sid, "reason": str(reason)})
 
@@ -85,5 +107,8 @@ def create_socket_server(settings: "Settings", metrics: "MetricsRegistry") -> so
         )
         return {"status": "error", "message": message}
 
+    rooms.bind(SocketIoPublisher(sio))
+    register_room_handlers(sio, rooms)
+    register_reconnect_handlers(sio, rooms)
     register_debug_handlers(sio, settings, metrics)
     return sio

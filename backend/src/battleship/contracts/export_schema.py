@@ -20,7 +20,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .events_in import DEBUG_EVENTS, INBOUND_EVENTS, InboundEventEnvelope
-from .events_out import OUTBOUND_EVENTS, AckResponse, OutboundEventEnvelope
+from .events_out import OUTBOUND_EVENTS, AckResponse, OutboundEventEnvelope, RoomSync
 from .http_models import (
     ErrorDetail,
     ErrorResponse,
@@ -53,6 +53,7 @@ _MODELS: dict[str, type[BaseModel]] = {
     "LatencyStats": LatencyStats,
     "MetricsResponse": MetricsResponse,
     "OutboundEventEnvelope": OutboundEventEnvelope,
+    "RoomSync": RoomSync,
     "SeatIdentity": SeatIdentity,
     "SocketIdentity": SocketIdentity,
 }

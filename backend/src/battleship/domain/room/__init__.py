@@ -1,5 +1,49 @@
-"""backend/src/battleship/domain/room/__init__.py -- placeholder module.
+"""Room domain: state machine, seats, players, ships and the room_sync snapshot."""
 
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+from .models import (
+    AI_DIFFICULTIES,
+    BOARD_SIZE,
+    DEFAULT_MAX_SHIPS,
+    LOBBY_ROOM_NAME_MAX_LEN,
+    EffectFlags,
+    Player,
+    PlayerShip,
+    Position,
+    Room,
+    RoomPhase,
+    RoomState,
+    alive_ships,
+    is_ship_alive,
+    new_room_id,
+    opponent_of,
+    rank_payload,
+    room_match_mode,
+    seat_label,
+    seat_order,
+)
+from .sync import build_room_sync, card_payload, room_kind
+
+__all__ = [
+    "AI_DIFFICULTIES",
+    "BOARD_SIZE",
+    "DEFAULT_MAX_SHIPS",
+    "LOBBY_ROOM_NAME_MAX_LEN",
+    "EffectFlags",
+    "Player",
+    "PlayerShip",
+    "Position",
+    "Room",
+    "RoomPhase",
+    "RoomState",
+    "alive_ships",
+    "is_ship_alive",
+    "new_room_id",
+    "opponent_of",
+    "rank_payload",
+    "room_match_mode",
+    "seat_label",
+    "seat_order",
+    "build_room_sync",
+    "card_payload",
+    "room_kind",
+]
