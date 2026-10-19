@@ -134,6 +134,9 @@ class RoomService:
         # Ticket #9 wires this to BattleService.settle_forfeit; without it the
         # forfeit path only flips the room state (ticket #7 behaviour).
         self.forfeit_hook: Any = None
+        # Ticket #12: per-room background timers (chain window, display delay,
+        # AI response) must die with the room. Hooks are sync and idempotent.
+        self.destroy_hooks: list[Callable[[str], None]] = []
         # Ticket #17 wires this to SpectatorService.on_room_dropped: spectators
         # still seated on a room that is about to disappear must receive
         # spectate_ended instead of waiting on a channel that will never update.
@@ -671,7 +674,20 @@ class RoomService:
                     logger.exception(
                         "room_dropped_hook failed", extra={"room_id": room_id}
                     )
-        return self.rooms.pop(room_id, None) is not None
+        dropped = self.rooms.pop(room_id, None) is not None
+        if dropped:
+            # Ticket #12: a dropped room owns no live timers. A hook failure
+            # must never keep the room in the map, so each is isolated.
+            for hook in list(self.destroy_hooks):
+                try:
+                    hook(room_id)
+                except Exception as error:  # noqa: BLE001 - cleanup isolation
+                    logger.error(
+                        "room destroy hook failed",
+                        extra={"room_id": room_id, "error_type": type(error).__name__},
+                        exc_info=error,
+                    )
+        return dropped
 
     def _recycle_host_waiting_rooms(self, player_id: str) -> list[str]:
         reaped: list[str] = []
