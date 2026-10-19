@@ -36,6 +36,7 @@ from .infra.metrics import MetricsRegistry
 from .infra.ratelimit import RateLimiter
 from .realtime.server import create_socket_server
 from .repositories import Database
+from .services.gameplay import GameplayService
 from .services.rooms import RoomService
 
 logger = get_logger("main")
@@ -64,14 +65,22 @@ class Application:
     assets: AssetPaths
     database: Database
     rooms: RoomService
+    gameplay: GameplayService
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     logger.info("backend starting", extra={"version": __version__})
+    # The turn watchdog needs a running loop, so it starts with the ASGI
+    # lifespan (ticket #8). `TURN_TIMEOUT_SECONDS=0` makes each sweep a no-op.
+    gameplay = getattr(_app.state, "gameplay", None)
+    if gameplay is not None:
+        gameplay.start()
     try:
         yield
     finally:
+        if gameplay is not None:
+            await gameplay.stop()
         database = getattr(_app.state, "database", None)
         if database is not None:
             database.dispose()
@@ -182,7 +191,10 @@ def create_application(settings: Settings | None = None,
         fastapi_app.mount("/static", StaticFiles(directory=str(assets.static_dir)), name="static")
 
     rooms = RoomService()
-    sio = create_socket_server(settings, metrics, rooms)
+    gameplay = GameplayService(
+        rooms, turn_timeout_seconds=settings.turn_timeout_seconds
+    )
+    sio = create_socket_server(settings, metrics, rooms, gameplay)
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
     fastapi_app.state.settings = settings
@@ -193,6 +205,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.database = database
     fastapi_app.state.rate_limiter = rate_limiter
     fastapi_app.state.rooms = rooms
+    fastapi_app.state.gameplay = gameplay
 
     asgi = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
     return Application(
@@ -205,6 +218,7 @@ def create_application(settings: Settings | None = None,
         assets=assets,
         database=database,
         rooms=rooms,
+        gameplay=gameplay,
     )
 
 
