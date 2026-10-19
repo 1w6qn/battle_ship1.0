@@ -32,14 +32,14 @@ class SocketIdentity(BaseModel):
     """一次连接上可信的身份事实（由服务端会话/座位记录填充）。"""
 
     player_id: str | None = None
-    user_id: int | None = None
+    user_id: int | str | None = None
 
 
 class IdentityClaim(BaseModel):
     """客户端 payload 里声明的身份。永远只是 claim，不是事实。"""
 
     player_id: str | None = None
-    user_id: int | None = None
+    user_id: int | str | None = None
 
 
 class SeatIdentity(BaseModel):
@@ -48,7 +48,7 @@ class SeatIdentity(BaseModel):
     room_id: str
     room_kind: RoomKind
     player_id: str
-    user_id: int | None = None
+    user_id: int | str | None = None
     socket_id: str | None = None
     seat: int | None = Field(default=None, ge=0, le=1)
 
@@ -72,7 +72,7 @@ class IdentityDecision(BaseModel):
     detail: str | None = None
 
 
-def build_player_key(room_kind: RoomKind, *, user_id: int | None, socket_id: str) -> str:
+def build_player_key(room_kind: RoomKind, *, user_id: int | str | None, socket_id: str) -> str:
     """按旧栈规则生成座位 key。
 
     匹配房永远用入队 sid；自定义/人机房优先登录 user_id，游客退回 sid。
@@ -111,7 +111,7 @@ def verify_identity(
     claim: IdentityClaim,
     seat: SeatIdentity,
     *,
-    session_user_id: int | None,
+    session_user_id: int | str | None,
     current_socket_id: str | None,
 ) -> IdentityDecision:
     """校验一次操作是否由座位本人发出。
