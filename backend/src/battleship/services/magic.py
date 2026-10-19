@@ -33,6 +33,8 @@ from ..domain.magic.cards import MagicCard, card_from_payload
 from ..domain.magic.chain import ChainItem, ChainResult
 from ..domain.magic.effects.base import EffectContext, EffectResult
 from ..domain.magic.rules import (
+    BINGLIANG_FAIL_BELOW,
+    BINGLIANG_SKIP_PHASES,
     action_wait_reason,
     can_play_magic_card,
     field_magic_name,
@@ -628,6 +630,7 @@ class MagicService:
         else:
             await self._finish_placement(room, player_id, kind)
         replay_rules.refresh_ships(room)
+        await self._emit_board_attacks(room)
         return {"status": "success", "message": message}
 
     async def cancel_placement(self, room: Room, player_id: str) -> dict:
@@ -649,7 +652,8 @@ class MagicService:
         player = room.players.get(player_id)
         if player and player.socket_id:
             await self._publisher.emit("message", {"text": "已放弃剩余放置"}, to=player.socket_id)
-        return {"status": "success", "message": "已放弃剩余放置"}
+        # Legacy ack shape for the generic cancel path: no extra message key.
+        return {"status": "success"}
 
     async def _finish_placement(self, room: Room, player_id: str, kind: str) -> None:
         pending = self._pending_placement(room) or {}
@@ -1113,6 +1117,13 @@ class MagicService:
     # ------------------------------------------------------------------ ending
 
     async def finish(self, room: Room, winner: str, loser: str, reason: str) -> Any:
+        # One ending funnel: every pending magic interaction dies with the match.
+        interaction_rules.clear_ship_picks(room)
+        room.pending_dice_discard = {}
+        room.pending_dice_discard_label = {}
+        room.pending_wuyou_dreams = {}
+        room.pending_bingliang = {}
+        room.bingliang_skip_draw = {}
         if self.finish_hook is None:
             return None
         return await self._maybe_await(
@@ -1276,6 +1287,8 @@ class MagicService:
         replay_rules.note_board_reset(room)
         replay_rules.note_board_replaced(room)
         room.magic_temp_data = {}
+        # AI seats take their new board inside this stack frame (lesson #38).
+        await self._ai_place_any(room)
         room.lingqi_saved_state = {
             "attack_order": list(room.attack_order),
             "current_attacker": room.current_attacker,
@@ -1911,7 +1924,7 @@ class MagicService:
 
     async def _roll_bingliang(self, room: Room, caster_id: str, target_id: str) -> None:
         roll = int(self.rng.randint(1, 6))
-        if roll < 3:
+        if roll < BINGLIANG_FAIL_BELOW:
             outcome = "fail"
             effect_text = "判定失败：不产生任何效果"
         else:
@@ -1937,7 +1950,7 @@ class MagicService:
             if not isinstance(skips, dict):
                 skips = {}
                 room.bingliang_skip_draw = skips
-            skips[target_id] = int(skips.get(target_id) or 0) + 2
+            skips[target_id] = int(skips.get(target_id) or 0) + BINGLIANG_SKIP_PHASES
 
     async def consume_bingliang_skip(self, room: Room, player_id: str) -> bool:
         skips = getattr(room, "bingliang_skip_draw", None)
@@ -2433,6 +2446,15 @@ class MagicService:
 
     async def _refresh_replay_ships(self, room: Room) -> None:
         replay_rules.refresh_ships(room)
+
+    async def _ai_place_any(self, room: Room) -> None:
+        for pid in list(room.players):
+            if (
+                room.is_ai_room
+                and str(pid).startswith("ai-")
+                and not room.players[pid].ships
+            ):
+                await self._ai_place_board(room, pid)
 
 
     # ------------------------------------------------------------------ debug

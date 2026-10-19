@@ -11,20 +11,17 @@ from __future__ import annotations
 from typing import Any
 
 from ... import replay as replay_rules
-from ...room import PlayerShip, Position, alive_ships, card_payload
+from ...room import PlayerShip, alive_ships, card_payload
 from ..cards import MagicCard
-from ..field import field_active, place_field_magic, tear_down_field_magic
 from ..interaction import (
     cell_xy,
     find_ship_at,
     pick_cell_from_target,
     placement_blocked_cells,
-    register_ship_pick,
 )
-from ..lifecycle import clear_board_effects as clear_boards
 from ..lifecycle import clear_multiturn_effects
 from ..registry import register
-from ..rules import field_magic_name, lanyu_requirement_reason
+from ..rules import lanyu_requirement_reason
 from .base import EffectContext, EffectResult
 
 DICE_EFFECT_TEXT = {
@@ -35,30 +32,6 @@ DICE_EFFECT_TEXT = {
     5: "复活自己的至多两艘战舰",
     6: "对手牺牲两艘战舰",
 }
-
-BINGLIANG_FAIL_BELOW = 3
-BINGLIANG_SKIP_PHASES = 2
-
-
-async def _emit_shields(ctx: EffectContext, ships: list[PlayerShip]) -> None:
-    positions = [{"x": p.x, "y": p.y} for ship in ships for p in ship.positions]
-    await ctx.emit(
-        "shields_added",
-        {
-            "player": ctx.caster_id,
-            "count": len(ships),
-            "positions": positions,
-            "ships": [
-                [{"x": p.x, "y": p.y} for p in ship.positions] for ship in ships
-            ],
-        },
-        room=ctx.room.id,
-    )
-
-
-async def _emit_board_effects(ctx: EffectContext) -> None:
-    for pid in list(ctx.room.players):
-        await ctx.emit_frame("shenwei_hole_restored", {"player": pid})
 
 
 @register("桃园结义")
@@ -402,6 +375,9 @@ async def polar_reversal(ctx: EffectContext) -> EffectResult:
             to=player.socket_id,
         )
     await ctx.ai_place_board(ctx.caster_id)
+    for other_id in list(ctx.room.players):
+        if other_id != ctx.caster_id:
+            await ctx.ai_place_board(other_id)
     return EffectResult(
         True,
         "败者食尘生效：双方棋盘重置为6艘并重新摆放，手牌保留；本大回合双方攻击次数为0",
