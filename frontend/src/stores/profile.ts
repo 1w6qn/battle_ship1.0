@@ -53,6 +53,11 @@ export const useProfileStore = defineStore('profile', () => {
     history: [],
     error: '',
   })
+  // The owner's full badge catalogue (unlocked + locked). /user_stats only ever
+  // sends unlocked badges; /api/profile and /api/achievements are the owner-only
+  // sources for the collection view.
+  const achievements = ref<JsonObject[]>([])
+  const achievementCount = ref<JsonObject | null>(null)
 
   let ownToken = 0
   let viewedToken = 0
@@ -115,6 +120,11 @@ export const useProfileStore = defineStore('profile', () => {
         history: body ? asObjects(body.history) : [],
         error: '',
       }
+      if (name === viewerName.value) await loadAchievements()
+      else {
+        achievements.value = []
+        achievementCount.value = null
+      }
     } catch (error) {
       if (token !== viewedToken) return
       viewed.value = {
@@ -131,6 +141,21 @@ export const useProfileStore = defineStore('profile', () => {
   function clearViewed(): void {
     viewedToken += 1
     viewed.value = { username: '', status: 'idle', stats: null, history: [], error: '' }
+    achievements.value = []
+    achievementCount.value = null
+  }
+
+  async function loadAchievements(): Promise<void> {
+    try {
+      const response = await fetch('/api/achievements', { headers: { accept: 'application/json' } })
+      if (!response.ok) return
+      const body = await readJson(response)
+      if (!body) return
+      achievements.value = asObjects(body.achievements)
+      achievementCount.value = asObject(body.badge_count)
+    } catch {
+      // The card still renders from /user_stats; the catalogue is an enhancement.
+    }
   }
 
   function reset(): void {
@@ -140,5 +165,17 @@ export const useProfileStore = defineStore('profile', () => {
     viewed.value = { username: '', status: 'idle', stats: null, history: [], error: '' }
   }
 
-  return { own, ownStatus, ownError, viewerName, viewed, loadOwn, loadPublic, clearViewed, reset }
+  return {
+    own,
+    ownStatus,
+    ownError,
+    viewerName,
+    viewed,
+    achievements,
+    achievementCount,
+    loadOwn,
+    loadPublic,
+    clearViewed,
+    reset,
+  }
 })

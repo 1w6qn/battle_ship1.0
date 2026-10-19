@@ -129,12 +129,14 @@ const favCards = computed(() =>
     .filter((item) => Boolean(item.name)),
 )
 
-const badges = computed(() =>
-  readArray(stats.value, 'achievements').filter(
+const badges = computed(() => {
+  // Owner view: the full catalogue comes from /api/achievements.
+  if (store.achievements.length) return store.achievements
+  return readArray(stats.value, 'achievements').filter(
     (item): item is JsonObject => Boolean(item) && typeof item === 'object' && !Array.isArray(item),
-  ),
-)
-const badgeCount = computed(() => readObject(stats.value, 'badge_count'))
+  )
+})
+const badgeCount = computed(() => store.achievementCount ?? readObject(stats.value, 'badge_count'))
 const badgeUnlocked = computed(() => {
   const count = badgeCount.value ? readNumber(badgeCount.value, 'unlocked') : null
   return count ?? badges.value.filter((item) => item.unlocked === true).length
