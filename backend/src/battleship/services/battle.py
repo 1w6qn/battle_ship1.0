@@ -272,6 +272,28 @@ class BattleService:
 
     # --------------------------------------------------------------- ending
 
+    async def finish_game(self, room: Room, winner_id: str, loser_id: str,
+                          *, reason: str | None = None,
+                          log_text: str | None = None,
+                          log_detail: dict | None = None) -> SettlementResult:
+        """Public ending seam for magic cards (ticket #10).
+
+        Magic wipes must enter the same idempotent funnel as attacks and
+        surrender; otherwise a card that sinks the last ship would flip the
+        room state without writing a match row.
+        """
+
+        if log_text is None:
+            log_text = (
+                f"第{room.round}回合 · {self._name(room, winner_id)} 获胜，游戏结束"
+            )
+        return await self._finish_game(
+            room, winner_id, loser_id, log_text=log_text,
+            log_detail=log_detail, reason=reason,
+        )
+
+    # --------------------------------------------------------------- ending
+
     async def _finish_game(
         self,
         room: Room,

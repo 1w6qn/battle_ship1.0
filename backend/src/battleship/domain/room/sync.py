@@ -88,6 +88,8 @@ def card_payload(card: Any) -> dict[str, Any]:
 def _effect_badges(player: Player | None) -> list[dict[str, Any]]:
     if player is None:
         return []
+    from ..magic.cards import CARD_BY_NAME
+
     flags = player.effect_flags
     badges: list[dict[str, Any]] = []
     for attr, label, expiry, suffix in EFFECT_BADGES:
@@ -98,8 +100,10 @@ def _effect_badges(player: Player | None) -> list[dict[str, Any]]:
                 "name": label,
                 "key": attr,
                 "label": f"{label}·{suffix}" if suffix else label,
-                # Card text lands with ticket #10; the key must exist now.
-                "description": "",
+                # Card text comes from the single card table, never a second copy.
+                "description": CARD_BY_NAME.get(label).description
+                if label in CARD_BY_NAME
+                else "",
                 "expires": expiry,
             }
         )
