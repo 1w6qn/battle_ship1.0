@@ -20,7 +20,13 @@ from typing import Any
 from pydantic import BaseModel
 
 from .events_in import DEBUG_EVENTS, INBOUND_EVENTS, InboundEventEnvelope
-from .events_out import OUTBOUND_EVENTS, AckResponse, OutboundEventEnvelope, RoomSync
+from .events_out import (
+    OUTBOUND_EVENTS,
+    ROOM_SYNC_KEYS,
+    AckResponse,
+    OutboundEventEnvelope,
+    RoomSync,
+)
 from .http_models import (
     ErrorDetail,
     ErrorResponse,
@@ -162,6 +168,13 @@ def frontend_ts() -> str:
         _ts_array("OUTBOUND_EVENTS", OUTBOUND_EVENTS),
         "",
         _ts_array("DEBUG_EVENTS", DEBUG_EVENTS),
+        "",
+        # The reconnect snapshot is the widest server state a screen can receive;
+        # the Pinia store mirrors these keys (ticket #21) and a type-level parity
+        # check fails the build if a contract field is dropped or misspelled.
+        _ts_array("ROOM_SYNC_FIELDS", ROOM_SYNC_KEYS),
+        "",
+        "export type RoomSyncField = (typeof ROOM_SYNC_FIELDS)[number]",
         "",
         "export type InboundEvent = (typeof INBOUND_EVENTS)[number]",
         "export type OutboundEvent = (typeof OUTBOUND_EVENTS)[number]",
