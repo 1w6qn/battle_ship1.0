@@ -48,6 +48,7 @@ from .services.chat import ChatService
 from .services.friends import FriendsService
 from .services.gameplay import GameplayService
 from .services.lobby import LobbyService
+from .services.magic import MagicService
 from .services.presence import PresenceService
 from .services.progression import ProgressionService
 from .services.replays import allowed_for_match, build_replay
@@ -82,6 +83,7 @@ class Application:
     rooms: RoomService
     gameplay: GameplayService
     battle: BattleService
+    magic: MagicService
     settlement: SettlementService
     progression: ProgressionService
     lobby: LobbyService
@@ -238,6 +240,9 @@ def create_application(settings: Settings | None = None,
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )
     battle = BattleService(rooms, settlement, touch_turn=gameplay.touch_turn)
+    magic = MagicService(
+        rooms, settlement, touch_turn=gameplay.touch_turn
+    )
     # Ticket #8 left two explicit seams; #9 fills both: the turn watchdog fires
     # through the same attack rules, and disconnect forfeits settle for real.
     gameplay.fire_hook = battle.fire
@@ -246,7 +251,7 @@ def create_application(settings: Settings | None = None,
     friends = FriendsService(database, presence, rooms)
     chat = ChatService(rooms)
     sio = create_socket_server(
-        settings, metrics, rooms, gameplay, battle, lobby, presence, friends, chat
+        settings, metrics, rooms, gameplay, battle, magic, lobby, presence, friends, chat
     )
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
@@ -260,6 +265,7 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.rooms = rooms
     fastapi_app.state.gameplay = gameplay
     fastapi_app.state.battle = battle
+    fastapi_app.state.magic = magic
     fastapi_app.state.settlement = settlement
     fastapi_app.state.progression = progression
     fastapi_app.state.lobby = lobby
@@ -280,6 +286,7 @@ def create_application(settings: Settings | None = None,
         rooms=rooms,
         gameplay=gameplay,
         battle=battle,
+        magic=magic,
         settlement=settlement,
         progression=progression,
         lobby=lobby,
