@@ -68,6 +68,8 @@ class GameplayService:
         tick_seconds: float = DEFAULT_TICK_SECONDS,
         draw_hook: Callable[[Room, str], Any] | None = None,
         fire_hook: Callable[[Room, str, int, int], Any] | None = None,
+        ai_turn_hook: Callable[[Room, str], Any] | None = None,
+        ai_delay_seconds: float = 0.5,
         rng: Any | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -76,6 +78,10 @@ class GameplayService:
         self.tick_seconds = float(tick_seconds)
         self.draw_hook = draw_hook
         self.fire_hook = fire_hook
+        # Ticket #10 owns the real AI layer; until then the fallback below keeps
+        # an AI room playable instead of freezing on the AI seat's turn.
+        self.ai_turn_hook = ai_turn_hook
+        self.ai_delay_seconds = max(0.0, float(ai_delay_seconds))
         # Default to the module-level RNG, exactly like the legacy handlers, so
         # `random.seed(...)` (and monkeypatching) keeps tests reproducible.
         self.rng = rng or random
@@ -445,17 +451,22 @@ class GameplayService:
     async def sweep_timeouts(self, now: float | None = None) -> list[str]:
         """One watchdog pass. Returns the rooms that performed a fallback action."""
 
-        if self.turn_timeout_seconds <= 0:
-            return []
         now = self.clock() if now is None else now
         acted: list[str] = []
         for room in list(self.rooms.get_all_rooms().values()):
             if _state_value(room) != RoomState.ATTACKING.value:
                 continue
-            if room.is_ai_room:
-                continue  # AI turns are driven by the AI layer, not the watchdog
             player_id = room.current_attacker
             if not player_id or player_id not in room.players:
+                continue
+            # AI seats are never left to the 90s human clock. The real AI layer
+            # (ticket #10) installs ai_turn_hook; the local fallback only picks
+            # a random legal cell / advances the phase so the room cannot stall.
+            if room.is_ai_room and player_id == ai_player_id(room.id):
+                if await self._drive_ai(room, player_id, now):
+                    acted.append(room.id)
+                continue
+            if self.turn_timeout_seconds <= 0:
                 continue
             if room.turn_timer_attacker != player_id:
                 self._start_timer(room, now)
@@ -482,6 +493,72 @@ class GameplayService:
             if await self._timeout_action(room, player_id, now):
                 acted.append(room.id)
         return acted
+
+    async def _drive_ai(self, room: Room, player_id: str, now: float) -> bool:
+        """One AI-seat fallback action. Ticket #10 replaces this via ai_turn_hook."""
+
+        if room.chain or room.chain_waiting or room.priority_pending:
+            return False
+        if room.disconnected:
+            return False
+        temp = room.magic_temp_data or {}
+        if (
+            temp.get("pending_placement")
+            or temp.get("pending_shenji")
+            or any(
+                isinstance(pick, dict) and pick.get("player") == player_id
+                for pick in room.pending_ship_picks
+            )
+        ):
+            return False
+        if room.turn_timer_attacker != player_id:
+            self._start_timer(room, now)
+            return False
+        if room.turn_started_at is None:
+            self._start_timer(room, now)
+            return False
+        if now - room.turn_started_at < self.ai_delay_seconds:
+            return False
+
+        if self.ai_turn_hook is not None:
+            await self._maybe_await(self.ai_turn_hook(room, player_id))
+            if _state_value(room) == RoomState.ATTACKING.value and room.current_attacker == player_id:
+                self._start_timer(room, now)
+            return True
+
+        if _phase_value(room) == "preparation":
+            if battle_rules.enter_battle(room, player_id) is not None:
+                return False
+            await self._publisher.emit(
+                "attacks_updated",
+                {
+                    "current_attacker": room.current_attacker,
+                    "attacks_remaining": room.attacks_remaining,
+                },
+                room=room.id,
+            )
+            await self._emit_phase(room)
+        elif _phase_value(room) == "battle":
+            player = room.players[player_id]
+            cells = battle_rules.attackable_cells(player)
+            if not cells or room.attacks_remaining <= 0:
+                if battle_rules.enter_end(room, player_id) is not None:
+                    return False
+                await self._emit_phase(room)
+            elif self.fire_hook is None:
+                return False
+            else:
+                x, y = self.rng.choice(cells)
+                await self._maybe_await(self.fire_hook(room, player_id, x, y))
+        elif _phase_value(room) == "end":
+            if await self._apply_turn_end(room, player_id) is None:
+                return False
+        else:
+            return False
+
+        if _state_value(room) == RoomState.ATTACKING.value and room.current_attacker == player_id:
+            self._start_timer(room, now)
+        return True
 
     async def _timeout_action(self, room: Room, player_id: str, now: float) -> bool:
         note: str | None = None

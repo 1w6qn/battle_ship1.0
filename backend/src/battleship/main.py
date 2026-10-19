@@ -36,8 +36,10 @@ from .infra.metrics import MetricsRegistry
 from .infra.ratelimit import RateLimiter
 from .realtime.server import create_socket_server
 from .repositories import Database
+from .services.battle import BattleService
 from .services.gameplay import GameplayService
 from .services.rooms import RoomService
+from .services.settlement import SettlementService
 
 logger = get_logger("main")
 
@@ -66,6 +68,8 @@ class Application:
     database: Database
     rooms: RoomService
     gameplay: GameplayService
+    battle: BattleService
+    settlement: SettlementService
 
 
 @asynccontextmanager
@@ -130,6 +134,7 @@ def create_application(settings: Settings | None = None,
     assets = AssetPaths.discover()
     database = database or Database.from_settings(settings)
     rate_limiter = RateLimiter()
+    settlement = SettlementService(database)
 
     fastapi_app = FastAPI(
         title="Battleship 1.0 backend",
@@ -194,7 +199,12 @@ def create_application(settings: Settings | None = None,
     gameplay = GameplayService(
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )
-    sio = create_socket_server(settings, metrics, rooms, gameplay)
+    battle = BattleService(rooms, settlement)
+    # Ticket #8 left two explicit seams; #9 fills both: the turn watchdog fires
+    # through the same attack rules, and disconnect forfeits settle for real.
+    gameplay.fire_hook = battle.fire
+    rooms.forfeit_hook = battle.settle_forfeit
+    sio = create_socket_server(settings, metrics, rooms, gameplay, battle)
     health = HealthService(settings, metrics, version=__version__, socketio_ready=True)
 
     fastapi_app.state.settings = settings
@@ -206,6 +216,8 @@ def create_application(settings: Settings | None = None,
     fastapi_app.state.rate_limiter = rate_limiter
     fastapi_app.state.rooms = rooms
     fastapi_app.state.gameplay = gameplay
+    fastapi_app.state.battle = battle
+    fastapi_app.state.settlement = settlement
 
     asgi = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
     return Application(
@@ -219,6 +231,8 @@ def create_application(settings: Settings | None = None,
         database=database,
         rooms=rooms,
         gameplay=gameplay,
+        battle=battle,
+        settlement=settlement,
     )
 
 
