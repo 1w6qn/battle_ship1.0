@@ -16,16 +16,20 @@ battleship.domain.magic.effects and registered in battleship.domain.magic.regist
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
+from ..domain import replay as replay_rules
 from ..domain.magic import deck as deck_rules
 from ..domain.magic import registry
 from ..domain.magic.cards import MagicCard, card_from_payload
-from ..domain.magic.chain import ChainItem, ChainResult
+from ..domain.magic import chain as chain_rules
+from ..domain.magic.chain import CHAIN_RESPONSE_SECONDS, ChainItem, ChainResult
 from ..domain.magic.effects.base import EffectContext, EffectResult
+from ..domain.magic.preview import AREA_TARGET_BOARDS
 from ..domain.magic.rules import (
     action_wait_reason,
     can_play_magic_card,
@@ -37,8 +41,9 @@ from ..domain.magic.rules import (
     woxin_requirement_reason,
 )
 from ..domain.room import Player, Room, RoomPhase, RoomState, build_room_sync
-from ..domain.room.sync import EFFECT_BADGES, card_payload
+from ..domain.room.sync import EFFECT_BADGES, _spectate_chain_payload, card_payload
 from ..infra.logging import get_logger
+from ..infra.timers import TaskRegistry
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
 from .settlement import SettlementService
 
@@ -49,15 +54,6 @@ FINISHED_GAME = {"status": "error", "message": "对局已结束"}
 OPPONENT_DISCONNECTED = "对手已掉线，等待重连中"
 CHAIN_BUSY = "连锁响应中，请先响应连锁"
 UNIMPLEMENTED = "【{name}】效果尚未接入（后续批次），本张卡未消耗"
-
-#: Server-owned board side for area cards (port of spectate.AREA_TARGET_BOARDS).
-AREA_TARGET_BOARDS: dict[str, str] = {
-    "神威！": "choice",
-    "冻结": "opponent",
-    "探测雷达": "opponent",
-    "轰炸": "opponent",
-    "硫磺火焰": "opponent",
-}
 
 #: Fields a client may stage through select_magic_target (whitelist, not blacklist).
 SELECTION_TARGET_KEYS = frozenset({
@@ -93,14 +89,29 @@ class MagicService:
         clock: Callable[[], float] | None = None,
         rng: Any | None = None,
         touch_turn: Callable[[Room, str], None] | None = None,
+        chain_display_delay_seconds: float = 1.2,
+        chain_response_seconds: float = CHAIN_RESPONSE_SECONDS,
+        ai_chain_delay_seconds: float = 0.8,
+        timers: TaskRegistry | None = None,
     ) -> None:
         self.rooms = rooms
         self.settlement = settlement
         self.clock = clock or time.time
         self.rng = rng
         self.touch_turn = touch_turn
+        # 0 reproduces the pre-display-delay behaviour exactly (tests/headless).
+        self.chain_display_delay_seconds = max(0.0, float(chain_display_delay_seconds))
+        self.chain_response_seconds = max(0.0, float(chain_response_seconds))
+        self.ai_chain_delay_seconds = max(0.0, float(ai_chain_delay_seconds))
+        self.timers = timers or TaskRegistry()
         self._publisher: EventPublisher = NullPublisher()
         self.finish_hook: Callable[..., Awaitable[Any]] | None = None
+        # Ticket #13 (priority) fills this; without it the chain still resolves.
+        self.priority_continue_hook: Callable[..., Awaitable[Any]] | None = None
+        # A destroyed room must not leave a 10s timer or a display task behind.
+        hooks = getattr(rooms, "destroy_hooks", None)
+        if hooks is not None:
+            hooks.append(self.cancel_room_timers)
 
     def bind(self, publisher: EventPublisher) -> None:
         self._publisher = publisher
@@ -148,6 +159,8 @@ class MagicService:
             "detail": detail,
         }
         room.game_logs.append(entry)
+        # Same single replay feed as BattleService.add_log (ticket #18).
+        replay_rules.note(room, entry)
         await self._publisher.emit("game_log", entry, room=room.id)
 
     async def _emit_hand(self, player: Player) -> None:
@@ -256,7 +269,7 @@ class MagicService:
         if opponent_id is None:
             return {"status": "error", "message": "房间人数不足"}
 
-        if room.chain_waiting:
+        if room.chain_waiting or room.chain_resolving:
             return {"status": "error", "message": CHAIN_BUSY}
         wait = action_wait_reason(room, player_id)
         if wait:
@@ -293,52 +306,323 @@ class MagicService:
         if card.type != "场地":
             room.magic_discard.append(card)
         await self._emit_hand(player)
+        # Replay: the card leaves the hand at this instant, not at resolution.
+        replay_rules.note_card_played(room, player_id, card)
 
         room.chain.append(ChainItem(player_id, card, targets, self.clock()))
         await self._publisher.emit(
-            "magic_chain_updated", _chain_payload(room), room=room.id
+            "magic_chain_updated", _spectate_chain_payload(room), room=room.id
         )
-        await self._resolve_direct(room)
+        # The response window starts on the opponent; a card that nobody can
+        # answer falls through both passes and resolves (after the display
+        # delay, unless it is 0).
+        await self._open_chain_window(room, player_id)
         return {"status": "success", "message": f"魔法卡{card.name}已加入连锁"}
 
-    async def _resolve_direct(self, room: Room) -> list[ChainResult]:
-        """Resolve the stack now; ticket #12 replaces this with the 10s window."""
+    # ------------------------------------------------------------ chain engine
+
+    async def _open_chain_window(self, room: Room, caster_id: str) -> None:
+        room.chain_passes = 0
+        await self._advance_chain_window(room, room.opponent_of(caster_id))
+
+    async def _advance_chain_window(self, room: Room, player_id: str | None,
+                                    *, display_delay: bool = True) -> None:
+        """Hand the window to the player who may respond, or resolve.
+
+        A player who cannot respond is recorded as a pass and the window moves
+        to the opponent; two consecutive passes end the chain. `display_delay`
+        is False only on the 10-second timeout path (legacy: that path must not
+        add a second pause after the window already stayed open for 10s).
+        """
+
+        while True:
+            if not player_id or player_id not in room.players:
+                await self.resolve_chain(room)
+                return
+            if chain_rules.can_respond(room, player_id):
+                room.chain_window = player_id
+                room.chain_waiting = True
+                room.chain_timer += 1
+                token = room.chain_timer
+                top = room.chain[-1]
+                player = room.players[player_id]
+                await self._publisher.emit(
+                    "chain_request",
+                    {
+                        "card": card_payload(top.card),
+                        # Self-chain: the window can come back to the last
+                        # caster, so the client must not assume "opponent".
+                        "caster": top.player_id,
+                        "speed3_cards": [
+                            card_payload(card)
+                            for card in chain_rules.speed3_cards(player)
+                        ],
+                        "countdown": CHAIN_RESPONSE_SECONDS,
+                    },
+                    to=player.socket_id,
+                )
+                self._schedule_chain_timeout(room.id, token)
+                if player_id.startswith("ai-"):
+                    self._schedule_ai_response(room.id, token)
+                return
+            room.chain_passes += 1
+            if room.chain_passes >= 2:
+                await self._finish_chain(room, display_delay=display_delay)
+                return
+            player_id = room.opponent_of(player_id)
+
+    async def _finish_chain(self, room: Room, *, display_delay: bool = True) -> bool:
+        """End the chain; returns True when a delayed resolve task was queued."""
+
+        if not display_delay or self.chain_display_delay_seconds <= 0:
+            await self.resolve_chain(room)
+            return False
+        room.chain_timer += 1
+        token = room.chain_timer
+        room.chain_display_token = token
+        room.chain_display_deadline = (
+            time.monotonic() + self.chain_display_delay_seconds + 5.0
+        )
+        task = self.timers.spawn(room.id, self._chain_display_then_resolve(room.id, token))
+        if task is None:
+            # No running loop: never leave the chain hanging; resolve inline.
+            chain_rules.clear_display(room)
+            await self.resolve_chain(room)
+            return False
+        return True
+
+    async def _chain_display_then_resolve(self, room_id: str, token: int) -> None:
+        await asyncio.sleep(self.chain_display_delay_seconds)
+        room = self.rooms.get_room(room_id)
+        if room is None or room.chain_display_token != token:
+            return
+        chain_rules.clear_display(room)
+        if not chain_rules.display_still_current(room, token):
+            return
+        await self.resolve_chain(room)
+
+    def _schedule_chain_timeout(self, room_id: str, token: int) -> None:
+        self.timers.spawn(room_id, self._chain_timeout(room_id, token))
+
+    async def _chain_timeout(self, room_id: str, token: int) -> None:
+        await asyncio.sleep(self.chain_response_seconds)
+        room = self.rooms.get_room(room_id)
+        if room is None or not room.chain_waiting or room.chain_timer != token:
+            return
+        window_player = room.chain_window
+        room.chain_waiting = False
+        room.chain_window = None
+        room.chain_passes += 1
+        if room.chain_passes >= 2 or window_player is None:
+            # The 10s window already displayed the chain; no extra pause.
+            await self.resolve_chain(room)
+            return
+        await self._advance_chain_window(
+            room, room.opponent_of(window_player), display_delay=False
+        )
+
+    def _schedule_ai_response(self, room_id: str, token: int) -> None:
+        self.timers.spawn(room_id, self._ai_chain_respond(room_id, token))
+
+    async def _ai_chain_respond(self, room_id: str, token: int) -> None:
+        """Hard AI: spend 失灵！ when it can, otherwise pass immediately."""
+
+        await asyncio.sleep(self.ai_chain_delay_seconds)
+        room = self.rooms.get_room(room_id)
+        if room is None or getattr(room.state, "value", room.state) == "game_over":
+            return
+        if not room.chain_waiting or room.chain_timer != token:
+            return
+        ai_id = room.chain_window
+        if not ai_id or not ai_id.startswith("ai-"):
+            return
+        player = room.players.get(ai_id)
+        if player is None:
+            return
+        card = next((card for card in player.magic_hand if card.name == "失灵！"), None)
+        if card is None or not chain_rules.ai_can_negate_chain_top(room, ai_id):
+            await self.chain_response(
+                None, {"room_id": room_id, "player_id": ai_id, "chain": False}
+            )
+            return
+        ack = await self.chain_response(
+            None,
+            {
+                "room_id": room_id,
+                "player_id": ai_id,
+                "chain": True,
+                "card": {"name": card.name},
+                "targets": [],
+            },
+        )
+        if not (ack and ack.get("status") == "success"):
+            await self.chain_response(
+                None, {"room_id": room_id, "player_id": ai_id, "chain": False}
+            )
+
+    async def chain_response(self, connection: Connection | None,
+                             data: dict[str, Any] | None = None) -> dict:
+        """Answer the open window: play a speed-3 card or pass.
+
+        `connection=None` is the internal AI path: the player id is trusted
+        because no client can reach this method without the socket adapter,
+        which always passes a verified connection.
+        """
+
+        data = data if isinstance(data, dict) else {}
+        room = self.rooms.get_room(data.get("room_id"))
+        player_id = data.get("player_id")
+        if (
+            room is None
+            or not player_id
+            or player_id not in room.players
+            or (connection is not None
+                and not self.rooms.identity_ok(room, str(player_id), connection))
+        ):
+            return dict(INVALID_SEAT)
+
+        chain = bool(data.get("chain", False))
+        card_payload_data = data.get("card")
+        raw_targets = data.get("targets", [])
+        if isinstance(raw_targets, dict):
+            targets, target_error = sanitize_targets(
+                raw_targets,
+                card_payload_data.get("name")
+                if isinstance(card_payload_data, dict)
+                else None,
+            )
+            if target_error:
+                return {"status": "error", "message": target_error}
+        else:
+            targets = raw_targets
+
+        if not room.chain_waiting:
+            return {"status": "error", "message": "没有待处理的连锁请求"}
+        if room.chain_window and room.chain_window != player_id:
+            return {"status": "error", "message": "当前不是你的连锁响应窗口"}
+
+        # Closing the window is what makes late/stale answers impossible.
+        room.chain_waiting = False
+        room.chain_window = None
+
+        if chain and card_payload_data:
+            try:
+                card = card_from_payload(card_payload_data)
+            except Exception as error:  # noqa: BLE001 - client data
+                return {"status": "error", "message": f"魔法卡数据无效: {error}"}
+            player = room.players[str(player_id)]
+            # 看破！ suppress: pass and advance, never leave the window half-open.
+            if player.magic_blocked:
+                await self._pass_after_refusal(room, str(player_id))
+                return {"status": "error", "message": "你的魔法卡已被看破，无法连锁"}
+
+            hand_card = next(
+                (
+                    candidate
+                    for candidate in player.magic_hand
+                    if candidate.name == card.name and candidate.speed == card.speed
+                ),
+                None,
+            )
+            if hand_card is None:
+                return {"status": "error", "message": "你没有这张魔法卡"}
+            card = hand_card
+            if int(card.speed) != 3:
+                return {"status": "error", "message": "只能使用速阶3的卡牌进行连锁"}
+
+            # Same playability gate as a normal play (禁忌果实 / 绝处逢生).
+            if not can_play_magic_card(room, str(player_id), card):
+                await self._pass_after_refusal(room, str(player_id))
+                return {"status": "error", "message": "当前无法使用这张魔法卡"}
+
+            for index, candidate in enumerate(player.magic_hand):
+                if candidate.name == card.name and candidate.speed == card.speed:
+                    player.magic_hand.pop(index)
+                    break
+            room.magic_discard.append(card)
+            await self._emit_hand(player)
+            # Replay: chained play is a play, recorded at the same moment.
+            replay_rules.note_card_played(room, str(player_id), card, chained=True)
+
+            room.chain.append(ChainItem(str(player_id), card, targets, self.clock()))
+            await self._publisher.emit(
+                "magic_chain_updated", _spectate_chain_payload(room), room=room.id
+            )
+            # A new card clears the pass count; the window goes to the opponent
+            # and can come back for self-chaining.
+            room.chain_passes = 0
+            await self._advance_chain_window(room, room.opponent_of(str(player_id)))
+            return {"status": "success", "message": f"魔法卡{card.name}已加入连锁"}
+
+        room.chain_passes += 1
+        if room.chain_passes >= 2:
+            await self._finish_chain(room)
+        else:
+            await self._advance_chain_window(room, room.opponent_of(str(player_id)))
+        return {"status": "success", "message": "放弃连锁"}
+
+    async def _pass_after_refusal(self, room: Room, player_id: str) -> None:
+        room.chain_passes += 1
+        if room.chain_passes >= 2:
+            await self._finish_chain(room)
+        else:
+            await self._advance_chain_window(room, room.opponent_of(player_id))
+
+    async def resolve_chain(self, room: Room) -> list[ChainResult]:
+        """Resolve once; a re-entrant call during async effects is a no-op."""
+
+        if room.chain_resolving:
+            return []
+        room.chain_resolving = True
+        try:
+            return await self._resolve_chain(room)
+        finally:
+            room.chain_resolving = False
+
+    async def _resolve_chain(self, room: Room) -> list[ChainResult]:
+        """Resolve LIFO. Negated items are skipped (DECISIONS D2)."""
 
         results: list[ChainResult] = []
         while room.chain:
             item = room.chain.pop()
             if getattr(item, "negated", False):
+                by = getattr(item, "negated_by", None)
+                detail = (
+                    f"{item.card.name}被{by}无效化"
+                    if by
+                    else f"{item.card.name}被无效化"
+                )
                 result = ChainResult(
                     card=item.card,
                     caster=item.player_id,
                     success=False,
-                    message=(
-                        f"{item.card.name}被{item.negated_by}无效化"
-                        if item.negated_by
-                        else f"{item.card.name}被无效化"
-                    ),
+                    message=detail,
                     negated_skip=True,
-                    negated_by=item.negated_by,
+                    negated_by=by,
                 )
+                # A negated field card only goes to the discard pile; it must
+                # never replace or tear down the field already in play.
                 if item.card.type == "场地" and room.field_magic is not item.card:
                     room.magic_discard.append(item.card)
+                suffix = f"但被{by}无效化" if by else "但被无效化"
                 await self._add_log(
                     room,
                     f"第{room.round}回合 · {self._name(room, item.player_id)} 使用了"
-                    f"【{item.card.name}】但被无效化",
+                    f"【{item.card.name}】{suffix}",
                     "magic",
                     {"caster": item.player_id, "card": item.card.name},
                 )
                 results.append(result)
                 continue
 
-            context = self._context(room, item)
             effect = registry.effect_for(item.card)
             if effect is None:
-                result = EffectResult(False, UNIMPLEMENTED.format(name=item.card.name))
+                effect_result = EffectResult(
+                    False, UNIMPLEMENTED.format(name=item.card.name)
+                )
             else:
                 try:
-                    result = await effect(context)
+                    effect_result = await effect(self._context(room, item))
                 except Exception as error:  # one bad card must not kill the room
                     logger.error(
                         "magic effect failed",
@@ -349,26 +633,36 @@ class MagicService:
                         },
                         exc_info=error,
                     )
-                    result = EffectResult(False, "魔法卡效果结算失败，卡牌已退回手牌")
+                    effect_result = EffectResult(
+                        False, "魔法卡效果结算失败，卡牌已退回手牌"
+                    )
 
             chain_result = ChainResult(
                 card=item.card,
                 caster=item.player_id,
-                success=result.success,
-                message=result.message,
-                affected_positions=result.affected_positions,
-                game_over=result.game_over,
+                success=effect_result.success,
+                message=effect_result.message,
+                negate_target=effect_result.negate_target,
+                affected_positions=effect_result.affected_positions,
+                game_over=effect_result.game_over,
             )
             await self._add_log(
                 room,
                 f"第{room.round}回合 · {self._name(room, item.player_id)} 使用了"
-                f"【{item.card.name}】" + (f"，{result.message}" if result.success and result.message else ""),
+                f"【{item.card.name}】"
+                + (
+                    f"，{effect_result.message}"
+                    if effect_result.success and effect_result.message
+                    else ""
+                ),
                 "magic",
                 {"caster": item.player_id, "card": item.card.name},
             )
-            if not result.success and not result.game_over:
-                await self._refund(room, item.player_id, item.card, result.message)
-            elif result.success:
+            if not effect_result.success and not effect_result.game_over:
+                await self._refund(
+                    room, item.player_id, item.card, effect_result.message
+                )
+            elif effect_result.success:
                 entry = {
                     "card": item.card,
                     "caster": item.player_id,
@@ -379,6 +673,12 @@ class MagicService:
                 if id(item.card) in ledger:
                     entry["stolen"] = True
                 room.magic_history.append(entry)
+
+            # Negation marks the item directly below *after* this one resolved,
+            # which is exactly the next item to pop.
+            if chain_result.negate_target and room.chain:
+                room.chain[-1].negated = True
+                room.chain[-1].negated_by = item.card.name
             results.append(chain_result)
 
         await self._publisher.emit(
@@ -390,25 +690,51 @@ class MagicService:
         room.chain_waiting = False
         room.chain_window = None
         room.chain_passes = 0
-        room.chain_display_token = None
-        room.chain_display_deadline = None
+        chain_rules.clear_display(room)
+        # The stolen-card ledger is merged; clear it so ids cannot be reused.
         room.game_effects.pop("stolen_cards", None)
+
         await self._emit_active_effects(room)
         for player in room.players.values():
             await self._emit_hand(player)
         await self._emit_ships_updated(room)
         for pid in room.players:
             await self._emit_player_ships(room, pid)
-        if room.state != RoomState.GAME_OVER:
-            await self._publisher.emit(
-                "phase_updated",
-                {
-                    "current_phase": self._phase(room),
-                    "current_attacker": room.current_attacker,
-                },
-                room=room.id,
-            )
+        # Legacy order: phase_updated comes after every sync frame, even on the
+        # game-over path (game_over itself was emitted by the effect).
+        await self._publisher.emit(
+            "phase_updated",
+            {
+                "current_phase": self._phase(room),
+                "current_attacker": room.current_attacker,
+            },
+            room=room.id,
+        )
+
+        # A priority prompt interrupted by a speed-3 response resumes now.
+        cont = room.priority_continue
+        if cont and self.priority_continue_hook is not None:
+            room.priority_continue = None
+            await self._maybe_await(self.priority_continue_hook(room, cont))
         return results
+
+    # ------------------------------------------------------- timer lifecycle
+
+    def cancel_room_timers(self, room_id: str) -> int:
+        """Destroy hook: cancel every background wait owned by one room."""
+
+        room = self.rooms.get_room(room_id)
+        if room is not None:
+            chain_rules.clear_display(room)
+        return self.timers.cancel_room(room_id)
+
+    def pending_chain_tasks(self, room_id: str | None = None) -> int:
+        return self.timers.pending(room_id)
+
+    async def stop(self) -> None:
+        """Server shutdown: cancel every chain/display/AI wait."""
+
+        await self.timers.cancel_all()
 
     def _context(self, room: Room, item: ChainItem) -> EffectContext:
         opponent_id = room.opponent_of(item.player_id)
@@ -785,18 +1111,6 @@ class MagicService:
 
 
 # --------------------------------------------------------------------- helpers
-
-
-def _chain_payload(room: Room) -> dict[str, Any]:
-    chain = []
-    for item in room.chain or []:
-        chain.append({
-            "card": card_payload(item.card),
-            "seat": room.seat_label(item.player_id),
-            "negated": bool(getattr(item, "negated", False)),
-            "preview": getattr(item, "preview", None),
-        })
-    return {"chain": chain, "chain_len": len(chain), "targets_dropped": 0}
 
 
 def sanitize_targets(targets: Any, card_name: str) -> tuple[dict[str, Any], str | None]:

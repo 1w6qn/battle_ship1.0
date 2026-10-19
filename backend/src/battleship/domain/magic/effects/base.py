@@ -22,6 +22,8 @@ class EffectResult:
     temp_data_id: str | None = None
     game_over: bool = False
     affected_positions: list[Any] = field(default_factory=list)
+    #: True = this effect negates the item directly below it on the chain.
+    negate_target: bool = False
 
 
 Emit = Callable[..., Awaitable[None]]

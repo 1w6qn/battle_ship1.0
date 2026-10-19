@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...contracts.identity import RoomKind
+from ..magic.preview import preview_node
 from .models import (
     PUBLIC_EFFECT_FLAGS,
     Player,
@@ -113,26 +114,46 @@ def _effect_badges(player: Player | None) -> list[dict[str, Any]]:
 def _spectate_chain_payload(room: Room) -> dict[str, Any]:
     """Public chain shape shared by the live stream and the reconnect snapshot.
 
-    Legacy sanitises through `spectate.sanitize_event`; the chain engine is ticket
-    #12, so the empty shape is the only one reachable today. The function is kept
-    as the single construction point so #12 replaces one body, not four callers.
+    This is the one construction point (legacy `_spectate_chain_payload`) used by
+    the live broadcast, the reconnect snapshot and the spectator snapshot.
+
+    Frozen shape: `{'chain': [{'card','seat','negated','preview'}], 'chain_len',
+    'targets_dropped'}`. `card` is the **card name string**, never the full card
+    object: the whitelist allows only the name, and the old client renders the
+    name. Raw client `targets` are never forwarded -- they are replaced by the
+    derived `preview` (`None` when the card has no confirmed area).
     """
 
     chain: list[dict[str, Any]] = []
+    dropped = 0
     for item in room.chain or []:
-        if isinstance(item, dict):
-            raw = item
+        raw = item if isinstance(item, dict) else getattr(item, "__dict__", {})
+        card = raw.get("card")
+        if isinstance(card, dict):
+            card_name = card.get("name")
+        elif isinstance(card, str):
+            card_name = card
         else:
-            raw = getattr(item, "__dict__", {})
+            card_name = getattr(card, "name", None)
+        targets = raw.get("targets")
+        if isinstance(targets, (list, tuple)):
+            dropped += len(targets)
+        seat = seat_label(room, raw.get("player_id"))
+        node = raw.get("preview") if isinstance(raw.get("preview"), dict) else None
+        if node is None and isinstance(targets, dict):
+            node = preview_node(targets, card_name, room=room, board=targets.get("board"))
+        if node is not None:
+            node = dict(node)
+            node["seat"] = seat
         chain.append(
             {
-                "card": card_payload(raw.get("card")),
-                "seat": seat_label(room, raw.get("player_id")),
+                "card": card_name,
+                "seat": seat,
                 "negated": bool(raw.get("negated")),
-                "preview": raw.get("preview"),
+                "preview": node,
             }
         )
-    return {"chain": chain, "chain_len": len(chain), "targets_dropped": 0}
+    return {"chain": chain, "chain_len": len(chain), "targets_dropped": dropped}
 
 
 def _priority_pending_for(room: Room, player_id: str) -> dict[str, Any] | None:
