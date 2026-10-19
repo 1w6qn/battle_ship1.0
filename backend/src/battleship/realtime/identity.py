@@ -14,4 +14,6 @@ async def connection_from_sio(sio: socketio.AsyncServer, sid: str) -> Connection
         sid=sid,
         user_id=session_user_id(session),
         username=session_username(session),
+        # Captured from the ASGI environ at connect time; never a header.
+        ip=str(session.get("ip") or ""),
     )

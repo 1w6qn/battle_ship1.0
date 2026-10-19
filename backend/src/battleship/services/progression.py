@@ -117,8 +117,13 @@ class ProgressionService:
                 win=False, sunk=facts.loser_sunk, flawless=False, fast=False,
             )
 
-        if bool(getattr(room, "ranked", False)) and bool(
-            getattr(room, "match_started_at", None)
+        # Ticket #16 fills the missing gate: an anti-cheat-blocked match still
+        # settles wins/XP/badges, but must never move rank points (legacy
+        # _finalize_match checked ac_result.blocked around _settle_ranked_match).
+        if (
+            bool(getattr(room, "ranked", False))
+            and bool(getattr(room, "match_started_at", None))
+            and not bool(getattr(context, "blocked", False))
         ):
             self._settle_rank(uow, context, room, facts)
 
