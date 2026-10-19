@@ -205,6 +205,93 @@ class SocialRepository:
         )
         return bool(result.rowcount)
 
+    def my_reactions(self, from_user_id: str, to_user_id: str) -> dict[str, bool]:
+        """Which of the two reactions the viewer already sent (button state)."""
+        mine = {"like": False, "flower": False}
+        if not from_user_id or not to_user_id:
+            return mine
+        statement = select(ProfileLike.kind).where(
+            ProfileLike.from_user_id == from_user_id,
+            ProfileLike.to_user_id == to_user_id,
+        )
+        for kind in self.session.scalars(statement):
+            if kind in mine:
+                mine[kind] = True
+        return mine
+
+    def get_wall_message(self, message_id: Any) -> dict[str, Any] | None:
+        """One message including the internal owner/deleted columns.
+
+        Deletion permission needs the owner id and the soft-delete flag, but the
+        route strips both before answering (legacy behaviour: deleting twice is
+        idempotent, not a 404).
+        """
+        try:
+            mid = int(message_id)
+        except (TypeError, ValueError):
+            return None
+        message = self.session.get(ProfileMessage, mid)
+        if message is None:
+            return None
+        return {
+            "id": int(message.id),
+            "to_user_id": str(message.to_user_id or ""),
+            "from_user_id": str(message.from_user_id or ""),
+            "from_name": str(message.from_name or ""),
+            "content": str(message.content or ""),
+            "created_at": int(message.created_at or 0),
+            "deleted": int(message.deleted or 0),
+        }
+
+    def wall_message_page(self, to_user_id: str, *, limit: int = 20,
+                          before_id: int | None = None) -> dict[str, Any]:
+        """One cursor page + total, excluding soft-deleted rows."""
+        safe_limit = max(1, min(int(limit), 50))
+        base_filters = (
+            ProfileMessage.to_user_id == to_user_id,
+            ProfileMessage.deleted == 0,
+        )
+        total = int(
+            self.session.scalar(
+                select(func.count()).select_from(ProfileMessage).where(*base_filters)
+            )
+            or 0
+        )
+        statement = (
+            select(
+                ProfileMessage.id,
+                ProfileMessage.to_user_id,
+                ProfileMessage.from_user_id,
+                ProfileMessage.from_name,
+                ProfileMessage.content,
+                ProfileMessage.created_at,
+            )
+            .where(*base_filters)
+            .order_by(ProfileMessage.id.desc())
+            .limit(safe_limit + 1)
+        )
+        if before_id is not None:
+            statement = statement.where(ProfileMessage.id < int(before_id))
+        rows = [dict(row._mapping) for row in self.session.execute(statement)]
+        has_more = len(rows) > safe_limit
+        return {"messages": rows[:safe_limit], "has_more": has_more, "total": total}
+
+    def count_wall_messages_since(self, from_user_id: str, to_user_id: str,
+                                  since: int) -> int:
+        """Daily per-author quota input; soft-deleted rows still count."""
+        if not from_user_id or not to_user_id:
+            return 0
+        statement = (
+            select(func.count())
+            .select_from(ProfileMessage)
+            .where(
+                ProfileMessage.from_user_id == from_user_id,
+                ProfileMessage.to_user_id == to_user_id,
+                ProfileMessage.created_at >= int(since),
+            )
+        )
+        return int(self.session.scalar(statement) or 0)
+
     # -------------------------------------------------------------- friends
 
     def get_friend(self, user_id: str, friend_id: str) -> UserFriend | None:

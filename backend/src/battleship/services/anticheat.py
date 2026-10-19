@@ -189,6 +189,82 @@ class AnticheatService:
         with self.database.unit_of_work() as uow:
             return uow.stats.list_overrides(user_id, limit=limit)
 
+    def player_report(self, user_id: str) -> dict[str, Any]:
+        """Full admin dossier: derived report + stats + flags + audit history."""
+        with self.database.unit_of_work() as uow:
+            user = uow.users.get(user_id)
+            rows = uow.stats.list_suspicions(user_id, limit=2000)
+            flags = uow.stats.list_anticheat_flags(500)
+            overrides = uow.stats.list_overrides(user_id, limit=50)
+            rank = uow.stats.get_rank(user_id)
+        now = time.time()
+        matches = [
+            {
+                "score": row.get("score"),
+                "age_days": suspicion.match_age_days(row.get("created_at"), now),
+            }
+            for row in rows
+        ]
+        report = suspicion.build_report(
+            user_id,
+            matches,
+            override=overrides[0] if overrides else None,
+            username=str(getattr(user, "username", "") or "(已删除)"),
+        )
+        wins = int(getattr(user, "wins", 0) or 0)
+        losses = int(getattr(user, "losses", 0) or 0)
+        report["stats"] = {
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else 0.0,
+            "rank_points": int(rank.get("points") or 0),
+            "ranked_wins": int(rank.get("ranked_wins") or 0),
+            "ranked_losses": int(rank.get("ranked_losses") or 0),
+        }
+        match_ids = {
+            str(row.get("match_id") or "").split(":", 1)[0] for row in rows
+        }
+        report["flagged_matches"] = [
+            dict(flag) for flag in flags if str(flag.get("match_id")) in match_ids
+        ][:100]
+        report["override_history"] = [
+            {
+                "level": row.get("level"),
+                "cleared": bool(row.get("cleared")),
+                "reason": row.get("reason"),
+                "actor": row.get("actor"),
+                "created_at": row.get("created_at"),
+            }
+            for row in overrides
+        ]
+        return report
+
+    def suspicion_overview(self, limit: int = 200) -> dict[str, Any]:
+        """Admin list: raw totals -> one derived report per account."""
+        if not self.database:
+            return {"players": [], "total": 0,
+                    "levels": {}, "thresholds": {}}
+        with self.database.unit_of_work() as uow:
+            totals = uow.stats.all_suspicion_totals(limit)
+        players: list[dict[str, Any]] = []
+        for row in totals:
+            user_id = row.get("user_id")
+            if not user_id:
+                continue
+            report = self.report_for(str(user_id))
+            if report is not None:
+                players.append(report)
+        players.sort(key=lambda item: item.get("suspicion") or 0, reverse=True)
+        return {
+            "players": players,
+            "total": len(totals),
+            "levels": {str(level): name for level, name in suspicion.LEVEL_NAMES.items()},
+            "thresholds": {
+                str(level): threshold
+                for threshold, level in suspicion.LEVEL_THRESHOLDS
+            },
+        }
+
     def set_override(self, user_id: str, *, actor: str, level: int | None = None,
                      cleared: bool = False, reason: str = "") -> dict[str, Any]:
         """Persist an explicit admin decision (append-only audit).
@@ -224,7 +300,7 @@ class AnticheatService:
                 actor=str(actor or "")[:64],
                 created_at=int(time.time()),
             )
-        report = self.report_for(user_id)
+        report = self.player_report(user_id)
         if report is None:
             raise ValueError("用户不存在")
         return report

@@ -20,6 +20,7 @@ from .models import (
     AnticheatOverride,
     CardUsage,
     MatchSuspicion,
+    User,
     UserAchievement,
     UserCardUsage,
     UserCounters,
@@ -67,6 +68,14 @@ class StatsRepository:
             )
             or 0
         )
+
+    def all_card_usage(self) -> dict[str, int]:
+        """Every card's lifetime use count, as the legacy /api/card_usage map."""
+        statement = select(CardUsage.card_name, CardUsage.uses)
+        return {
+            str(name): int(uses or 0)
+            for name, uses in self.session.execute(statement)
+        }
 
     def top_cards(self, limit: int = 10) -> list[dict[str, Any]]:
         statement = (
@@ -456,6 +465,45 @@ class StatsRepository:
             set_={key: statement.excluded[key] for key in values if key != "match_id"},
         )
         self.session.execute(statement)
+
+    def all_suspicion_totals(self, limit: int = 2000) -> list[dict[str, Any]]:
+        """Server-wide raw suspicion sums, ordered by total (admin list input).
+
+        The score is deliberately NOT decayed here: decay depends on "now" and
+        stays in `domain.anticheat.suspicion.accumulate` (the admin route calls
+        `build_report` per account with the live age).
+        """
+        safe_limit = max(1, min(int(limit), 10000))
+        statement = (
+            select(
+                MatchSuspicion.user_id.label("user_id"),
+                User.username.label("username"),
+                func.sum(MatchSuspicion.score).label("total"),
+                func.count().label("matches"),
+            )
+            .select_from(MatchSuspicion)
+            .outerjoin(User, User.id == MatchSuspicion.user_id)
+            .group_by(MatchSuspicion.user_id)
+            .order_by(func.sum(MatchSuspicion.score).desc())
+            .limit(safe_limit)
+        )
+        return [dict(row._mapping) for row in self.session.execute(statement)]
+
+    def list_anticheat_flags(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Recent suspicious-match flags, newest first (admin detail input)."""
+        safe_limit = max(1, min(int(limit), 2000))
+        statement = (
+            select(
+                AnticheatFlag.match_id,
+                AnticheatFlag.rule,
+                AnticheatFlag.severity,
+                AnticheatFlag.detail,
+                AnticheatFlag.created_at,
+            )
+            .order_by(AnticheatFlag.created_at.desc())
+            .limit(safe_limit)
+        )
+        return [dict(row._mapping) for row in self.session.execute(statement)]
 
     def list_suspicions(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         statement = (
