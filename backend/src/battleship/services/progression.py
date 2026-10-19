@@ -248,8 +248,12 @@ class ProgressionService:
             before_row = uow.stats.get_rank(user_id)
             before_points = int(before_row.get("points") or 0)
             _predicted, clamped = ranks.apply_delta(before_points, int(total))
-            before_server_rank = uow.stats.rank_position(user_id)
             uow.stats.add_rank_points(user_id, int(total), now=context.timestamp)
+            # Legacy reads the "before" server rank *after* this seat's write
+            # (server.py:5229 then :5237), so the first ranked match shows 1/2
+            # instead of 0/0. Keep the same order; before_points is still the
+            # pre-match value used by the view.
+            before_server_rank = uow.stats.rank_position(user_id)
             rows.append({
                 "player": player,
                 "player_id": player_id,
