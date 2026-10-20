@@ -28,7 +28,10 @@ const ui = useUiStore()
 
 /** Flow screens are reached from a match, not from the bar. */
 const FLOW_ROUTE_NAMES = new Set(['placement', 'rps', 'game', 'game-over'])
-const immersive = computed(() => FLOW_ROUTE_NAMES.has(String(route.name)))
+const screenFailed = ref(false)
+// A failed flow screen falls back to the normal bar: with the destinations
+// hidden the player would have no way to leave the error screen.
+const immersive = computed(() => FLOW_ROUTE_NAMES.has(String(route.name)) && !screenFailed.value)
 
 const destinations = [
   { name: 'start', label: '开战' },
@@ -171,7 +174,7 @@ function exitMatch(): void {
       <span class="sr-only">正在切换界面…</span>
     </div>
 
-    <ScreenBoundary>
+    <ScreenBoundary @error="screenFailed = true" @recovered="screenFailed = false">
       <router-view v-slot="{ Component, route: viewRoute }">
         <component :is="Component" v-if="Component" :key="viewRoute.path" />
       </router-view>
