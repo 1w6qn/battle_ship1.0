@@ -33,7 +33,6 @@ from .http.routers import frontend as frontend_router
 from .http.routers import friends as friends_router
 from .http.routers import health as health_router
 from .http.routers import leaderboard as leaderboard_router
-from .http.routers import legacy as legacy_router
 from .http.routers import lobby as lobby_router
 from .http.routers import profile as profile_router
 from .http.routers import progression as progression_router
@@ -271,25 +270,27 @@ def create_application(settings: Settings | None = None,
     fastapi_app.include_router(spectate_router.router)
     fastapi_app.include_router(admin_router.router)
 
-    # Legacy static files are mounted before the SPA catch-all so /static keeps
-    # its owner in both modes.
-    if assets.static_dir.is_dir():
-        fastapi_app.mount("/static", StaticFiles(directory=str(assets.static_dir)), name="static")
+    # User-uploaded avatars are the only surviving piece of `static/`; they keep
+    # the frozen /static/avatars/... URL so existing profile rows still resolve.
+    assets.avatars_dir.mkdir(parents=True, exist_ok=True)
+    fastapi_app.mount(
+        "/static/avatars",
+        StaticFiles(directory=str(assets.avatars_dir)),
+        name="static-avatars",
+    )
 
-    # Ticket #21: mount the built Vue shell on the same ASGI app. Legacy stays
-    # the default; #20 flips FRONTEND_MODE=spa at the cut-over. Installing the
-    # SPA router before the legacy page router lets /lobby and /leaderboard
-    # resolve to the shell while API routers above still win every /api path.
-    if settings.frontend_mode == "spa":
-        dist = settings.frontend_dist or assets.frontend_dist
-        if not Path(dist).is_absolute():
-            dist = assets.root / dist
-        build_id = frontend_router.install(fastapi_app, dist)
-        logger.info(
-            "frontend shell mounted",
-            extra={"dist": str(dist), "build": build_id},
-        )
-    fastapi_app.include_router(legacy_router.router)
+    # Phase 5: exactly one frontend. The built Vue shell is mounted on the same
+    # ASGI app; a missing build aborts startup inside install() instead of
+    # silently serving an empty page. The SPA router is included last so every
+    # API router above wins.
+    dist = settings.frontend_dist or assets.frontend_dist
+    if not Path(dist).is_absolute():
+        dist = assets.root / dist
+    build_id = frontend_router.install(fastapi_app, dist)
+    logger.info(
+        "frontend shell mounted",
+        extra={"dist": str(dist), "build": build_id},
+    )
 
     # One presence instance for the room service, the lobby and the friends
     # service (CLAUDE #17: the online table must exist exactly once).

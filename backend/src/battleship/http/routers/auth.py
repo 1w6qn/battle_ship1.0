@@ -16,7 +16,7 @@ import html
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from ...infra.ratelimit import client_key
 from ...services.auth import AuthError, AuthService
@@ -30,7 +30,6 @@ from ..session import (
     session_user_id,
     write_session,
 )
-from .legacy import render_legacy_page
 
 router = APIRouter(tags=["auth"], include_in_schema=False)
 
@@ -108,14 +107,17 @@ def _guard_login_fields(username: Any, password: Any) -> None:
 # ------------------------------------------------------------------------ pages
 
 
-@router.get("/login", response_class=Response)
-def login_page(request: Request) -> Response:
-    return render_legacy_page(request)
+# Phase 5: the deleted panel used to render the HTML login page here. The SPA
+# owns the login UI (StartScreen uses the JSON forms), so these frozen entry
+# points redirect there; POSTs keep the legacy 302 + flash behaviour below.
+@router.get("/login", response_class=RedirectResponse, include_in_schema=False)
+def login_page() -> RedirectResponse:
+    return RedirectResponse("/", status_code=302)
 
 
-@router.get("/register", response_class=Response)
-def register_page(request: Request) -> Response:
-    return render_legacy_page(request)
+@router.get("/register", response_class=RedirectResponse, include_in_schema=False)
+def register_page() -> RedirectResponse:
+    return RedirectResponse("/", status_code=302)
 
 
 @router.post("/login")

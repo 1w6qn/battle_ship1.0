@@ -23,10 +23,13 @@ _*.py
 .tmp/
 .pytest_cache/
 
-tests/e2e_magic_report.json
 
 # 新架构的依赖与构建产物不入仓
 frontend/node_modules/
 frontend/dist/
 frontend/dist-test/
 backend/.venv/
+*.egg-info/
+# 本地数据库 / 运行期数据
+.venv/
+*.db.backup-*

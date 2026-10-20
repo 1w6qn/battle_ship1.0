@@ -1,17 +1,20 @@
 /**
- * Card-face art (ticket #33).
+ * Card-face art (ticket #33, moved in #30).
  *
- * The legacy card faces already live in the repository at
- * `static/card_faces/<slug>.webp`. Vite imports them from there at build time
- * (content-hashed assets copied into dist), so the SPA stays offline-capable and
- * we do not duplicate ~20 MB of art inside `frontend/`.
+ * The faces are the game's art, so they now live with the frontend:
+ * `frontend/public/card_faces/<slug>.webp`. Vite still imports them at build
+ * time through the glob below (content-hashed assets in `dist/assets`), which
+ * keeps the SPA offline-capable and keeps the missing-face fallback honest:
+ * a face that is not in the build resolves to `null` and the card renders
+ * without an art layer. `build.copyPublicDir` is off, so the art is not copied
+ * into `dist` a second time.
  *
- * The name -> slug table mirrors the generated `static/card_art_map.js` (48
- * unique card names). The browser gate asserts coverage, so a missing entry
- * fails loudly instead of silently rendering a blank card.
+ * The name -> slug table is the 48 unique card names of the frozen card pool.
+ * The browser gate asserts coverage, so a missing entry fails loudly instead
+ * of silently rendering a blank card.
  */
 
-const ART_MODULES = import.meta.glob('../../../static/card_faces/*.webp', {
+const ART_MODULES = import.meta.glob('/public/card_faces/*.webp', {
   eager: true,
   query: '?url',
   import: 'default',
@@ -71,7 +74,7 @@ const CARD_ART_SLUGS: Record<string, string> = {
 export const CARD_ART_NAMES: readonly string[] = Object.keys(CARD_ART_SLUGS)
 
 function moduleKey(slug: string): string {
-  return '../../../static/card_faces/' + slug + '.webp'
+  return '/public/card_faces/' + slug + '.webp'
 }
 
 /** Bundled URL for one card name, or null when the card has no face entry. */
