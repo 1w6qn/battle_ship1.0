@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BoardPanel from './BoardPanel.vue'
 import { acquireBattleChannel, sendBattleEvent } from '../../realtime/battle'
+import { cardArtUrl } from '../../cards/cardArt'
 import { useGameStore } from '../../stores/game'
 import { useMatchStore } from '../../stores/match'
 import { useResultStore } from '../../stores/result'
@@ -98,6 +99,23 @@ const turnLabel = computed(() => turnText(state.value, selfName.value, opponentN
 const selectedCardIndex = ref(-1)
 const selectedCardKey = ref('')
 const noticeText = ref('')
+
+// 仁王之盾 waits for the server's chain_resolved frame; only then may the
+// player pick up to three own ships (legacy showRenwangChoice).
+const shieldPicks = ref<number[]>([])
+const shieldError = ref('')
+const shieldOpen = computed(() => Boolean(match.shieldChoice))
+const shieldSelectedKeys = computed<string[]>(() => {
+  const ships = Array.isArray(state.value.ships) ? state.value.ships : []
+  const keys: string[] = []
+  for (const index of shieldPicks.value) {
+    const ship = ships[index]
+    for (const position of Array.isArray(ship?.positions) ? ship.positions : []) {
+      keys.push(position.x + '-' + position.y)
+    }
+  }
+  return keys
+})
 
 interface SelectionState {
   card: CardLike
@@ -315,6 +333,8 @@ watch(
       seenRoom = room
       match.reset()
       selection.value = null
+      shieldPicks.value = []
+      shieldError.value = ''
       clearCardSelection()
     }
   },
@@ -388,6 +408,10 @@ async function playCard(index: number): Promise<void> {
   const descriptor = targetDescriptor(card.name)
   if (!descriptor) {
     await dispatchCard(card, {})
+    // A card without a local target panel must not stay "selected": the next
+    // card that lands in the same hand slot would otherwise be played on the
+    // first click (the card that left the hand kept its index/key selected).
+    clearCardSelection()
     return
   }
   selection.value = {
@@ -594,6 +618,10 @@ function onCell(board: 'self' | 'opponent', x: number, y: number): void {
     pickCell(board, x, y)
     return
   }
+  if (match.shieldChoice) {
+    toggleShieldShip(x, y)
+    return
+  }
   if (match.pickRequest) {
     void choosePickCell(board, x, y)
     return
@@ -619,6 +647,70 @@ async function choosePickCell(board: 'self' | 'opponent', x: number, y: number):
     match.pushNotice(ack.message || '已选择一艘战舰')
   } else {
     match.pushNotice(ack.message || '选择失败', 'error')
+  }
+}
+
+function toggleShieldShip(x: number, y: number): void {
+  if (!match.shieldChoice) return
+  const ships = Array.isArray(state.value.ships) ? state.value.ships : []
+  const index = ships.findIndex((ship) => {
+    if (!ship || ship.alive === false) return false
+    return (Array.isArray(ship.positions) ? ship.positions : []).some(
+      (position) => position.x === x && position.y === y,
+    )
+  })
+  if (index < 0) {
+    shieldError.value = '请在自己海域选择一艘还活着的战舰'
+    return
+  }
+  const at = shieldPicks.value.indexOf(index)
+  if (at >= 0) {
+    shieldPicks.value.splice(at, 1)
+  } else {
+    if (shieldPicks.value.length >= 3) {
+      shieldError.value = '最多选择 3 艘战舰'
+      return
+    }
+    shieldPicks.value.push(index)
+  }
+  shieldError.value = ''
+}
+
+async function confirmShieldChoice(): Promise<void> {
+  if (!match.shieldChoice || !shieldPicks.value.length) return
+  const picks = shieldPicks.value.slice(0, 3)
+  try {
+    const ack = await sendBattleEvent('confirm_magic_target', {
+      room_id: state.value.room_id,
+      player_id: state.value.player_id,
+      temp_data_id: 'shield_choice',
+      target_data: { ship_indices: picks },
+    })
+    if (ack.status !== 'success') {
+      shieldError.value = ack.message || '加盾失败，请重新选择'
+      return
+    }
+    match.clearShieldChoice()
+    shieldPicks.value = []
+    shieldError.value = ''
+    match.pushNotice(ack.message || '已为战舰添加护盾')
+  } catch (error) {
+    shieldError.value = '加盾失败：' + String(error)
+  }
+}
+
+async function cancelShieldChoice(): Promise<void> {
+  try {
+    const ack = await sendBattleEvent('cancel_magic_selection', {
+      room_id: state.value.room_id,
+      player_id: state.value.player_id,
+    })
+    match.clearShieldChoice()
+    shieldPicks.value = []
+    shieldError.value = ''
+    match.pushNotice(ack.status === 'success' ? '已取消仁王之盾选择' : (ack.message || '已取消本次选择'))
+  } catch (error) {
+    shieldError.value = '取消失败：' + String(error)
   }
 }
 
@@ -838,9 +930,9 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
           :title="'我的海域 · ' + selfName"
           :subtitle="selfSubtitle + (myFrozenText ? ' · ' + myFrozenText : '')"
           :cells="selfCells"
-          :selected="selectedKeys"
+          :selected="selectedKeys.concat(shieldSelectedKeys)"
           :hidden="selfHidden"
-          :picking="!!selection || !!match.pickRequest"
+          :picking="!!selection || !!match.pickRequest || shieldOpen"
           @cell="(x, y) => onCell('self', x, y)"
         />
       </div>
@@ -882,14 +974,28 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
             :key="cardTestIdFor(card, index)"
             type="button"
             class="card"
-            :class="{ 'card--selected': selectedCardIndex === index, 'card--disabled': !!cardDisabled(card) }"
+            :class="{
+              'card--selected': selectedCardIndex === index,
+              'card--disabled': !!cardDisabled(card),
+              'card--art': !!cardArtUrl(card.name),
+            }"
             :data-testid="cardTestIdFor(card, index)"
             :data-card-name="card.name"
             :data-card-speed="String(card.speed)"
             :aria-pressed="selectedCardIndex === index"
+            :aria-label="card.name + '，速阶 ' + String(card.speed) + '，' + card.type"
             :title="cardDisabled(card) || card.description || card.name"
             @click="onCardClick(index)"
           >
+            <img
+              v-if="cardArtUrl(card.name)"
+              class="card__art"
+              :src="cardArtUrl(card.name) || ''"
+              alt=""
+              aria-hidden="true"
+              loading="eager"
+              decoding="async"
+            />
             <span class="card__name">{{ card.name }}</span>
             <span class="card__gems" :title="'速阶 ' + String(card.speed)">{{ speedGems(cardSpeed(card)) }}</span>
             <span class="card__type">{{ String(card.speed) }} · {{ card.type }}</span>
@@ -1099,6 +1205,40 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
       </div>
     </section>
 
+    <section
+      v-if="shieldOpen"
+      class="game__target game__shield-choice"
+      data-testid="game-shield-choice"
+      role="dialog"
+      aria-label="仁王之盾选择"
+    >
+      <h2 class="game__panel-title" data-testid="game-shield-choice-title">「仁王之盾」：请选择要保护的战舰</h2>
+      <p class="game__target-hint" data-testid="game-shield-choice-hint">
+        在自己海域点击高亮的战舰格；再点一次取消选择。
+      </p>
+      <p class="game__target-selected" data-testid="game-shield-choice-count">
+        已选 {{ shieldPicks.length }} / 3 艘
+      </p>
+      <p v-if="shieldError" class="game__target-error" data-testid="game-shield-choice-error">{{ shieldError }}</p>
+      <p class="game__target-hint" data-testid="game-shield-choice-status">
+        服务端没有选择倒计时；点「取消选择」可放弃本次加盾。
+      </p>
+      <div class="game__target-row">
+        <button
+          type="button"
+          class="button game__action"
+          data-testid="game-shield-choice-confirm"
+          :disabled="shieldPicks.length === 0"
+          @click="confirmShieldChoice"
+        >
+          确认加盾
+        </button>
+        <button type="button" class="button game__action" data-testid="game-shield-choice-cancel" @click="cancelShieldChoice">
+          取消选择
+        </button>
+      </div>
+    </section>
+
     <section v-if="chainWindow" class="game__chain-window" data-testid="game-chain-window" role="alertdialog" aria-label="连锁响应">
       <h2 class="game__panel-title">连锁响应窗口</h2>
       <p class="game__target-hint">
@@ -1226,6 +1366,8 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
+
+
 
 .game__effects {
   display: flex;
@@ -1423,17 +1565,19 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 }
 
 .game__bottom {
-  display: flex;
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
   gap: 12px;
 }
 
 .game__hand-wrap {
+  grid-column: 2;
+  justify-self: center;
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  flex: 1;
 }
 
 .game__stats {
@@ -1449,7 +1593,7 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   gap: 8px;
   overflow-x: auto;
   padding-bottom: 4px;
-  min-height: 108px;
+  min-height: 150px;
 }
 
 .game__hand-empty {
@@ -1460,12 +1604,15 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 }
 
 .card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 2px;
   width: 96px;
   min-width: 96px;
+  aspect-ratio: 2 / 3;
   padding: 6px 8px;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: linear-gradient(170deg, #232b52, #12172e);
@@ -1473,6 +1620,25 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.card--art {
+  padding: 0;
+}
+
+.card--art .card__name,
+.card--art .card__gems,
+.card--art .card__type,
+.card--art .card__desc {
+  display: none;
+}
+
+.card__art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .card:hover {
@@ -1516,6 +1682,8 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 }
 
 .game__actions {
+  grid-column: 3;
+  justify-self: end;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1611,7 +1779,17 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   }
 
   .game__bottom {
+    display: flex;
     gap: 6px;
+  }
+
+  .game__hand-wrap {
+    flex: 1;
+    justify-self: stretch;
+  }
+
+  .game__actions {
+    justify-self: auto;
   }
 
   .game__hand {
@@ -1782,8 +1960,8 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 
 @media (max-width: 719px) {
   .game {
-    padding: 8px;
-    gap: 6px;
+    padding: 6px;
+    gap: 4px;
   }
 
   .game__main {
@@ -1792,7 +1970,7 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 
   .game__boards {
     display: block;
-    --cell: clamp(32px, min(12vw, calc((100dvh - 470px) / 6)), 42px);
+    --cell: clamp(32px, min(12vw, calc((100dvh - 500px) / 6)), 40px);
   }
 
   .game__side {
@@ -1834,6 +2012,7 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 
   .game__bottom {
     flex-wrap: wrap;
+    gap: 6px;
   }
 
   .game__actions {
@@ -1842,13 +2021,21 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   }
 
   .game__hand {
-    min-height: 92px;
+    min-height: 104px;
+  }
+
+  .game__stats {
+    display: none;
   }
 
   .card {
-    width: 82px;
-    min-width: 82px;
+    width: 70px;
+    min-width: 70px;
     padding: 4px 6px;
+  }
+
+  .card--art {
+    padding: 0;
   }
 
   .card__desc {

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSettingsStore, type PrivacyKey } from '../../stores/settings'
+import { useAudioStore } from '../../stores/audio'
 
 /**
  * Ticket #25: settings.
@@ -12,6 +13,7 @@ import { useSettingsStore, type PrivacyKey } from '../../stores/settings'
  */
 const router = useRouter()
 const settings = useSettingsStore()
+const audio = useAudioStore()
 
 const oldPassword = ref('')
 const newPassword = ref('')
@@ -58,6 +60,17 @@ const wallpaperStatus = computed(() => {
   }
   return '壁纸库只在旧版界面里管理，点上面入口进入。'
 })
+
+
+function onSfxVolume(event: Event): void {
+  const target = event.target as HTMLInputElement | null
+  if (target) audio.setSfxVolume(Number(target.value) / 100)
+}
+
+function onBgmVolume(event: Event): void {
+  const target = event.target as HTMLInputElement | null
+  if (target) audio.setBgmVolume(Number(target.value) / 100)
+}
 
 async function onReplayChange(event: Event): Promise<void> {
   const target = event.target as HTMLInputElement | null
@@ -116,6 +129,7 @@ onMounted(() => {
 
       <div class="settings__layout">
         <nav class="settings__nav" aria-label="设置分区">
+          <a href="#settings-audio">音效与音乐</a>
           <a href="#settings-replay">对局回放</a>
           <a href="#settings-spectate">观战</a>
           <a href="#settings-privacy">名片隐私</a>
@@ -124,6 +138,75 @@ onMounted(() => {
         </nav>
 
         <div class="settings__panes">
+
+      <section class="settings__block settings__audio" data-testid="settings-audio">
+        <h2 class="settings__block-title">音效与背景音乐</h2>
+        <div class="settings__audio-row">
+          <button
+            type="button"
+            class="button"
+            data-testid="settings-sfx-mute"
+            :aria-pressed="audio.sfxMuted"
+            @click="audio.toggleSfxMute()"
+          >
+            {{ audio.sfxMuted ? '音效：已静音' : '音效：开启' }}
+          </button>
+          <button type="button" class="button" data-testid="settings-sfx-preview" @click="audio.previewSfx()">
+            试听
+          </button>
+        </div>
+        <label class="settings__range">
+          <span>音效音量</span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            :value="audio.sfxVolumePercent"
+            data-testid="settings-sfx-volume"
+            @input="onSfxVolume"
+          />
+          <output data-testid="settings-sfx-volume-value">{{ audio.sfxVolumePercent }}%</output>
+        </label>
+
+        <div class="settings__audio-row">
+          <button
+            type="button"
+            class="button"
+            data-testid="settings-bgm-toggle"
+            :aria-pressed="audio.bgmPlaying"
+            @click="audio.toggleBgmPlay()"
+          >
+            {{ audio.bgmPlaying ? '背景音乐：暂停' : '背景音乐：播放' }}
+          </button>
+          <button
+            type="button"
+            class="button button--ghost"
+            data-testid="settings-bgm-mute"
+            :aria-pressed="audio.bgmMuted"
+            @click="audio.toggleBgmMute()"
+          >
+            {{ audio.bgmMuted ? '取消静音' : '静音' }}
+          </button>
+        </div>
+        <label class="settings__range">
+          <span>音乐音量</span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            :value="audio.bgmVolumePercent"
+            data-testid="settings-bgm-volume"
+            @input="onBgmVolume"
+          />
+          <output data-testid="settings-bgm-volume-value">{{ audio.bgmVolumePercent }}%</output>
+        </label>
+        <p class="settings__note" data-testid="settings-bgm-status" role="status">
+          {{ audio.bgmStatus }}（浏览器可能要求先点一下页面才出声）
+        </p>
+      </section>
+
     <section v-if="anonymous" class="settings__login" data-testid="settings-login-required">
       <h2>需要先登录</h2>
       <p>回放开关、观战开关、隐私与密码都绑定账号。</p>
@@ -472,6 +555,33 @@ onMounted(() => {
   border-color: var(--border-strong);
   background: rgba(13, 17, 34, 0.72);
   color: var(--text-muted);
+}
+
+.settings__audio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings__range {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.settings__range input[type='range'] {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--accent);
+}
+
+.settings__range output {
+  min-width: 42px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 860px) {
