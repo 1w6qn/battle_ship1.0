@@ -1,0 +1,283 @@
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
+import type { CardLike, LastAttackLike, PendingPickLike, Point } from '../screens/game/view'
+
+/**
+ * Live battle frames that are not part of the 45-key game-state schema
+ * (ticket #27).
+ *
+ * The game store stays the single mirror of `room_sync`/`game_state` fields
+ * (hand, chain, ships, attacks, effects...). This store only keeps what the
+ * server sends as *event-only* data: the log, transient prompts (chain window,
+ * ship pick), notices, quick-chat + free-text chat history and the effect
+ * marks that have no schema field (revealed cells, shield-absorbed cells, last
+ * shot).
+ *
+ * Everything here arrives over the real socket channel; the test build feeds
+ * the exact production reducer, never this store directly.
+ */
+export interface LogEntry {
+  ts: number
+  type: string
+  text: string
+  detail?: unknown
+}
+
+export type NoticeKind = 'info' | 'warning' | 'error'
+
+export interface Notice {
+  id: number
+  text: string
+  kind: NoticeKind
+}
+
+export interface ChainWindowState {
+  card: CardLike | null
+  caster: string
+  speed3Cards: CardLike[]
+  countdown: number
+  openedAt: number
+}
+
+export interface QuickChatMessage {
+  playerId: string
+  name: string
+  text: string
+  ts: number
+}
+
+export interface ChatMessage {
+  username: string
+  message: string
+  ts: number
+}
+
+export interface PickRequest extends PendingPickLike {
+  ships: Array<{ positions: Point[] }>
+}
+
+/** 仁王之盾: server says "pick up to three of your ships" after the chain resolves. */
+export interface ShieldChoice {
+  message: string
+  caster: string
+}
+
+const LOG_LIMIT = 200
+const NOTICE_LIMIT = 12
+const QUICK_CHAT_LIMIT = 30
+const CHAT_LIMIT = 50
+
+function asCard(value: unknown): CardLike | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  if (typeof record.name !== 'string' || !record.name) return null
+  return {
+    name: record.name,
+    speed: (record.speed as number | string) ?? 0,
+    type: String(record.type ?? ''),
+    description: String(record.description ?? ''),
+  }
+}
+
+export const useMatchStore = defineStore('match', () => {
+  const logs = ref<LogEntry[]>([])
+  const notices = ref<Notice[]>([])
+  const chainWindow = ref<ChainWindowState | null>(null)
+  const lastAttack = ref<LastAttackLike | null>(null)
+  const revealed = ref<Point[]>([])
+  const shieldBrokenSelf = ref<Point[]>([])
+  const shieldBrokenOpponent = ref<Point[]>([])
+  const quickChat = ref<QuickChatMessage[]>([])
+  const chat = ref<ChatMessage[]>([])
+  const pickRequest = ref<PickRequest | null>(null)
+  const shieldChoice = ref<ShieldChoice | null>(null)
+  const chainResolvedAt = ref(0)
+  let noticeSeq = 0
+
+  function appendLog(entry: LogEntry): void {
+    if (!entry || typeof entry.text !== 'string') return
+    logs.value.push(entry)
+    if (logs.value.length > LOG_LIMIT) logs.value.splice(0, logs.value.length - LOG_LIMIT)
+  }
+
+  function pushNotice(text: string, kind: NoticeKind = 'info'): void {
+    const trimmed = String(text ?? '').trim()
+    if (!trimmed) return
+    noticeSeq += 1
+    notices.value.push({ id: noticeSeq, text: trimmed, kind })
+    if (notices.value.length > NOTICE_LIMIT) notices.value.splice(0, notices.value.length - NOTICE_LIMIT)
+  }
+
+  function dismissNotice(id: number): void {
+    notices.value = notices.value.filter((notice) => notice.id !== id)
+  }
+
+  function openChainWindow(payload: Record<string, unknown>): void {
+    const speed3 = Array.isArray(payload.speed3_cards)
+      ? payload.speed3_cards.map(asCard).filter((card): card is CardLike => card !== null)
+      : []
+    chainWindow.value = {
+      card: asCard(payload.card),
+      caster: String(payload.caster ?? ''),
+      speed3Cards: speed3,
+      countdown: Number(payload.countdown ?? 10) || 10,
+      openedAt: Date.now(),
+    }
+  }
+
+  function closeChainWindow(): void {
+    chainWindow.value = null
+  }
+
+  function recordQuickChat(payload: Record<string, unknown>): void {
+    const text = String(payload.text ?? '').trim()
+    if (!text) return
+    quickChat.value.push({
+      playerId: String(payload.player_id ?? ''),
+      name: String(payload.name ?? ''),
+      text,
+      ts: Number(payload.ts ?? 0) || 0,
+    })
+    if (quickChat.value.length > QUICK_CHAT_LIMIT) {
+      quickChat.value.splice(0, quickChat.value.length - QUICK_CHAT_LIMIT)
+    }
+  }
+
+  function recordChatMessage(payload: Record<string, unknown>): void {
+    const message = String(payload.message ?? '').trim()
+    if (!message) return
+    chat.value.push({
+      username: String(payload.username ?? '') || '玩家',
+      message,
+      ts: Number(payload.ts ?? 0) || 0,
+    })
+    if (chat.value.length > CHAT_LIMIT) {
+      chat.value.splice(0, chat.value.length - CHAT_LIMIT)
+    }
+  }
+
+  function setPickRequest(payload: Record<string, unknown>): void {
+    const ships = Array.isArray(payload.ships)
+      ? payload.ships.map((ship) => {
+          const record = ship && typeof ship === 'object' ? (ship as Record<string, unknown>) : {}
+          const positions = Array.isArray(record.positions) ? record.positions : []
+          return {
+            positions: positions
+              .map((position) => {
+                const cell = position && typeof position === 'object' ? (position as Record<string, unknown>) : null
+                if (!cell) return null
+                const x = Number(cell.x)
+                const y = Number(cell.y)
+                return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
+              })
+              .filter((cell): cell is Point => cell !== null),
+          }
+        })
+      : []
+    pickRequest.value = {
+      reason: String(payload.reason ?? ''),
+      message: String(payload.message ?? '请点选一艘自己的战舰'),
+      ships,
+    }
+  }
+
+  function clearPickRequest(): void {
+    pickRequest.value = null
+  }
+
+  function openShieldChoice(payload: Record<string, unknown>): void {
+    shieldChoice.value = {
+      message: String(payload.message ?? '仁王之盾：请选择要保护的战舰（至多 3 艘）'),
+      caster: String(payload.caster ?? ''),
+    }
+  }
+
+  function clearShieldChoice(): void {
+    shieldChoice.value = null
+  }
+
+  function markRevealed(points: Point[]): void {
+    for (const point of points) {
+      if (!revealed.value.some((cell) => cell.x === point.x && cell.y === point.y)) {
+        revealed.value.push({ x: point.x, y: point.y })
+      }
+    }
+  }
+
+  function markShieldBroken(mine: boolean, points: Point[]): void {
+    const target = mine ? shieldBrokenSelf : shieldBrokenOpponent
+    for (const point of points) {
+      if (!target.value.some((cell) => cell.x === point.x && cell.y === point.y)) {
+        target.value.push({ x: point.x, y: point.y })
+      }
+    }
+  }
+
+  function clearShieldMarks(): void {
+    shieldBrokenSelf.value = []
+    shieldBrokenOpponent.value = []
+  }
+
+  /** A new match starts: no log/prompt from the previous room may leak in. */
+  function reset(): void {
+    logs.value = []
+    notices.value = []
+    chainWindow.value = null
+    lastAttack.value = null
+    revealed.value = []
+    shieldBrokenSelf.value = []
+    shieldBrokenOpponent.value = []
+    quickChat.value = []
+    chat.value = []
+    pickRequest.value = null
+    shieldChoice.value = null
+    chainResolvedAt.value = 0
+  }
+
+  function snapshot() {
+    return {
+      logs: logs.value.slice(),
+      notices: notices.value.slice(),
+      chainWindow: chainWindow.value ? { ...chainWindow.value } : null,
+      lastAttack: lastAttack.value ? { ...lastAttack.value } : null,
+      revealed: revealed.value.slice(),
+      shieldBrokenSelf: shieldBrokenSelf.value.slice(),
+      shieldBrokenOpponent: shieldBrokenOpponent.value.slice(),
+      quickChat: quickChat.value.slice(),
+      chat: chat.value.slice(),
+      pickRequest: pickRequest.value ? { ...pickRequest.value } : null,
+      shieldChoice: shieldChoice.value ? { ...shieldChoice.value } : null,
+    }
+  }
+
+  return {
+    logs,
+    notices,
+    chainWindow,
+    lastAttack,
+    revealed,
+    shieldBrokenSelf,
+    shieldBrokenOpponent,
+    quickChat,
+    chat,
+    pickRequest,
+    shieldChoice,
+    chainResolvedAt,
+    appendLog,
+    pushNotice,
+    dismissNotice,
+    openChainWindow,
+    closeChainWindow,
+    recordQuickChat,
+    recordChatMessage,
+    setPickRequest,
+    clearPickRequest,
+    openShieldChoice,
+    clearShieldChoice,
+    markRevealed,
+    markShieldBroken,
+    clearShieldMarks,
+    reset,
+    snapshot,
+  }
+})
