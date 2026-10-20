@@ -1,6 +1,7 @@
 import type { Pinia } from 'pinia'
 import { createTypedSocket, type TypedSocket } from '../socket/client'
 import { useSpectateStore } from '../stores/spectate'
+import { useUiStore } from '../stores/ui'
 import { asObject, asString, type JsonObject } from '../screens/spectate/view'
 
 /**
@@ -142,10 +143,18 @@ export function acquireSpectateChannel(pinia?: Pinia): () => void {
   if (!active) {
     const socket = createTypedSocket()
     const stopListeners = installSpectateListeners(socket, pinia)
+    // Spectating owns its own socket, so it reports the shell connection too.
+    const ui = useUiStore(pinia)
+    const onConnect = (): void => ui.setConnection(true)
+    const onDisconnect = (): void => ui.setConnection(false)
+    socket.socket.on('connect', onConnect)
+    socket.socket.on('disconnect', onDisconnect)
     socket.connect()
     active = {
       socket,
       stop: () => {
+        socket.socket.off('connect', onConnect)
+        socket.socket.off('disconnect', onDisconnect)
         stopListeners()
         socket.disconnect()
       },

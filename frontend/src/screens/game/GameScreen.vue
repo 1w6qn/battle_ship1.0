@@ -91,13 +91,12 @@ const turnOrderText = computed(() => {
   if (order[0] === state.value.player_id) return '你先手'
   return '对手先手'
 })
-const connectionText = computed(() => (game.connected ? '已连接' : '重连中…'))
+const connectionText = computed(() => (ui.connection === 'online' ? '已连接' : '重连中…'))
 const timeoutNote = computed(() => match.timeoutNote)
 
 // ---- hand selection --------------------------------------------------------
 const selectedCardIndex = ref(-1)
 const selectedCardKey = ref('')
-const noticeText = ref('')
 const detailOpen = computed(() => selectedCardIndex.value >= 0)
 
 const shieldPicks = ref<number[]>([])
@@ -260,6 +259,12 @@ const chainRemaining = computed(() => {
   return Math.max(0, Math.ceil(window.countdown - (now.value - window.openedAt) / 1000))
 })
 const chainOrderText = computed(() => '第 ' + String(chainList.value.length) + ' 张')
+/** 0..1 remaining share of the response window, for the ring (#52). */
+const chainProgress = computed(() => {
+  const window = chainWindow.value
+  if (!window || !(window.countdown > 0)) return 0
+  return Math.max(0, Math.min(1, chainRemaining.value / window.countdown))
+})
 
 const logs = computed(() => match.logs.slice().reverse())
 const notices = computed(() => match.notices.slice(-4))
@@ -346,7 +351,6 @@ function say(code: string, message: string, next = ''): void {
     receiptTimer = null
   }, 6000)
   ui.notify({ code, message, next, tone: 'warning', ttl: 5000 })
-  match.pushNotice(message, 'warning')
 }
 
 function announce(text: string): void {
@@ -381,7 +385,6 @@ function refuseFire(reason: string): void {
 function clearCardSelection(): void {
   selectedCardIndex.value = -1
   selectedCardKey.value = ''
-  noticeText.value = ''
 }
 
 /** The ONE reason function: the card face and the click guard both call it. */
@@ -413,7 +416,7 @@ function onCardClick(index: number): void {
   selectedCardIndex.value = index
   selectedCardKey.value = key
   const disabled = cardDisabledReason(card, state.value, playCtx.value)
-  noticeText.value = disabled
+  if (disabled) say('game-card-disabled', disabled, '点卡片看限制条件，换个阶段或用别的卡。')
   if (disabled) say('game-card-disabled', disabled, '点卡片看限制条件，换个阶段或用别的卡。')
   else announce('已选中' + card.name + '。再点一次或点「使用此卡」出牌。')
 }
@@ -436,7 +439,6 @@ async function playCard(index: number): Promise<void> {
   if (!card) return
   const refusal = playRefusalReason(card, state.value, playCtx.value)
   if (refusal) {
-    match.pushNotice(refusal, 'warning')
     say('game-card-refused', refusal, '看卡面上的限制说明。')
     clearCardSelection()
     return
@@ -476,10 +478,8 @@ async function dispatchCard(card: CardLike, targets: Record<string, unknown>): P
     if (ack.status !== 'success') {
       const message = '使用魔法卡失败：' + (ack.message || '未知错误')
       ui.notifyError('game-card-failed', message)
-      match.pushNotice(message, 'error')
       return
     }
-    match.pushNotice('已使用「' + card.name + '」')
     ui.notify({ code: 'game-card-used', message: '已使用「' + card.name + '」', tone: 'success' })
     announce('已使用' + card.name)
     if (hand.value.some((item) => cardIdentity(item) === cardIdentity(card))) {
@@ -492,7 +492,6 @@ async function dispatchCard(card: CardLike, targets: Record<string, unknown>): P
   } catch (error) {
     const message = '使用魔法卡失败：' + String(error)
     ui.notifyError('game-card-failed', message)
-    match.pushNotice(message, 'error')
   } finally {
     busy.value = false
   }
@@ -502,7 +501,6 @@ function setSelectionError(message: string): void {
   const sel = selection.value
   if (!sel) return
   sel.error = message
-  noticeText.value = message
   say('game-target-invalid', message, '按横幅里的提示重新点。')
 }
 
@@ -596,7 +594,6 @@ function cancelSelection(): void {
   clearCardSelection()
   if (sel) {
     const message = '已取消「' + sel.card.name + '」的目标选择'
-    match.pushNotice(message)
     ui.notify({ code: 'game-target-cancelled', message, tone: 'info' })
   }
 }
@@ -651,12 +648,10 @@ async function fire(x: number, y: number): Promise<void> {
     })
     if (ack.status !== 'success') {
       ui.notifyError('game-attack-failed', ack.message || '')
-      match.pushNotice(ack.message || '攻击失败', 'error')
     }
   } catch (error) {
     const message = '攻击失败：' + String(error)
     ui.notifyError('game-attack-failed', message)
-    match.pushNotice(message, 'error')
   }
 }
 
@@ -735,12 +730,10 @@ async function turnAction(event: 'enter_battle_phase' | 'enter_end_phase' | 'end
     })
     if (ack.status !== 'success') {
       ui.notifyError('game-phase-failed', ack.message || '')
-      match.pushNotice(ack.message || '操作失败', 'error')
     }
   } catch (error) {
     const message = '操作失败：' + String(error)
     ui.notifyError('game-phase-failed', message)
-    match.pushNotice(message, 'error')
   }
 }
 
@@ -789,7 +782,6 @@ async function sendSurrender(): Promise<void> {
     })
     if (ack.status !== 'success') {
       ui.notifyError('game-surrender-failed', ack.message || '')
-      match.pushNotice(ack.message || '投降失败', 'error')
     }
   } catch (error) {
     ui.notifyError('game-surrender-failed', String(error))
@@ -836,7 +828,6 @@ async function confirmShieldChoice(): Promise<void> {
     match.clearShieldChoice()
     shieldPicks.value = []
     shieldError.value = ''
-    match.pushNotice(ack.message || '已为战舰添加护盾')
   } catch (error) {
     shieldError.value = '加盾失败：' + String(error)
   }
@@ -851,7 +842,6 @@ async function cancelShieldChoice(): Promise<void> {
     match.clearShieldChoice()
     shieldPicks.value = []
     shieldError.value = ''
-    match.pushNotice(ack.status === 'success' ? '已取消仁王之盾选择' : (ack.message || '已取消本次选择'))
   } catch (error) {
     shieldError.value = '取消失败：' + String(error)
   }
@@ -872,9 +862,7 @@ async function choosePickCell(board: 'self' | 'opponent', x: number, y: number):
   })
   if (ack.status === 'success') {
     match.clearPickRequest()
-    match.pushNotice(ack.message || '已选择一艘战舰')
   } else {
-    match.pushNotice(ack.message || '选择失败', 'error')
   }
 }
 
@@ -888,7 +876,7 @@ async function respondChain(card: CardLike): Promise<void> {
     targets: [],
   })
   match.closeChainWindow()
-  if (ack.status !== 'success') match.pushNotice('连锁失败：' + (ack.message || '未知错误'), 'error')
+  if (ack.status !== 'success') ui.notifyError('game-chain-failed', ack.message || '')
 }
 
 async function passChain(): Promise<void> {
@@ -898,7 +886,7 @@ async function passChain(): Promise<void> {
     chain: false,
   })
   match.closeChainWindow()
-  if (ack.status !== 'success') match.pushNotice(ack.message || '连锁响应失败', 'error')
+  if (ack.status !== 'success') ui.notifyError('game-chain-failed', ack.message || '')
 }
 
 // ---- chat / piles ----------------------------------------------------------
@@ -932,7 +920,7 @@ async function sendQuickChat(item: QuickChatItem): Promise<void> {
     msg_id: item.id,
   })
   if (ack.status === 'success') quickChatOpen.value = false
-  else match.pushNotice(ack.message || '快捷语发送失败', 'error')
+  else ui.notifyError('game-chat-failed', ack.message || '')
 }
 
 async function sendChat(): Promise<void> {
@@ -955,11 +943,9 @@ async function sendChat(): Promise<void> {
       chatError.value = ''
     } else {
       chatError.value = ack?.message || '消息发送失败，请稍后再试'
-      match.pushNotice(chatError.value, 'error')
     }
   } catch (error) {
     chatError.value = '消息发送失败：' + String(error)
-    match.pushNotice(chatError.value, 'error')
   }
 }
 
@@ -1153,7 +1139,7 @@ function backToLobby(): void {
       <span class="game-status__chip game-status__chip--muted" data-testid="game-field-magic">场地：{{ fieldMagic }}</span>
       <span
         class="game-status__chip"
-        :class="game.connected ? 'is-online' : 'is-offline'"
+        :class="ui.connection === 'online' ? 'is-online' : 'is-offline'"
         data-testid="game-connection"
       >{{ connectionText }}</span>
       <span class="game-status__names">
@@ -1311,6 +1297,7 @@ function backToLobby(): void {
             :data-testid="cardTestIdFor(card, index)"
             :data-card-name="card.name"
             :data-card-speed="String(card.speed)"
+            :data-type="String(card.type)"
             :aria-pressed="selectedCardIndex === index"
             :aria-label="card.name + '，' + typeLabel(card) + (cardDisabled(card) ? '，' + cardDisabled(card) : '，可以使用')"
             :title="cardDisabled(card) || card.description || card.name"
@@ -1336,7 +1323,6 @@ function backToLobby(): void {
             </span>
           </button>
         </div>
-        <p v-if="noticeText" class="game-card-hint" data-testid="game-card-hint">{{ noticeText }}</p>
       </section>
 
       <div class="game-actions" data-testid="game-actions">
@@ -1474,7 +1460,14 @@ function backToLobby(): void {
           <b data-testid="game-chain-window-card">{{ chainWindow.card ? chainWindow.card.name : '魔法卡' }}</b>
           ，你可以用速阶 3 的卡连锁它。
         </p>
-        <p class="game-chain-countdown" data-testid="game-chain-window-countdown">剩余 {{ chainRemaining }} 秒</p>
+        <div class="game-chain-clock">
+          <div
+            class="game-chain-ring"
+            :style="{ '--chain-progress': String(chainProgress) }"
+            aria-hidden="true"
+          ></div>
+          <p class="game-chain-countdown" data-testid="game-chain-window-countdown">剩余 {{ chainRemaining }} 秒</p>
+        </div>
         <p class="game-chain-window__consequence" data-testid="game-chain-window-consequence">
           不响应：对方的卡直接生效，你放弃这次连锁机会（这一手不会退回来）。
         </p>

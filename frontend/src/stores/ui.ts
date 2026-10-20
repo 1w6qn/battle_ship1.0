@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
+import { SOCKET_ERROR_CODES } from '../socket/events.gen'
 
 /**
  * Shell-wide UI state (ticket #42): the three themes, the reduced-motion
@@ -16,6 +17,7 @@ export type MotionPreference = 'auto' | 'reduced'
 export type ContrastPreference = 'auto' | 'high'
 export type FontScale = 'normal' | 'large' | 'xlarge'
 export type AuthRequestMode = 'login' | 'register'
+export type ConnectionState = 'online' | 'offline'
 
 const THEME_KEY = 'battleship.ui.theme'
 const MOTION_KEY = 'battleship.ui.motion'
@@ -123,23 +125,29 @@ export interface Notice {
 }
 
 /**
- * Error codes the backend already returns (error frames / ack payloads) mapped
- * to player language. A missing code falls back to the server text, never to a
- * raw technical string. The table grows as later tickets surface more codes.
+ * Player language for the backend's stable socket codes (ticket #52).
+ *
+ * The keys are constrained to the generated catalog (`SOCKET_ERROR_CODES`), so
+ * a code the backend does not define cannot be invented here. A missing mapping
+ * — and any code outside the catalog — falls back to the server message, never
+ * to a raw technical string.
  */
-const ERROR_LANGUAGE: Record<string, { message: string; next?: string }> = {
-  not_logged_in: { message: '需要先登录才能继续。', next: '从右上角头像菜单登录。' },
+type SocketErrorCode = (typeof SOCKET_ERROR_CODES)[number]
+
+const ERROR_LANGUAGE: Partial<Record<SocketErrorCode, { message: string; next?: string }>> = {
   already_queued: { message: '你已经在匹配队列里了。', next: '等待匹配，或先取消排队。' },
-  not_in_queue: { message: '当前没有在排队。', next: '从首页或大厅重新开始匹配。' },
   room_not_found: { message: '房间已经不存在了。', next: '回到大厅看看其他房间。' },
   room_full: { message: '这个房间已经坐满了。', next: '换一桌，或自己开一间。' },
-  server_busy: { message: '服务器正忙，刚才的操作没有完成。', next: '稍等几秒再试一次。' },
-  network_error: { message: '网络不稳定，操作没有送达。', next: '检查网络后重试。' },
+  identity_failed: { message: '登录状态已经失效。', next: '重新登录后再试。' },
+  chat_too_fast: { message: '发言太快了。', next: '等一两秒再发。' },
+  spectate_denied: { message: '这一局现在不能观战。', next: '回大厅看看其他进行中的对局。' },
 }
 
 export function errorLanguage(code: string, fallback = ''): { message: string; next: string } {
-  const mapped = ERROR_LANGUAGE[code]
-  if (mapped) return { message: mapped.message, next: mapped.next || '' }
+  if ((SOCKET_ERROR_CODES as readonly string[]).includes(code)) {
+    const mapped = ERROR_LANGUAGE[code as SocketErrorCode]
+    if (mapped) return { message: mapped.message, next: mapped.next || '' }
+  }
   return { message: fallback || '操作没有成功。', next: fallback ? '' : '稍后重试，或刷新页面。' }
 }
 
@@ -211,6 +219,27 @@ export const useUiStore = defineStore('ui', () => {
   function requestLogin(mode: AuthRequestMode = 'login', reason = ''): void {
     if (typeof window === 'undefined') return
     window.dispatchEvent(new CustomEvent('bs:auth-required', { detail: { mode, reason } }))
+  }
+
+  // --------------------------------------------------------- connection ----
+  // The one connection flag for the whole shell (spec §5). Every realtime
+  // channel reports its socket here; the App banner and disable rules read it.
+  const connection = ref<ConnectionState>('online')
+  let droppedOnce = false
+
+  function setConnection(online: boolean): void {
+    const next: ConnectionState = online ? 'online' : 'offline'
+    if (connection.value === next) return
+    connection.value = next
+    if (next === 'offline') {
+      droppedOnce = true
+      notify({ code: 'connection-offline', message: '连接中断，正在重连…', tone: 'warning', ttl: 15000 })
+      return
+    }
+    if (droppedOnce) {
+      droppedOnce = false
+      notify({ code: 'connection-restored', message: '已恢复连接', tone: 'success' })
+    }
   }
 
   // ----------------------------------------------------------- overlays ----
@@ -313,6 +342,8 @@ export const useUiStore = defineStore('ui', () => {
   const hasNotices = computed(() => notices.value.length > 0)
 
   return {
+    connection,
+    setConnection,
     theme,
     motion,
     contrast,
