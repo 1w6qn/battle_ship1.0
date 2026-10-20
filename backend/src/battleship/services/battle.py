@@ -21,8 +21,10 @@ import time
 from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
+from ..domain import effects
 from ..domain import placement as placement_rules
 from ..domain import replay as replay_rules
+from ..domain.magic import hooks
 from ..domain.magic import interaction as interaction_rules
 from ..domain.battle import AttackOutcome
 from ..domain.room import Player, PlayerShip, Position, Room, RoomState
@@ -195,6 +197,23 @@ class BattleService:
 
         outcome = battle_rules.resolve_attack(room, player_id, x, y)
         defender_id = outcome.defender
+        # Ticket #37: 命中/未命中都在这里广播一次（状态已落定）；总线只供
+        # 卡牌与测试订阅，不产生任何出站帧，也不改变下面既有帧的顺序。
+        await effects.emit(
+            room,
+            hooks.ATTACK_HIT,
+            {
+                "room_id": room.id,
+                "attacker_id": player_id,
+                "defender_id": defender_id,
+                "x": x,
+                "y": y,
+                "hit": outcome.hit,
+                "ship_sunk": outcome.ship_sunk,
+                "shield_blocked": outcome.shield_blocked,
+                "damage_dealt": outcome.damage_dealt,
+            },
+        )
 
         if outcome.last_chance:
             await self._finish_game(
@@ -231,11 +250,41 @@ class BattleService:
             await self._emit_player_ships(room, defender_id)
             for hook in self.sink_hooks:
                 await self._maybe_await(hook(room, defender_id, outcome.sunk_ship))
+            # #37：旧 sink_hooks 仍是行为来源，这里只追加一个观察事件。
+            await effects.emit(
+                room,
+                hooks.SHIP_SUNK,
+                {
+                    "room_id": room.id,
+                    "attacker_id": player_id,
+                    "defender_id": defender_id,
+                    "ship": outcome.sunk_ship,
+                    "x": x,
+                    "y": y,
+                    "remaining_ships": room.players[defender_id].remaining_ships,
+                },
+            )
 
         if outcome.damage_dealt:
             await self._emit_ships_updated(room)
             for hook in self.damage_hooks:
                 await self._maybe_await(hook(room, player_id, outcome))
+            # #37：伤害真正落到棋盘之后才发（护盾/免疫已经处理完）。
+            await effects.emit(
+                room,
+                hooks.DAMAGE_APPLIED,
+                {
+                    "room_id": room.id,
+                    "attacker_id": player_id,
+                    "defender_id": defender_id,
+                    "x": x,
+                    "y": y,
+                    "hit": outcome.hit,
+                    "damage_dealt": outcome.damage_dealt,
+                    "ship_sunk": outcome.ship_sunk,
+                    "remaining_ships": room.players[defender_id].remaining_ships,
+                },
+            )
             if outcome.last_stand_win:
                 await self._finish_game(
                     room,
@@ -344,6 +393,17 @@ class BattleService:
         room.pending_bingliang = {}
         room.bingliang_skip_draw = {}
         room.magic_temp_data = {}
+        # #37：终局已落定、结算之前广播一次（订阅者看到 winner 与 GAME_OVER 状态）。
+        await effects.emit(
+            room,
+            hooks.GAME_OVER,
+            {
+                "room_id": room.id,
+                "winner_id": winner_id,
+                "loser_id": loser_id,
+                "reason": reason,
+            },
+        )
         if log_text:
             await self._add_log(
                 room,
