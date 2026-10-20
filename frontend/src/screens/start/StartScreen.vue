@@ -8,6 +8,7 @@ import { useCollectionStore } from '../../stores/collection'
 import { useGameStore } from '../../stores/game'
 import { useHomeStore } from '../../stores/home'
 import { useUiStore } from '../../stores/ui'
+import { AI_DIFFICULTY_KEY, aiDifficulty } from '../game-over/view'
 import {
   acquireHomeChannel,
   createAiRoom,
@@ -17,10 +18,12 @@ import {
 } from '../../realtime/home'
 import {
   changelogKey,
+  DIFFICULTY_OPTIONS,
   numberText,
   playerView,
   queueStatusText,
   statsText,
+  waitedSeconds,
 } from './view'
 
 /**
@@ -42,9 +45,38 @@ const game = useGameStore()
 const collection = useCollectionStore()
 const ui = useUiStore()
 
-const difficulty = ref('normal')
+const difficulty = ref<string>(aiDifficulty())
+const difficultyOptions = DIFFICULTY_OPTIONS
 let releaseChannel: (() => void) | null = null
 let navigating = false
+let waitTimer: number | null = null
+/** Ticking queue wait, derived from the store's server-confirmed entry time. */
+const queueSeconds = ref(0)
+
+function tickQueue(): void {
+  queueSeconds.value = waitedSeconds(home.queueStartedAt, Date.now())
+}
+
+function stopQueueTicker(): void {
+  if (waitTimer !== null) {
+    window.clearInterval(waitTimer)
+    waitTimer = null
+  }
+}
+
+watch(
+  () => home.queuePending,
+  (pending) => {
+    if (pending) {
+      tickQueue()
+      if (waitTimer === null) waitTimer = window.setInterval(tickQueue, 1000)
+      return
+    }
+    stopQueueTicker()
+    queueSeconds.value = 0
+  },
+  { immediate: true },
+)
 
 onMounted(() => {
   releaseChannel = acquireHomeChannel(undefined, {
@@ -63,6 +95,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   releaseChannel?.()
   releaseChannel = null
+  stopQueueTicker()
 })
 
 const player = computed(() => playerView(home.profile))
@@ -78,12 +111,35 @@ const stats = computed(() => statsText(home.stats))
 const queueText = computed(() => queueStatusText(home.queueMode))
 const pillText = computed(() => numberText(home.onlinePill))
 const latestText = computed(() => {
-  if (home.changelogLatest) return home.changelogLatest
-  return home.changelogLoaded ? '—' : '载入中…'
+  return home.changelogLatest
 })
 const entries = computed(() =>
   home.changelog.map((entry) => ({ ...entry, key: changelogKey(entry) })),
 )
+/** Async regions share the one StateSurface contract (ticket #42, story 57/90). */
+const statsState = computed<'loading' | 'ready' | 'empty' | 'error'>(() => {
+  if (home.statsFailed) return 'error'
+  if (!home.statsLoaded) return 'loading'
+  const counters = home.stats
+  const allMissing = [counters.onlineCount, counters.queueCasual, counters.queueRanked, counters.lobbyRooms]
+    .every((value) => value === null)
+  return allMissing ? 'empty' : 'ready'
+})
+
+const profileState = computed<'loading' | 'ready' | 'error'>(() => {
+  if (auth.isGuest) return 'ready'
+  if (home.profileFailed) return 'error'
+  return home.profileLoaded ? 'ready' : 'loading'
+})
+
+/** Ranked entry: the current tier and the "this changes rank" warning (story 16). */
+const rankedDesc = computed(() => {
+  if (auth.isGuest) return '登录后显示段位 · 结算会改变段位'
+  return player.value.rankLabel
+    ? '当前段位：' + player.value.rankLabel + ' · 结算会改变段位'
+    : '结算会改变段位'
+})
+
 /** Loading / empty / error / ready for the announcement panel (ticket #42). */
 const changelogState = computed<'loading' | 'ready' | 'empty' | 'error'>(() => {
   if (home.changelogFailed) return 'error'
@@ -166,8 +222,14 @@ async function cancelQueue(): Promise<void> {
   try {
     const socket = currentSocket()
     if (!socket) return
-    await emitCancelMatch(socket)
+    const ack = await emitCancelMatch(socket)
     home.applyMatchCanceled()
+    ui.notify({
+      code: 'match-canceled',
+      tone: ack.status === 'success' ? 'info' : 'warning',
+      message: ack.status === 'success' ? '已取消匹配' : ack.message || '取消匹配没有送达',
+      next: ack.status === 'success' ? '' : '检查网络后再试一次。',
+    })
   } catch {
     home.notifyMessage('取消匹配失败，请再试一次')
   }
@@ -177,6 +239,13 @@ async function startAi(): Promise<void> {
   const socket = currentSocket()
   if (!socket) return
   home.clearNotice()
+  // #48 reads this back for "再来一局" of an AI match; persist before the seat
+  // is created so a failed request still remembers the choice (issue #45).
+  try {
+    window.localStorage.setItem(AI_DIFFICULTY_KEY, difficulty.value)
+  } catch {
+    // Private mode: the launch still works with the in-memory choice.
+  }
   home.beginAction('ai')
   try {
     const result = await createAiRoom(socket, playerName.value, difficulty.value)
@@ -243,22 +312,22 @@ async function startAi(): Promise<void> {
           type="button"
           class="home-action home-action--primary"
           data-testid="start-primary-action"
+          data-primary-action
           :disabled="actionsDisabled"
           @click="startMatch('casual')"
         >
-          <span class="home-action__title">休闲匹配</span>
+          <span class="home-action__title">开始休闲匹配</span>
           <span class="home-action__desc">随机匹配一位在线玩家 · 不计段位分</span>
-          <span class="home-action__cta" aria-hidden="true">ENTER</span>
         </button>
 
         <div v-if="home.queuePending" class="home-queue" role="status">
-          <p class="home-queue__text" data-testid="start-queue-status">{{ queueText }}</p>
+          <p class="home-queue__text" data-testid="start-queue-status">
+            {{ queueText }} · 已等待 <b data-testid="start-queue-waited">{{ queueSeconds }}</b> 秒
+          </p>
           <button type="button" class="button home-queue__cancel" data-testid="start-queue-cancel" @click="cancelQueue">
             取消匹配
           </button>
         </div>
-
-        <p class="home-actions__start-hint" aria-hidden="true">点击按钮立即开始 · 匹配成功后自动进入布船</p>
 
         <button
           type="button"
@@ -267,12 +336,29 @@ async function startAi(): Promise<void> {
           :disabled="actionsDisabled"
           @click="startMatch('ranked')"
         >
-          <span class="home-action__title">排位对战</span>
-          <span class="home-action__desc">结算会改变段位 · 需要登录</span>
-          <span class="home-action__cta home-action__cta--gold" aria-hidden="true">RANKED</span>
+          <span class="home-action__title">开始排位对战</span>
+          <span class="home-action__desc" data-testid="start-ranked-desc">{{ rankedDesc }}</span>
         </button>
 
-        <div class="home-ai">
+        <div class="home-ai" data-testid="start-ai-difficulty" role="radiogroup" aria-label="电脑难度">
+          <div class="home-ai__caps">
+            <button
+              v-for="option in difficultyOptions"
+              :key="option.value"
+              type="button"
+              role="radio"
+              class="home-ai__cap"
+              :class="{ 'is-active': difficulty === option.value }"
+              :aria-checked="difficulty === option.value"
+              :title="option.hint"
+              :data-testid="'start-ai-difficulty-' + option.value"
+              :disabled="actionsDisabled"
+              @click="difficulty = option.value"
+            >
+              <b>{{ option.label }}</b>
+              <small>{{ option.hint }}</small>
+            </button>
+          </div>
           <button
             type="button"
             class="home-action home-ai__action"
@@ -280,23 +366,9 @@ async function startAi(): Promise<void> {
             :disabled="actionsDisabled"
             @click="startAi"
           >
-            <span class="home-action__title">人机对战</span>
-            <span class="home-action__desc">四档电脑难度 · 练习规则与连锁</span>
+            <span class="home-action__title">开始人机对战</span>
+            <span class="home-action__desc">当前难度：{{ difficultyOptions.find((o) => o.value === difficulty)?.label }}</span>
           </button>
-          <label class="home-ai__label">
-            <span class="home-ai__label-text">电脑难度</span>
-            <select
-              v-model="difficulty"
-              class="home-ai__select"
-              data-testid="start-ai-difficulty"
-              :disabled="actionsDisabled"
-            >
-              <option value="easy">简单</option>
-              <option value="normal">普通</option>
-              <option value="hard">困难</option>
-              <option value="master">大师</option>
-            </select>
-          </label>
         </div>
 
         <p v-if="home.notice" class="home-notice" role="alert" data-testid="start-notice">
@@ -340,8 +412,15 @@ async function startAi(): Promise<void> {
           </div>
         </template>
 
-        <template v-else>
-          <p class="home-player__rank" data-testid="start-player-rank">{{ player.rankLabel }}</p>
+        <StateSurface
+          v-else
+          data-testid="start-profile-surface"
+          :state="profileState"
+          loading-text="名片载入中…"
+          error-text="名片暂时取不到。"
+          @retry="home.loadProfile()"
+        >
+          <p v-if="player.rankLabel" class="home-player__rank" data-testid="start-player-rank">{{ player.rankLabel }}</p>
           <div class="home-bar" role="img" :aria-label="'段位进度 ' + player.rankFill + '%'">
             <div class="home-bar__fill" data-testid="start-player-rank-fill" :style="{ width: player.rankFill + '%' }"></div>
           </div>
@@ -355,46 +434,52 @@ async function startAi(): Promise<void> {
           <dl class="home-player__kv">
             <div class="home-player__kv-row">
               <dt>战绩</dt>
-              <dd data-testid="start-player-record">{{ player.record }}</dd>
+              <dd data-testid="start-player-record">{{ player.record || '暂无' }}</dd>
             </div>
             <div class="home-player__kv-row">
               <dt>胜率</dt>
-              <dd data-testid="start-player-winrate">{{ player.winRate }}</dd>
+              <dd data-testid="start-player-winrate">{{ player.winRate || '暂无' }}</dd>
             </div>
             <div class="home-player__kv-row">
               <dt>最长连胜</dt>
-              <dd data-testid="start-player-streak">{{ player.streak }}</dd>
+              <dd data-testid="start-player-streak">{{ player.streak || '暂无' }}</dd>
             </div>
           </dl>
           <router-link class="home-link" :to="{ name: 'profile' }" data-testid="start-profile-link">查看我的名片</router-link>
-        </template>
+        </StateSurface>
       </aside>
 
       <!-- 在线与公告。 -->
       <aside class="home-side">
         <section class="home-panel" data-testid="start-online" aria-labelledby="home-online-title">
           <h2 id="home-online-title" class="home-panel__title">在 线</h2>
-          <dl class="home-stats">
-            <div class="home-stat home-stat--wide">
-              <dt>在线玩家</dt>
-              <dd><b data-testid="start-online-count">{{ stats.online }}</b><span class="home-stat__unit">人</span></dd>
-            </div>
-            <div class="home-stat">
-              <dt>休闲队列</dt>
-              <dd><b data-testid="start-queue-casual">{{ stats.casual }}</b><span class="home-stat__unit">人</span></dd>
-            </div>
-            <div class="home-stat">
-              <dt>排位队列</dt>
-              <dd><b data-testid="start-queue-ranked">{{ stats.ranked }}</b><span class="home-stat__unit">人</span></dd>
-            </div>
-            <div class="home-stat">
-              <dt>大厅房间</dt>
-              <dd><b data-testid="start-lobby-rooms">{{ stats.rooms }}</b><span class="home-stat__unit">间</span></dd>
-            </div>
-          </dl>
-          <p v-if="home.statsFailed" class="home-panel__note" data-testid="start-stats-note">
-            在线数据暂时取不到，稍后再看。
-          </p>
+          <StateSurface
+            data-testid="start-stats-surface"
+            :state="statsState"
+            loading-text="在线数据载入中…"
+            empty-text="暂无在线数据"
+            error-text="在线数据暂时取不到。"
+            @retry="home.loadStats(true)"
+          >
+            <dl class="home-stats">
+              <div class="home-stat home-stat--wide">
+                <dt>在线玩家</dt>
+                <dd><b data-testid="start-online-count">{{ stats.online }}</b><span class="home-stat__unit">人</span></dd>
+              </div>
+              <div class="home-stat">
+                <dt>休闲队列</dt>
+                <dd><b data-testid="start-queue-casual">{{ stats.casual }}</b><span class="home-stat__unit">人</span></dd>
+              </div>
+              <div class="home-stat">
+                <dt>排位队列</dt>
+                <dd><b data-testid="start-queue-ranked">{{ stats.ranked }}</b><span class="home-stat__unit">人</span></dd>
+              </div>
+              <div class="home-stat">
+                <dt>大厅房间</dt>
+                <dd><b data-testid="start-lobby-rooms">{{ stats.rooms }}</b><span class="home-stat__unit">间</span></dd>
+              </div>
+            </dl>
+          </StateSurface>
         </section>
 
         <section class="home-panel home-changelog" data-testid="start-changelog" aria-labelledby="home-changelog-title">
@@ -589,19 +674,6 @@ async function startAi(): Promise<void> {
   font-size: 11px;
 }
 
-.home-actions__start-hint {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 38px;
-  margin: 0 0 10px;
-  border: 1px dashed var(--line-dash);
-  border-radius: var(--radius-sm);
-  background: rgba(13, 17, 34, 0.45);
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
 /* Action cards. The casual card is the purple hero; ranked carries the gold
    rank language; the AI card stays a quiet panel. */
 .home-action {
@@ -640,7 +712,7 @@ async function startAi(): Promise<void> {
 }
 
 .home-action--primary:hover:not(:disabled) {
-  background: linear-gradient(120deg, #8a6bff, #4b32b8 70%);
+  filter: brightness(1.12);
 }
 
 .home-action--primary .home-action__title {
@@ -653,8 +725,8 @@ async function startAi(): Promise<void> {
 }
 
 .home-action[data-testid='start-ranked-action'] {
-  border-color: rgba(201, 162, 76, 0.5);
-  background: linear-gradient(120deg, rgba(201, 162, 76, 0.22), rgba(125, 90, 32, 0.16));
+  border-color: var(--role-action);
+  background: var(--role-action-soft);
 }
 
 .home-action__title {
@@ -665,24 +737,6 @@ async function startAi(): Promise<void> {
 .home-action__desc {
   color: var(--text-muted);
   font-size: 12px;
-}
-
-.home-action__cta {
-  position: absolute;
-  top: 50%;
-  right: 16px;
-  padding: 6px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  border-radius: 999px;
-  color: #fff;
-  font-size: 10px;
-  letter-spacing: 0.2em;
-  transform: translateY(-50%);
-}
-
-.home-action__cta--gold {
-  border-color: rgba(230, 199, 120, 0.55);
-  color: var(--gold-strong);
 }
 
 .home-queue {
@@ -705,7 +759,7 @@ async function startAi(): Promise<void> {
 
 .home-ai {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 10px;
 }
 
@@ -713,24 +767,64 @@ async function startAi(): Promise<void> {
   margin-bottom: 0;
 }
 
-.home-ai__label {
-  display: flex;
-  align-items: center;
+/* Four directly clickable difficulty pills (story 17): no hidden dropdown. */
+.home-ai__caps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-  color: var(--text-muted);
-  font-size: 12px;
 }
 
-.home-ai__select {
-  flex: 1;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
+.home-ai__cap {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: 7px 6px;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
-  color: var(--text);
+  background: var(--surface-chamber);
+  color: var(--text-secondary);
   font: inherit;
-  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+}
+
+.home-ai__cap b {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.home-ai__cap small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.home-ai__cap:hover:not(:disabled) {
+  border-color: var(--role-action);
+  color: var(--text-primary);
+}
+
+.home-ai__cap.is-active {
+  border-color: var(--role-action);
+  background: var(--role-action-soft);
+  color: var(--text-primary);
+}
+
+.home-ai__cap.is-active small {
+  color: var(--text-secondary);
+}
+
+.home-ai__cap:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 420px) {
+  .home-ai__caps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .home-notice {
