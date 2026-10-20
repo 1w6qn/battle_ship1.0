@@ -111,6 +111,21 @@ The ticket gate is out of repo: `D:\develop\battleship-verify\cases\20-gate`
 frozen eight-session contract against this tree and compares the two stacks'
 smoke traces field by field.
 
+## P4 browser gates after the selector recalibration (ticket #29, out-of-repo)
+
+The 22 recalibrated `data-testid` gates and their D33 screenshot baselines live in
+`D:\develop\battleship-verify\tools\web`; one command starts the SPA backend and
+runs them (default worktree: `integration`, port 5420):
+
+```powershell
+cd D:\develop\battleship-verify
+& .venv/Scripts/python.exe tools/web/run_all.py --worktree D:/develop/battleship-worktrees/integration
+```
+
+Tool inventory, per-screen testids, baseline manifest and the C+ visual-difference
+list: `cases/29-tools/README.md`. SKIP entries (help/sfx/bgm/renwang, room/collection)
+are attributed, not green.
+
 ## P0 behavior baseline and contract gate (out-of-repo)
 
 Behavior gates are not stored in this repository (spec testing-asset policy).
