@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from ..effects import EffectState
+
 BOARD_SIZE = 6
 DEFAULT_MAX_SHIPS = 6
 AI_DIFFICULTIES: tuple[str, ...] = ("easy", "normal", "hard", "master")
@@ -300,6 +302,10 @@ class Room:
     spectators: dict[str, dict[str, Any]] = field(default_factory=dict)
     spectate_chat_recent: dict[str, list[float]] = field(default_factory=dict)
     spectate_chat_last: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Ticket #36: 框架无关的 effect 总线运行态（订阅 / 租约 / 事件队列 / 错误）。
+    # 只是运行期簿记，不参与房间相等性与 repr，避免日志与快照被噪音污染。
+    effects: EffectState = field(default_factory=EffectState, repr=False, compare=False)
 
     def transition(self, target: RoomState) -> RoomState:
         """Move along the documented skeleton, rejecting impossible jumps.
