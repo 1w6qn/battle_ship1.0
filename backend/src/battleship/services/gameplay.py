@@ -84,10 +84,17 @@ class GameplayService:
     ) -> None:
         self.rooms = rooms
         self.turn_timeout_seconds = int(turn_timeout_seconds)
-        # Ticket #43: the reconnect snapshot (built by RoomService) reads the
-        # same configured timeout the watchdog below compares against. One
-        # source, no second deadline anywhere.
-        self.rooms.turn_timeout_seconds = self.turn_timeout_seconds
+        # Ticket #52: no post-hoc stamping. The composition root already injected
+        # the timeout into RoomService (one source for the reconnect snapshot);
+        # here we only fail fast if the two wiring points disagree.
+        configured = self.rooms.turn_timeout_seconds
+        if configured is not None and int(configured) != self.turn_timeout_seconds:
+            raise ValueError(
+                "turn timeout mismatch: RoomService has "
+                + str(configured)
+                + " but GameplayService was built with "
+                + str(self.turn_timeout_seconds)
+            )
         self.tick_seconds = float(tick_seconds)
         self.draw_hook = draw_hook
         self.fire_hook = fire_hook

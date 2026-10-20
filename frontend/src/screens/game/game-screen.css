@@ -445,6 +445,17 @@
   cursor: pointer;
 }
 
+/* Card semantics (spec §2, ticket #52): the type is encoded on the card
+   border, not only in the text line. */
+.card[data-type='场地'] {
+  border-style: double;
+  border-width: 3px;
+}
+
+.card[data-type='判定'] {
+  border-top: 2px dashed var(--role-action);
+}
+
 .card--art {
   padding: 0;
 }
@@ -930,6 +941,27 @@
 
 .game-chain-window__consequence {
   color: var(--role-warning);
+}
+
+.game-chain-clock {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+}
+
+/* Ring = remaining share of the 10s window (#52); the number stays inside. */
+.game-chain-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--role-action) calc(var(--chain-progress, 0) * 1turn),
+    var(--border-strong) 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 6px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 6px));
 }
 
 .game-chain-countdown {

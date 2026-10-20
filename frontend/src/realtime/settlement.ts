@@ -1,6 +1,7 @@
 import type { Pinia } from 'pinia'
 import { createTypedSocket, type TypedSocket } from '../socket/client'
 import { useGameStore } from '../stores/game'
+import { useUiStore } from '../stores/ui'
 import { useResultStore } from '../stores/result'
 
 /**
@@ -151,10 +152,19 @@ export function acquireSettlementChannel(
   if (!active) {
     const socket = createTypedSocket()
     const stopListeners = installSettlementListeners(socket, pinia)
+    // One connection truth for the whole shell (spec §5, ticket #52): every
+    // channel reuses this socket, so it reports here once.
+    const ui = useUiStore(pinia)
+    const onConnect = (): void => ui.setConnection(true)
+    const onDisconnect = (): void => ui.setConnection(false)
+    socket.socket.on('connect', onConnect)
+    socket.socket.on('disconnect', onDisconnect)
     socket.connect()
     active = {
       socket,
       stop: () => {
+        socket.socket.off('connect', onConnect)
+        socket.socket.off('disconnect', onDisconnect)
         stopListeners()
         socket.disconnect()
       },

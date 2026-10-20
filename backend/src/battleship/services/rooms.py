@@ -116,6 +116,7 @@ class RoomService:
         waiting_room_ttl_seconds: float = WAITING_ROOM_TTL_SECONDS,
         presence: PresenceService | None = None,
         capability_gate: Callable[[str | None, str], str] | None = None,
+        turn_timeout_seconds: int | None = None,
     ) -> None:
         self.rooms: dict[str, Room] = {}
         self.match_queue: list[dict[str, Any]] = []
@@ -131,10 +132,15 @@ class RoomService:
         # room service does not depend on the auth service and unit callers keep
         # working without a database (None = nobody is banned).
         self.capability_gate = capability_gate
-        # Ticket #43: the countdown in the reconnect snapshot is derived from this
-        # one configured timeout (stamped by GameplayService at construction) plus
-        # the room's own watchdog anchor. The room service owns no second deadline.
-        self.turn_timeout_seconds = 0
+        # Ticket #52: the countdown in the reconnect snapshot is derived from this
+        # one configured timeout plus the room's own watchdog anchor. The
+        # composition root injects it here exactly once (main.py / realtime
+        # server); None means "this instance has no watchdog" for unit-style
+        # callers, and the snapshot then reports no deadline instead of a
+        # second, implicit zero.
+        self.turn_timeout_seconds: int | None = (
+            None if turn_timeout_seconds is None else max(0, int(turn_timeout_seconds))
+        )
         self._publisher: EventPublisher = NullPublisher()
         self._tasks: set[asyncio.Task] = set()
         # Ticket #9 wires this to BattleService.settle_forfeit; without it the
@@ -561,7 +567,7 @@ class RoomService:
             build_room_sync(
                 room,
                 str(player_id),
-                turn_timeout_seconds=self.turn_timeout_seconds,
+                turn_timeout_seconds=self.turn_timeout_seconds or 0,
             ),
             to=connection.sid,
         )

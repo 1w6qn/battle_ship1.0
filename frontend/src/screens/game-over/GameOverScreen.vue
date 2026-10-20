@@ -302,7 +302,9 @@ async function playAgain(): Promise<void> {
   if (busy.value) return
   const key = modeKey.value
   if (key === 'custom') {
-    returnLobby()
+    // Ticket #52: the custom room is gone after settlement, so "再来一局" can
+    // never become "返回大厅" (spec §7: the three exits are different actions).
+    ui.notify({ code: 'settlement-play-again-custom', tone: 'info', message: '自定义房间不能重开，回大厅再开一桌。' })
     return
   }
   const socket = getSettlementSocket()

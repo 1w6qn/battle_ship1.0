@@ -11,6 +11,7 @@ import ToastHost from './components/ToastHost.vue'
 import { routeLoading } from './router'
 import { useAuthStore } from './stores/auth'
 import { useCollectionStore } from './stores/collection'
+import { useGameStore } from './stores/game'
 import { useUiStore } from './stores/ui'
 
 /**
@@ -26,6 +27,7 @@ import { useUiStore } from './stores/ui'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const game = useGameStore()
 const collection = useCollectionStore()
 const ui = useUiStore()
 
@@ -64,6 +66,15 @@ function openCollection(): void {
   collection.open()
 }
 
+/** What leaving costs, in the same words the settlement would use. */
+const immersivePenalty = computed(() =>
+  game.state.ranked ? '本局按判负结算并扣段位分。' : '本局按判负结算（休闲/人机不计段位分）。',
+)
+
+function retryConnection(): void {
+  window.location.reload()
+}
+
 function exitMatch(): void {
   ui.cancelExit()
   void router.push({ name: 'lobby' })
@@ -97,6 +108,19 @@ onBeforeUnmount(() => window.removeEventListener('bs:auth-required', onAuthRequi
   />
 
   <div class="app-shell" data-testid="app-shell" :data-route-loading="loading ? 'true' : 'false'" :data-immersive="immersive ? 'true' : 'false'">
+    <div
+      v-if="ui.connection === 'offline'"
+      class="app-connection"
+      data-testid="app-connection-banner"
+      role="alert"
+      aria-live="assertive"
+    >
+      <span class="app-connection__text">连接中断，正在重连…</span>
+      <button type="button" class="app-connection__retry" data-testid="app-connection-retry" @click="retryConnection">
+        重新连接
+      </button>
+    </div>
+
     <nav class="app-nav" :class="{ 'app-nav--flow': immersive }" data-testid="app-nav" aria-label="主屏导航">
       <component
         :is="immersive ? 'div' : 'router-link'"
@@ -211,7 +235,7 @@ onBeforeUnmount(() => window.removeEventListener('bs:auth-required', onAuthRequi
   >
     <div class="confirm">
       <h2 id="exit-confirm-title" class="confirm__title">退出这一局？</h2>
-      <p class="confirm__text">退出会中断当前对局，已经打出的进度不会保留。</p>
+      <p class="confirm__text">退出会中断当前对局，已经打出的进度不会保留；{{ immersivePenalty }}</p>
       <div class="confirm__actions">
         <button type="button" class="button" data-testid="exit-confirm-cancel" @click="ui.cancelExit()">继续对局</button>
         <button type="button" class="button button--danger" data-testid="exit-confirm-ok" @click="exitMatch">确认退出</button>
