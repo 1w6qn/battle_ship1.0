@@ -18,6 +18,7 @@
 | #49 | 排行领奖台与固定「我的名次」、档案最近使用排序、设置四分组、减少动效/高对比/字号三档作用于全站 |
 | #51 | 布船/猜拳阶段实时下发对手就绪与在线状态 |
 | #52 | 全站连接横幅、大厅公告行、卡面语义、连锁环形计时、退出判负文案、自定义结算出口、错误码表与超时注入 |
+| #53 | 终验缺陷修复：对局通道拉手牌（RPS 切屏丢手牌）、重连恢复座位、确认按钮回执、手机投降可达、公告关闭 44px |
 | #50 | 仓外门禁重定、基线重录、旧套件归档、本文与玩家公告 |
 
 ## 2. 门禁集合（唯一真源：仓外 D:/develop/battleship-verify）
@@ -31,28 +32,25 @@
   旧 cases/22–28 的 22 张套件内基线随套件归档封存。
 - pytest：`cases/4,6,7,9,14,17,18,19,41-contracts` 与 `cases/30-cleanup`（构建/文档/路由/契约）。
 
-## 3. 门禁数字（冻结 HEAD 1e070d6，串行 run_all）
+## 3. 门禁数字（终验 HEAD 62ce8be，串行、独立库、无并发服务端）
 
-**run_all（29 个工具，冻结 HEAD 1e070d6，串行、独立库、无并发服务端）**
+**最后一轮（feat/ui-50-gates-2，--only 四件套）**
 
-- 汇总：**24 PASS / 2 SKIP / 3 FAIL**（29 工具）。
-- 其中 `41-review-fixes` 的 1 条失败是**门禁自身夹具缺陷**：喂给结算的 `game_state` 是 `ranked:true`，
-  导致「自定义结算不显示再来一局」被误判；补 `ranked:false, is_ai_room:false` 后单工具复跑 **12 checks / 0 failures / PASS**。
-  因此现行口径为 **25 PASS / 2 SKIP / 2 FAIL**。
-- SKIP（均在白名单）：`rank-help`（SPA 无段位帮助屏）、`cplus-screens`（无自定义房路由 / 无图鉴路由），
-  各有归因；白名单外 SKIP 直接 FAIL。
-- FAIL：
-  1. `layout` — **产品缺陷**：`lobby-changelog-close` 实为 46x32px，低于 40px 判据（规格 44px）。
-     不删判据、不放宽；下一票把口径升到 44px 后此项仍应红，直到 UI 修好。
-  2. `cplus-path` — 4 条，全部是产品问题/产品缺口（见 §7 残余 2–5）：RPS 切屏丢手牌、
-     断线重连不恢复座位、禁用确认按钮无回执、手机上投降路径未到达结算（最后一条含门禁流程残差）。
-     其余 82 checks（真实坐标点击、登录注册刷新、五静默点中的 2 个、三出口分流、回传来源、手机单盘、零 JS 异常）全绿。
+- `cplus-path` **PASS**（101 checks / 0 failures；九段：真实坐标点击、登录注册刷新、匹配成功立即进入、静默点、断线重连恢复座位、三出口、手机单盘、零 JS 异常）。
+- `cards` **PASS**；`mobile` **PASS**；`layout` **PASS**（含 lobby 公告关闭按钮已由 #53 修到 44px）。
+- `41-final-fixes`（#53 自带门禁）已注册进 TOOLS；独立运行时用隔离端口 5452。
 
-**pytest（对 integration 工作区）**
+**上一轮全量（HEAD 1e070d6，29 个工具）作为对照**
 
-- 4-backend-root 26 passed / 1 failed（`test_live_server.py` 的 GBK 解码 + None stderr 拼接，环境/夹具问题，与本次改版无关）
-- 6-auth 26、7-rooms 16、9-battle 37、14-lobby 26、17-spectate 39、18-replay 21、19-http 25 —— 全绿
-- 41-contracts 12 passed（2 条旧断言按 #52 重定：`AckResponse` 的 code 死字段已删，稳定错误码在 error 帧/错误码表）
+- 24 PASS / 2 SKIP / 3 FAIL；其中 `41-review-fixes` 的失败是门禁夹具缺陷（custom 结算喂 `ranked:true`），修正后单工具 12/12 PASS。
+- 其余 2 FAIL（`layout` 的 32px 公告关闭、`cplus-path` 的手牌/重连/回执/手机投降）均由 **#53** 修复；本轮四件套重跑已全绿。
+- SKIP 仅在白名单：`rank-help`（无帮助屏）、`cplus-screens`（无 room/图鉴路由）；白名单外 SKIP 直接 FAIL。
+
+**pytest（integration 工作区）**
+
+- 4-backend-root 26 passed / 1 failed（GBK 解码 + None stderr 拼接的环境/夹具问题，与改版无关）
+- 6-auth 26、7-rooms 16、9-battle 37、14-lobby 26、17-spectate 39、18-replay 21、19-http 25 → 全绿
+- 41-contracts 12 passed（按 #52 重定：AckResponse 的 code 死字段已删，稳定错误码在 error 帧/错误码表）
 - 合计 **228 passed / 1 failed（环境）**
 
 ## 4. 重定了哪些旧断言，为什么
@@ -69,6 +67,9 @@
 | 触控 ≥40px | 规格改为 44px（矮横屏 36px 放宽） | **未完成**：layout/mobile 仍是 40px 口径（见残余 1） |
 | 截图指纹的 C+ 紫色调色板 | 新视觉语言 | 14 张基线按冻结 HEAD 重录（逐张归因见 §5） |
 | toast 重复 testid 判不唯一 | 提示队列本就是栈 | `checkUniqueTestids` 忽略全局 toast/route-loading |
+| cards「确认按钮 disabled」 | #53 改为 aria-disabled（禁用仍可给出回执） | 断言 `aria-disabled="true"` |
+| cplus-path offline 段放在 settle/mobile 之后 | 段末停在结算屏，断线段拿不到对局 | offline 移到 game 之后、settle 之前；`request_hand_sync` 带 room_id/player_id |
+| AI 房猜拳随机可能导致平局卡在 RPS | 门禁需确定性 | AI 房先 `test_set_ai_rps_choice` 钉住必输手势，再点我方手势 |
 
 ## 5. 基线重录归因（14 张，全部为真实改动）
 
@@ -94,19 +95,17 @@
 
 ## 7. 残余项 / 未完成（需要 lead 决定）
 
-1. **触控 44px 口径未重定**：layout/mobile 仍按 40px 判定。实测存在 32px 控件（大厅公告关闭按钮），
-   按规格 44px 应红；本次未改判据以免在冻结窗内引入大片新红。建议下一票统一 44px（含矮横屏 36px 放宽档）。
-2. **产品缺陷（未修，只报告）**：RPS → 对局切屏丢手牌。服务端 `hand_updated` 在猜拳结算后立即下发，
-   而对局屏的战斗通道此时尚未挂载，进对局后手牌为 0 张，直到下一次手牌更新才出现（cplus-path 有断言）。
-3. **产品缺口（未修）**：五个静默点中，`选目标时点非法格` 无法在本 UI 复现（整行/整列 + 合法格），
-   `点不可用的确认按钮` 与 `点禁用卡`（非我回合）在 200ms 内没有可读回执（cplus-path 两条 FAIL）。
+1. **触控 44px 口径仍未升级**：layout/mobile 判据仍是 40px；本轮 0 fail 依赖 #53 把公告关闭按钮修到 44px，但判据本身未改成 44px（含矮横屏 36px 放宽档）——下一票需要重定。
+2. **已由 #53 修复并在本轮验证**：RPS→对局拉取手牌、断线重连恢复座位（rejoin 后 `request_hand_sync` 成功）、确认按钮回执、手机投降可达。cplus-path 对应四段现全绿；留作回归点。
+3. **静默点覆盖残差**：`选目标时点非法格` 在本 UI 无可复现路径（整行/整列 + 合法格），cplus-path 以 WARN 记录未覆盖；`点不可用的确认按钮` 现在有回执（#53），但门禁在该状态下走的是「确认按钮已可用」分支，仅 WARN。
 4. **断线重连不恢复座位**：浏览器离线→恢复后横幅出现「已恢复」，但 socket 换了 sid，服务端回「你不在这个房间」，
    之后的投降/操作全部失效（规格故事 52/84 要求重连回原局）。cplus-path offline 段有断言。
 5. **提示队列会短暂遮住底部控件**：2–6s 的 toast 落在「更多操作/确认投降」上方，真实点击会被挡；
    cplus-path 用「关掉提示再点」绕过，并在投降路径上留了 socket 兜底（WARN 可见）。
-6. **回合计时在门禁环境不可见**：run_all 固定 `TURN_TIMEOUT_SECONDS=0`，此时服务端不下发 deadline；
+6. **AI 房门禁需要 pin 猜拳**：不 pin 时随机平局会让 RPS 阶段停住（本轮已修门禁，非产品问题）。
+7. **回合计时在门禁环境不可见**：run_all 固定 `TURN_TIMEOUT_SECONDS=0`，此时服务端不下发 deadline；
    时钟/超时回执由 41-game 用服务端形状的 fixture 覆盖，cplus-path 对该段只 WARN。
-7. **cases/21–33 归档后**：构建产物/SPA 托管断言暂无仓内新套件承接（见归档 README 第 4 节）。
+8. **cases/21–33 归档后**：构建产物/SPA 托管断言暂无仓内新套件承接（见归档 README 第 4 节）。
 
 ## 8. 证据索引
 
