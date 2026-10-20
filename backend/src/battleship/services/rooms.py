@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from ..contracts import errors as socket_errors
 from ..contracts.identity import (
     IdentityClaim,
     SeatIdentity,
@@ -129,6 +130,10 @@ class RoomService:
         # room service does not depend on the auth service and unit callers keep
         # working without a database (None = nobody is banned).
         self.capability_gate = capability_gate
+        # Ticket #43: the countdown in the reconnect snapshot is derived from this
+        # one configured timeout (stamped by GameplayService at construction) plus
+        # the room's own watchdog anchor. The room service owns no second deadline.
+        self.turn_timeout_seconds = 0
         self._publisher: EventPublisher = NullPublisher()
         self._tasks: set[asyncio.Task] = set()
         # Ticket #9 wires this to BattleService.settle_forfeit; without it the
@@ -265,7 +270,11 @@ class RoomService:
         denied = self._capability_denied(connection, capability)
         if not denied:
             return None
-        await self._publisher.emit("error", {"message": denied}, to=connection.sid)
+        await self._publisher.emit(
+            "error",
+            socket_errors.error_detail(socket_errors.OPERATION_FAILED, denied),
+            to=connection.sid,
+        )
         return {"status": "error", "message": denied}
 
     async def create_room(self, connection: Connection, data: dict[str, Any] | None) -> dict:
@@ -343,7 +352,11 @@ class RoomService:
 
         room = self.get_room(room_id)
         if room is None:
-            await self._publisher.emit("error", {"message": "房间不存在"}, to=connection.sid)
+            await self._publisher.emit(
+                "error",
+                socket_errors.error_detail(socket_errors.ROOM_NOT_FOUND, "房间不存在"),
+                to=connection.sid,
+            )
             return {"status": "error", "message": "房间不存在"}
 
         self._drop_my_other_waiting_rooms(player_id, room.id)
@@ -369,7 +382,11 @@ class RoomService:
             }
 
         if len(room.players) >= 2:
-            await self._publisher.emit("error", {"message": "房间已满"}, to=connection.sid)
+            await self._publisher.emit(
+                "error",
+                socket_errors.error_detail(socket_errors.ROOM_FULL, "房间已满"),
+                to=connection.sid,
+            )
             return {"status": "error", "message": "房间已满"}
 
         room.players[player_id] = Player(
@@ -507,7 +524,10 @@ class RoomService:
                 )
                 self._spawn(self._cleanup_room_after(room.id, 3))
             else:
-                await self._publisher.emit("error", {"message": "对局已结束"}, to=connection.sid)
+                payload = socket_errors.error_detail(
+                    socket_errors.GAME_OVER, "对局已结束"
+                )
+                await self._publisher.emit("error", payload, to=connection.sid)
             return {"status": "success"}
 
         seat = room.players[str(player_id)]
@@ -528,7 +548,13 @@ class RoomService:
         # the client on a stale/blank screen. The snapshot is idempotent, so it
         # is always sent on a successful rejoin.
         await self._publisher.emit(
-            "room_sync", build_room_sync(room, str(player_id)), to=connection.sid
+            "room_sync",
+            build_room_sync(
+                room,
+                str(player_id),
+                turn_timeout_seconds=self.turn_timeout_seconds,
+            ),
+            to=connection.sid,
         )
         # A failure here must never turn a successful rejoin into an error ack;
         # the seat is already back in the room at this point.

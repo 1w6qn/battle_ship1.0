@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..contracts import errors as socket_errors
 from ..domain.lobby.rules import (
     LOBBY_CHAT_BACKLOG,
     LOBBY_CHAT_MIN_INTERVAL,
@@ -33,6 +34,7 @@ from ..domain.lobby.rules import (
     player_status,
     rooms_by_socket,
 )
+from ..domain.room.sync import room_match_mode
 from ..infra.logging import get_logger
 from .presence import PresenceService
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
@@ -196,11 +198,11 @@ class LobbyService:
         if not self.is_member(sid):
             return {"status": "error", "message": "请先进入大厅"}
         if not self._chat_allowed(sid):
-            await self._publisher.emit(
-                "error",
-                {"message": f"发言太快了，请等 {LOBBY_CHAT_MIN_INTERVAL:.0f} 秒"},
-                to=sid,
+            payload = socket_errors.error_detail(
+                socket_errors.CHAT_TOO_FAST,
+                f"发言太快了，请等 {LOBBY_CHAT_MIN_INTERVAL:.0f} 秒",
             )
+            await self._publisher.emit("error", payload, to=sid)
             return {"status": "error", "message": "发言太快了"}
         record = self._presence.get(sid)
         name = clean_name(
@@ -279,12 +281,27 @@ class LobbyService:
             "lobby_count": len(members),
             "queue": counters.queue,
             "players": players,
-            "rooms": counters.joinable_rooms,
+            "rooms": [self._lobby_room_row(row) for row in counters.joinable_rooms],
             # The spectate entry: only started, full, non-AI rooms whose two
             # seats both allow watching. The key is always present because the
             # client renders it unconditionally.
             "matches": self.spectators.live_matches() if self.spectators is not None else [],
         }
+
+    def _lobby_room_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Ticket #43: append the two additive room fields to a lobby row.
+
+        `mode` and `public` come from the room the row was projected from; the
+        row itself keeps every recorded key, so old clients ignore the tail.
+        """
+
+        room = self._rooms.get_room(str(row.get("room_id") or ""))
+        if room is None:
+            return row
+        enriched = dict(row)
+        enriched["mode"] = room_match_mode(room)
+        enriched["public"] = bool(getattr(room, "public", True))
+        return enriched
 
     # ------------------------------------------------------------------- chat
 

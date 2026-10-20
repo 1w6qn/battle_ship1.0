@@ -124,10 +124,13 @@ class OutboundEventEnvelope(BaseModel):
 class RoomSync(BaseModel):
     """The reconnect snapshot (`room_sync`).
 
-    Frozen at 45 top-level keys, matching the legacy `_build_room_sync`
-    (server.py:10498-10639) key-for-key. The legacy client reads every one of
-    them; a missing key shows up as a blank board/hand after reconnect, and an
-    extra key is contract drift, so the model is the single freeze point.
+    Frozen at 49 top-level keys: the recorded legacy `_build_room_sync`
+    (server.py:10498-10639) 45 keys in their original order, plus the four
+    additive fields of ticket #43 (`turn_deadline`, `turn_timeout_seconds`,
+    `opponent_ready`, `opponent_online`). The legacy client reads every legacy
+    key; a missing legacy key shows up as a blank board/hand after reconnect.
+    The model is the single freeze point, and additions are appended so the
+    recorded key order stays a prefix.
     """
 
     room_id: str
@@ -175,6 +178,16 @@ class RoomSync(BaseModel):
     pending_sacrifice: dict[str, Any] | None
     pending_sacrifice_ships: list[dict[str, Any]]
     rps_choices: dict[str, str]
+    # Ticket #43 (additive): the countdown's single truth is the watchdog's own
+    # anchor (`turn_started_at`) plus the configured timeout, so the client
+    # never derives a second deadline. Both fields are always present;
+    # `turn_deadline` is null when no timed turn is running.
+    turn_deadline: int | None
+    turn_timeout_seconds: int
+    # Ticket #43 (additive): placement / RPS waiting visibility. Derived from
+    # the existing seat + disconnect state; no new state machine.
+    opponent_ready: bool
+    opponent_online: bool
 
 
 #: Authoritative key order/count for the reconnect snapshot.
@@ -182,8 +195,14 @@ ROOM_SYNC_KEYS: tuple[str, ...] = tuple(RoomSync.model_fields)
 
 
 class AckResponse(BaseModel):
-    """Socket.IO ack 的通用形状；旧前端按 status 判断成功/失败。"""
+    """Socket.IO ack 的通用形状；旧前端按 status 判断成功/失败。
+
+    Ticket #43 adds the optional stable `code` (same vocabulary as the
+    `error` frame). `message` is unchanged, so a failing ack stays readable
+    on its own and old clients ignore the new field.
+    """
 
     status: Literal["success", "error"] = "success"
+    code: str | None = None
     message: str | None = None
     data: dict[str, Any] | None = None
