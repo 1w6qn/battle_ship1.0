@@ -6,6 +6,7 @@ import {
 } from './settlement'
 import { useGameStore } from '../stores/game'
 import { useMatchStore } from '../stores/match'
+import { useUiStore } from '../stores/ui'
 import { useAudioStore } from '../stores/audio'
 import type { InboundEvent, OutboundEvent } from '../socket/events.gen'
 import type { CardLike, Point } from '../screens/game/view'
@@ -496,12 +497,12 @@ export function acquireBattleChannel(pinia?: Pinia): () => void {
     const stopListeners = installBattleListeners(socket, pinia)
     // Connection state is a HUD fact (spec §5), so it is mirrored into the game
     // store here — the only place that owns this socket. No second flag.
-    const game = useGameStore(pinia)
-    const onConnect = (): void => game.setConnected(true)
-    const onDisconnect = (): void => game.setConnected(false)
+    const ui = useUiStore(pinia)
+    const onConnect = (): void => ui.setConnection(true)
+    const onDisconnect = (): void => ui.setConnection(false)
     socket.socket.on('connect', onConnect)
     socket.socket.on('disconnect', onDisconnect)
-    game.setConnected(socket.socket.connected)
+    ui.setConnection(socket.socket.connected)
     active = {
       socket,
       releaseSettlement,

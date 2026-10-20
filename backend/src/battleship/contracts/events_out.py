@@ -197,12 +197,11 @@ ROOM_SYNC_KEYS: tuple[str, ...] = tuple(RoomSync.model_fields)
 class AckResponse(BaseModel):
     """Socket.IO ack 的通用形状；旧前端按 status 判断成功/失败。
 
-    Ticket #43 adds the optional stable `code` (same vocabulary as the
-    `error` frame). `message` is unchanged, so a failing ack stays readable
-    on its own and old clients ignore the new field.
+    Ticket #52 removed the optional `code` this ack declared: nothing
+    produced it, so it was a dead contract slot. Stable codes ride the
+    `error` frame (contracts.errors) and the frontend maps them there.
     """
 
     status: Literal["success", "error"] = "success"
-    code: str | None = None
     message: str | None = None
     data: dict[str, Any] | None = None

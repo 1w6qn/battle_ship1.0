@@ -362,6 +362,16 @@ function close(): void {
   list-style: none;
 }
 
+/* Field magic = double border, judge magic = dashed top edge (spec §2, #52). */
+.collection-card[data-type='场地'] {
+  border-style: double;
+  border-width: 3px;
+}
+
+.collection-card[data-type='判定'] {
+  border-top: 2px dashed var(--role-action);
+}
+
 .collection-card {
   display: grid;
   grid-template-rows: auto 1fr;
