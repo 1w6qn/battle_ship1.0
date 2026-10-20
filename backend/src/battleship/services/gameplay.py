@@ -31,8 +31,10 @@ from typing import Any, Callable
 
 from ..contracts.identity import ai_player_id
 from ..domain import battle as battle_rules
+from ..domain import effects
 from ..domain import placement as placement_rules
 from ..domain import replay as replay_rules
+from ..domain.magic import hooks
 from ..domain.placement import PlacementError
 from ..domain.room import (
     EffectFlags,
@@ -446,6 +448,16 @@ class GameplayService:
 
             if self.turn_start_hook is not None:
                 await self._maybe_await(self.turn_start_hook(room, winner))
+            # #37：猜拳定先手后的小回合开始；与旧 hook 同位，状态已落定。
+            await effects.emit(
+                room,
+                hooks.TURN_START,
+                {
+                    "room_id": room.id,
+                    "player_id": winner,
+                    "round": room.round,
+                },
+            )
 
             # Frozen draw contract: first player 1 card, second player 2 cards.
             # 兵粮寸断 only skips this preparation-phase handout, not any other
@@ -528,6 +540,16 @@ class GameplayService:
         error = battle_rules.enter_battle(room, player_id)
         if error:
             return {"status": "error", "message": error}
+        # #37：阶段已落定后才发（enter_battle 内部改了 phase 与攻击次数）。
+        await effects.emit(
+            room,
+            hooks.PHASE_ENTER,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "phase": _phase_value(room),
+            },
+        )
 
         await self._publisher.emit(
             "attacks_updated",
@@ -557,6 +579,16 @@ class GameplayService:
         error = battle_rules.enter_end(room, player_id)
         if error:
             return {"status": "error", "message": error}
+        # #37：结束阶段同样在 phase 变更之后发。
+        await effects.emit(
+            room,
+            hooks.PHASE_ENTER,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "phase": _phase_value(room),
+            },
+        )
 
         await self._emit_phase(room)
         self._note_enter_end(room, player_id)
@@ -570,6 +602,18 @@ class GameplayService:
         # Same single recording point as legacy's try/finally: all success
         # branches (new round / next player / skipped) record exactly once.
         self._note_end_turn(room, player_id)
+        # #37：换人之前先发 TURN_END（turn 边界租约在这里过期）。
+        await effects.emit(
+            room,
+            hooks.TURN_END,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "round": room.round,
+                "kind": result.kind,
+                "current_attacker": room.current_attacker,
+            },
+        )
 
         if result.kind == "skip_stages":
             # 神之宣告 skips the opponent inside the same big round; legacy does
@@ -588,6 +632,12 @@ class GameplayService:
             return {"status": "success", "message": "神之宣告：对方本回合被跳过"}
 
         if result.kind == "new_round":
+            # #37：ROUND_END 在旧 round_end_hook 之前，ROUND_START 在其之后。
+            await effects.emit(
+                room,
+                hooks.ROUND_END,
+                {"room_id": room.id, "round": room.round},
+            )
             if self.round_end_hook is not None:
                 outcome = await self._maybe_await(self.round_end_hook(room))
                 if isinstance(outcome, dict) and outcome.get("game_over"):
@@ -596,6 +646,11 @@ class GameplayService:
                         "game_over": True,
                         "winner": outcome.get("winner"),
                     }
+            await effects.emit(
+                room,
+                hooks.ROUND_START,
+                {"room_id": room.id, "round": room.round},
+            )
             await self._publisher.emit(
                 "game_state",
                 {
@@ -610,6 +665,16 @@ class GameplayService:
 
         if self.turn_start_hook is not None:
             await self._maybe_await(self.turn_start_hook(room, room.current_attacker))
+        # #37：换人后的小回合开始（flag 清理仍在其后，见 magic.on_turn_switch）。
+        await effects.emit(
+            room,
+            hooks.TURN_START,
+            {
+                "room_id": room.id,
+                "player_id": room.current_attacker,
+                "round": room.round,
+            },
+        )
         if self.after_draw_hook is not None:
             await self._maybe_await(self.after_draw_hook(room, room.current_attacker))
         if self.magic is not None:
