@@ -23,10 +23,12 @@ import time
 from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
+from ..domain import effects
 from ..domain import replay as replay_rules
 from ..domain.ai import policies
 from ..domain.magic import deck as deck_rules
 from ..domain.magic import field as field_rules
+from ..domain.magic import hooks
 from ..domain.magic import interaction as interaction_rules
 from ..domain.magic import lifecycle as lifecycle_rules
 from ..domain.magic import registry
@@ -143,6 +145,12 @@ class MagicService:
 
     def bind(self, publisher: EventPublisher) -> None:
         self._publisher = publisher
+
+    @property
+    def effects(self) -> Any:
+        """只读的事件总线入口（#37）：模块函数入口，不新增全局单例。"""
+
+        return effects
 
     # ----------------------------------------------------------------- helpers
 
@@ -266,6 +274,21 @@ class MagicService:
                 to=player.socket_id,
             )
 
+    async def _emit_card_discarded(self, room: Room, player_id: str | None,
+                                   card: Any, reason: str) -> None:
+        """#37：牌真正进入弃牌堆之后广播 CARD_DISCARDED（每张一次）。"""
+
+        await effects.emit(
+            room,
+            hooks.CARD_DISCARDED,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "card": getattr(card, "name", None),
+                "reason": reason,
+            },
+        )
+
     # -------------------------------------------------------------------- draw
 
     async def draw(self, room: Room, player_id: str) -> MagicCard | None:
@@ -274,6 +297,16 @@ class MagicService:
         result = deck_rules.draw_card(room, player_id, rng=self.rng)
         player = room.players.get(player_id)
         if player is not None and result.card is not None:
+            # #37：唯一真实摸牌点（gameplay._draw 只是转调它，重复发会算两次）。
+            await effects.emit(
+                room,
+                hooks.CARD_DRAWN,
+                {
+                    "room_id": room.id,
+                    "player_id": player_id,
+                    "card": result.card.name,
+                },
+            )
             await self._emit_hand(player)
         return result.card
 
@@ -826,6 +859,18 @@ class MagicService:
                 "message": UNIMPLEMENTED.format(name=card.name),
             }
 
+        # #37：宣告通过全部闸门、扣牌之前发 CAST_BEFORE（filter 带可改写目标）。
+        await effects.emit(
+            room,
+            hooks.CAST_BEFORE,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "card": card.name,
+                "speed": card.speed,
+                "targets": targets,
+            },
+        )
         # Remove the declared copy, then push it on the chain. Non-field cards
         # go to the shared discard pile immediately (legacy).
         for index, candidate in enumerate(player.magic_hand):
@@ -834,6 +879,7 @@ class MagicService:
                 break
         if card.type != "场地":
             room.magic_discard.append(card)
+            await self._emit_card_discarded(room, player_id, card, "play")
         await self._emit_hand(player)
         # Replay: the card leaves the hand at this instant, not at resolution.
         # The step also carries the stack *including* this card (note_chain),
@@ -843,6 +889,18 @@ class MagicService:
         replay_rules.note_card_played(room, player_id, card)
 
         room.chain.append(item)
+        # #37：支付完成、已入连锁之后发 CAST_PAID（此后失败只能按连锁规则退牌）。
+        await effects.emit(
+            room,
+            hooks.CAST_PAID,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "card": card.name,
+                "speed": card.speed,
+                "chain_size": len(room.chain),
+            },
+        )
         await self._publisher.emit(
             "magic_chain_updated", _spectate_chain_payload(room), room=room.id
         )
@@ -1073,6 +1131,7 @@ class MagicService:
                     player.magic_hand.pop(index)
                     break
             room.magic_discard.append(card)
+            await self._emit_card_discarded(room, str(player_id), card, "chain")
             await self._emit_hand(player)
             # Replay: chained play is a play, recorded at the same moment; the
             # step carries the stack after this play (same single seam).
@@ -1140,6 +1199,9 @@ class MagicService:
                 # never replace or tear down the field already in play.
                 if item.card.type == "场地" and room.field_magic is not item.card:
                     room.magic_discard.append(item.card)
+                    await self._emit_card_discarded(
+                        room, item.player_id, item.card, "negated"
+                    )
                 suffix = f"但被{by}无效化" if by else "但被无效化"
                 await self._add_log(
                     room,
@@ -1249,6 +1311,18 @@ class MagicService:
         chain_rules.clear_display(room)
         # The stolen-card ledger is merged; clear it so ids cannot be reused.
         room.game_effects.pop("stolen_cards", None)
+
+        # #37：连锁闸门清空之后（且既有 wire chain_resolved 已发）才广播，
+        # 订阅者看到的是最终状态，不会撞上半重置的房间。
+        await effects.emit(
+            room,
+            hooks.CHAIN_RESOLVED,
+            {
+                "room_id": room.id,
+                "count": len(results),
+                "results": [result.to_dict() for result in results],
+            },
+        )
 
         await self._emit_active_effects(room)
         for player in room.players.values():
@@ -1722,6 +1796,7 @@ class MagicService:
             index = moved
         buried = pile.pop(index)
         room.magic_discard.append(buried)
+        await self._emit_card_discarded(room, player_id, buried, "bury")
         room.magic_temp_data = {}
         deck_before = len(room.magic_deck)
         drawn = await self.draw(room, player_id)
@@ -1762,9 +1837,11 @@ class MagicService:
         for index, card in enumerate(cards):
             if index != chosen_index:
                 room.magic_discard.append(card)
+                await self._emit_card_discarded(room, player_id, card, "wangyang")
         own_card = temp.get("own_card")
         if own_card is not None:
             room.magic_discard.append(own_card)
+            await self._emit_card_discarded(room, player_id, own_card, "wangyang")
         room.magic_temp_data = {}
         await self._emit_hand(room.players[player_id])
         opponent_id = room.opponent_of(player_id)
@@ -1902,9 +1979,11 @@ class MagicService:
             for card in cards or []:
                 if isinstance(card, MagicCard):
                     room.magic_discard.append(card)
+                    await self._emit_card_discarded(room, player_id, card, "cancel")
             own = temp.get("own_card")
             if isinstance(own, MagicCard):
                 room.magic_discard.append(own)
+                await self._emit_card_discarded(room, player_id, own, "cancel")
         elif isinstance(cards, list):
             room.magic_deck.extend(card for card in cards if isinstance(card, MagicCard))
         if cancelled == "shield_choice":
@@ -2350,6 +2429,7 @@ class MagicService:
             if pid == ai_id:
                 discarded = player.magic_hand.pop(0)
                 room.magic_discard.append(discarded)
+                await self._emit_card_discarded(room, pid, discarded, "dice")
                 await self._emit_hand(player)
                 await self._add_log(
                     room,
@@ -2410,6 +2490,7 @@ class MagicService:
             return {"status": "error", "message": "无效的卡牌位置"}
         discarded = player.magic_hand.pop(index)
         room.magic_discard.append(discarded)
+        await self._emit_card_discarded(room, player_id, discarded, "dice")
         await self._emit_hand(player)
         await self._add_log(
             room,
@@ -2454,6 +2535,7 @@ class MagicService:
                 return {"status": "error", "message": "无效的弃卡位置"}
         discarded = player.magic_hand.pop(index)
         room.magic_discard.append(discarded)
+        await self._emit_card_discarded(room, player_id, discarded, "papal")
         room.attacks_remaining += 2
         await self._emit_hand(player)
         await self._publisher.emit(
@@ -2731,6 +2813,17 @@ class MagicService:
         )
         if old is not None and getattr(old, "name", None) != card.name:
             await self._recalc_attacks(room)
+        # #37：场地已落位（顶替旧场地也已清掉其标记），此时才发 FIELD_ENTERED。
+        await effects.emit(
+            room,
+            hooks.FIELD_ENTERED,
+            {
+                "room_id": room.id,
+                "player_id": room.field_magic_owner,
+                "card": card.name,
+                "previous": getattr(old, "name", None),
+            },
+        )
 
     async def tear_down_field(self, room: Room, caster_id: str) -> Any:
         torn = field_rules.tear_down_field_magic(room, caster_id)
@@ -2747,6 +2840,16 @@ class MagicService:
                      "attacks_remaining": room.attacks_remaining},
                     room=room.id,
                 )
+            # #37：场地确实离场（已被移入弃牌堆、标记已清）之后发 FIELD_LEFT。
+            await effects.emit(
+                room,
+                hooks.FIELD_LEFT,
+                {
+                    "room_id": room.id,
+                    "player_id": caster_id,
+                    "card": getattr(torn, "name", None),
+                },
+            )
         return torn
 
     async def _recalc_attacks(self, room: Room) -> None:
