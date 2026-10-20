@@ -6,6 +6,7 @@ import {
 } from './settlement'
 import { useGameStore } from '../stores/game'
 import { useMatchStore } from '../stores/match'
+import { useAudioStore } from '../stores/audio'
 import type { InboundEvent, OutboundEvent } from '../socket/events.gen'
 import type { CardLike, Point } from '../screens/game/view'
 
@@ -77,6 +78,8 @@ export type BattleEmitEvent =
   | 'quick_chat'
   | 'chat_message'
   | 'confirm_sacrifice'
+  | 'confirm_magic_target'
+  | 'cancel_magic_selection'
   | 'request_hand_sync'
   | 'surrender'
 
@@ -90,6 +93,8 @@ export const BATTLE_EMIT_EVENTS: readonly BattleEmitEvent[] = [
   'quick_chat',
   'chat_message',
   'confirm_sacrifice',
+  'confirm_magic_target',
+  'cancel_magic_selection',
   'request_hand_sync',
   'surrender',
 ]
@@ -146,6 +151,7 @@ export function applyBattleEvent(
   if (!payload || typeof payload !== 'object') return
   const game = useGameStore(pinia)
   const match = useMatchStore(pinia)
+  const audio = useAudioStore(pinia)
   const state = game.state
   const me = state.player_id
 
@@ -159,6 +165,7 @@ export function applyBattleEvent(
       const shipSunk = Boolean(payload.ship_sunk)
       const shieldBlocked = Boolean(payload.shield_blocked)
       match.lastAttack = { attacker, x, y, hit, shipSunk }
+      audio.play(shipSunk ? 'sunk' : hit ? 'hit' : 'miss')
       const mine = attacker === me
       if (mine) {
         // A shield-absorbed shot spends the attack but does not mark the cell
@@ -191,6 +198,7 @@ export function applyBattleEvent(
       break
     }
     case 'turn_change': {
+      audio.play('turn')
       const remaining = numberOrNull(payload.attacks_remaining)
       game.applyServerState({
         current_attacker: String(payload.current_attacker ?? state.current_attacker),
@@ -208,7 +216,10 @@ export function applyBattleEvent(
     }
     case 'hand_updated': {
       const hand = asCardList(payload.hand)
-      if (Array.isArray(payload.hand)) game.applyServerState({ hand })
+      if (Array.isArray(payload.hand)) {
+        if (hand.length > (Array.isArray(state.hand) ? state.hand.length : 0)) audio.play('draw')
+        game.applyServerState({ hand })
+      }
       break
     }
     case 'game_log': {
@@ -225,6 +236,7 @@ export function applyBattleEvent(
       break
     }
     case 'chain_request': {
+      audio.play('chain')
       match.openChainWindow(payload)
       break
     }
@@ -243,6 +255,15 @@ export function applyBattleEvent(
         } else if (String(result.message ?? '').trim()) {
           match.pushNotice(String(result.message), result.success === false ? 'warning' : 'info')
         }
+        if (String(result.temp_data_id ?? '') === 'shield_choice'
+          && String(result.caster ?? '') === me
+          && result.success !== false) {
+          match.openShieldChoice({
+            message: String(result.message ?? '仁王之盾：请选择要保护的战舰（至多 3 艘）'),
+            caster: me,
+          })
+        }
+        if (result.success !== false && !result.negated_skip) audio.play('play_card')
       }
       break
     }

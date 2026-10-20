@@ -11,6 +11,8 @@ import { useProfileStore } from './stores/profile'
 import { useReplayStore } from './stores/replay'
 import { useResultStore } from './stores/result'
 import { useSettingsStore } from './stores/settings'
+import { useAudioStore } from './stores/audio'
+import { CARD_ART_COUNT, missingCardArt } from './cards/cardArt'
 import { useLobbyStore } from './stores/lobby'
 import { useSpectateStore } from './stores/spectate'
 import { GAME_STATE_SCHEMA, defaultGameState } from './stores/gameStateSchema'
@@ -195,6 +197,7 @@ export interface TestHooksApi {
   screens: ScreensTestApi
   match: MatchTestApi
   lobby: LobbyTestApi
+  cardArt: { count: number; missing: string[] }
   crashNext: (routeName: string) => void
 }
 
@@ -255,6 +258,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
   const profile = useProfileStore(pinia)
   const leaderboard = useLeaderboardStore(pinia)
   const settings = useSettingsStore(pinia)
+  const audio = useAudioStore(pinia)
 
   const snapshot = (value: unknown): unknown => JSON.parse(JSON.stringify(value))
 
@@ -279,6 +283,13 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
         spectate: settings.spectate,
         passwordMessage: settings.passwordMessage,
         wallpaper: settings.wallpaper,
+        audio: {
+          sfxMuted: audio.sfxMuted,
+          sfxVolume: audio.sfxVolume,
+          bgmMuted: audio.bgmMuted,
+          bgmVolume: audio.bgmVolume,
+          bgmPlaying: audio.bgmPlaying,
+        },
       }),
   }
 
@@ -503,6 +514,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     spectate: spectateApi,
     battle,
     screens,
+    cardArt: { count: CARD_ART_COUNT, missing: missingCardArt() },
     match,
     lobby,
     crashNext: (routeName: string) => requestCrash(routeName),
