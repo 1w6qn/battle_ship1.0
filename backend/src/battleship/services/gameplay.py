@@ -37,7 +37,6 @@ from ..domain import replay as replay_rules
 from ..domain.magic import hooks
 from ..domain.placement import PlacementError
 from ..domain.room import (
-    EffectFlags,
     Room,
     RoomPhase,
     RoomState,
@@ -784,10 +783,12 @@ class GameplayService:
             player.attacks = []
             player.magic_hand = []
             player.damage_dealt_this_turn = 0
-            player.effect_flags = EffectFlags()
             player.sunken_ships = []
             player.revealed_positions = []
             player.needs_reset = True
+        # #38：整对象重置改成 match 边界清租约 + 投影（旧实现直接换空 flags）。
+        effects.expire(room, effects.BOUNDARY_MATCH)
+        effects.project_effect_flags(room)
         return {"status": "success", "message": "游戏状态已重置"}
 
     # --------------------------------------------------------------- timeout

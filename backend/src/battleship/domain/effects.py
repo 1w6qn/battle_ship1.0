@@ -7,7 +7,8 @@
 三个概念：
 
 - 订阅（Subscription）：某个 hook 事件上的 handler，带优先级与 kind。
-- 租约（Lease）：订阅与持久效果的生命周期，按 turn / round / match 边界过期。
+- 租约（Lease）：订阅与持久效果的生命周期，按 turn / round / match 边界过期；
+  持久效果标记由 flag:<owner>:<flag> 一条租约承载，投影回 effect_flags。
 - 投影（project_effect_flags）：effect_flags 只是活跃租约的派生视图，不写业务
   判据。
 
@@ -237,6 +238,137 @@ def consume(room: Any, key: str, owner: str | None = None, uses: int = 1) -> boo
     return True
 
 
+#: 标记租约的 key 前缀：一个 (座位, 标记) 只有一条租约，重复施放即刷新。
+FLAG_LEASE_PREFIX: Final[str] = "flag"
+
+
+def flag_lease_key(flag: str, owner: str | None) -> str:
+    """一个 (座位, 标记) 对应一个租约 key；owner 为空表示全场共用一条。"""
+
+    return f"{FLAG_LEASE_PREFIX}:{owner or '*'}:{flag}"
+
+
+def get_lease(room: Any, key: str) -> Lease | None:
+    """按 key 取租约；不存在返回 None（调用方据此判断效果是否还在）。"""
+
+    return _state(room).leases.get(key)
+
+
+def remove_lease(room: Any, key: str, *, project: bool = True) -> bool:
+    """删掉一条租约与它的绑定订阅；不存在返回 False（幂等，不抛）。"""
+
+    state = _state(room)
+    if state.leases.pop(key, None) is None:
+        return False
+    _drop_subscriptions(state, key)
+    if project:
+        project_effect_flags(room)
+    return True
+
+
+def _flag_holder(room: Any, owner: str) -> Any:
+    """取 owner 当前的 EffectFlags；写之前先确认租约投影得回去。"""
+
+    player = (getattr(room, "players", None) or {}).get(owner)
+    if player is None:
+        raise ValueError(f"标记租约的 owner 不在房间里: {owner}")
+    flags = getattr(player, "effect_flags", None)
+    if flags is None:
+        raise TypeError(f"玩家 {owner} 没有 effect_flags，无法投影标记")
+    return flags
+
+
+def grant_flag(
+    room: Any,
+    owner: str,
+    flag: str,
+    *,
+    boundary: str,
+    value: Any = True,
+    payload: dict[str, Any] | None = None,
+) -> Lease:
+    """给 owner 注册/刷新一个标记租约并立刻投影（回合中的消费者马上看得到）。
+
+    重复施放复用同一条租约：只刷新投影值，边界由构造点固定，不在这里漂移。
+    """
+
+    if not owner:
+        raise ValueError("标记租约必须有 owner")
+    if boundary not in BOUNDARIES:
+        raise ValueError(f"未知租约边界: {boundary}")
+    if not hasattr(_flag_holder(room, owner), flag):
+        raise ValueError(f"未知的效果标记: {flag}")
+    state = _state(room)
+    key = flag_lease_key(flag, owner)
+    lease = state.leases.get(key)
+    if lease is None:
+        lease = create_lease(
+            room,
+            key,
+            boundary=boundary,
+            owner=owner,
+            flags={flag: value},
+            payload=payload,
+        )
+    else:
+        if lease.boundary != boundary:
+            raise ValueError(
+                f"租约 {key} 的边界已固定为 {lease.boundary}，不能用 {boundary} 刷新"
+            )
+        lease.flags[flag] = value
+        if payload:
+            lease.payload.update(payload)
+    project_effect_flags(room)
+    return lease
+
+
+def adjust_flag(
+    room: Any, owner: str, flag: str, delta: int, *, boundary: str
+) -> int:
+    """把整数标记的投影值加减 delta，并立刻投影；减回 0 即删掉租约。
+
+    返回新值；没有租约且减不到正数时是 0（相当于旧语义里的「本来就是 0」）。
+    """
+
+    if not owner:
+        raise ValueError("标记租约必须有 owner")
+    if boundary not in BOUNDARIES:
+        raise ValueError(f"未知租约边界: {boundary}")
+    holder = _flag_holder(room, owner)
+    if not hasattr(holder, flag):
+        raise ValueError(f"未知的效果标记: {flag}")
+    state = _state(room)
+    key = flag_lease_key(flag, owner)
+    lease = state.leases.get(key)
+    if lease is None:
+        current = int(getattr(holder, flag, 0) or 0)
+    else:
+        if lease.boundary != boundary:
+            raise ValueError(
+                f"租约 {key} 的边界已固定为 {lease.boundary}，不能用 {boundary} 调整"
+            )
+        current = int(lease.flags.get(flag, 0) or 0)
+    value = max(0, current + int(delta))
+    if value == 0:
+        remove_lease(room, key, project=False)
+    elif lease is None:
+        create_lease(room, key, boundary=boundary, owner=owner, flags={flag: value})
+    else:
+        lease.flags[flag] = value
+    project_effect_flags(room)
+    return value
+
+
+def consume_flag(room: Any, owner: str, flag: str) -> bool:
+    """消费一条布尔标记租约（对应旧语义里的「把 flag 置回默认值」）。"""
+
+    if not owner:
+        raise ValueError("标记租约必须有 owner")
+    if not hasattr(_flag_holder(room, owner), flag):
+        raise ValueError(f"未知的效果标记: {flag}")
+    return remove_lease(room, flag_lease_key(flag, owner))
+
+
 def project_effect_flags(room: Any) -> None:
     """把活跃租约的 flags 叠加回每个玩家的 EffectFlags（先重置为默认值）。
 
@@ -358,12 +490,19 @@ __all__ = [
     "Lease",
     "MAX_CASCADE_DEPTH",
     "MAX_EVENTS_PER_DRAIN",
+    "FLAG_LEASE_PREFIX",
     "Subscription",
+    "adjust_flag",
     "clear",
     "consume",
+    "consume_flag",
     "create_lease",
     "emit",
     "expire",
+    "flag_lease_key",
+    "get_lease",
+    "grant_flag",
     "project_effect_flags",
+    "remove_lease",
     "subscribe",
 ]
