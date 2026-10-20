@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ... import effects
 from ... import replay as replay_rules
 from ...room import PlayerShip, alive_ships, card_payload
 from ..cards import MagicCard
@@ -252,8 +253,11 @@ async def last_stand(ctx: EffectContext) -> EffectResult:
     cells = [{"x": x, "y": y} for x, y in original_cells]
     await ctx.emit("last_stand_cells", {"cells": cells, "owner": ctx.caster_id}, room=ctx.room.id)
 
-    ctx.caster.effect_flags.last_stand = True
-    ctx.caster.effect_flags.last_stand_win = True
+    # #38：锁卡是 turn 边界，「击杀即胜」要活到终局（match 边界）。
+    effects.grant_flag(ctx.room, ctx.caster_id, "last_stand", boundary=effects.BOUNDARY_TURN)
+    effects.grant_flag(
+        ctx.room, ctx.caster_id, "last_stand_win", boundary=effects.BOUNDARY_MATCH
+    )
     await ctx.sync_active_effects()
     await ctx.start_placement(ctx.caster_id, "last_stand", 1)
     await ctx.refresh_replay_ships()
@@ -333,8 +337,10 @@ async def polar_reversal(ctx: EffectContext) -> EffectResult:
         player.sunken_ships = []
         if hasattr(player, "opponent_attacks"):
             player.opponent_attacks = []
-        player.effect_flags = player.effect_flags.__class__()
         player.magic_blocked = False
+    # #38：整对象重置改成 match 边界清租约 + 投影（旧实现直接换一个空 flags）。
+    effects.expire(ctx.room, effects.BOUNDARY_MATCH)
+    effects.project_effect_flags(ctx.room)
 
     ctx.room.field_magic = None
     ctx.room.field_magic_owner = None
