@@ -776,6 +776,24 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
     </p>
 
     <div class="game__main">
+      <aside class="game__log-side" aria-label="对局日志栏">
+
+        <section class="game__panel game__panel--log" data-testid="game-log" aria-label="对局日志">
+          <h2 class="game__panel-title">对局日志</h2>
+          <p v-if="!logs.length" class="game__panel-empty">暂无记录</p>
+          <ol v-else class="game__logs">
+            <li
+              v-for="(entry, index) in logs"
+              :key="'log-' + index"
+              class="game__log"
+              :data-testid="'game-log-entry-' + index"
+            >
+              {{ entry.text }}
+            </li>
+          </ol>
+        </section>
+      </aside>
+
       <div class="game__boards" data-testid="game-board-switch">
         <div v-if="compact" class="game__tabs" role="tablist" aria-label="切换棋盘">
           <button
@@ -848,20 +866,6 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
           </ol>
         </section>
 
-        <section class="game__panel game__panel--log" data-testid="game-log" aria-label="对局日志">
-          <h2 class="game__panel-title">对局日志</h2>
-          <p v-if="!logs.length" class="game__panel-empty">暂无记录</p>
-          <ol v-else class="game__logs">
-            <li
-              v-for="(entry, index) in logs"
-              :key="'log-' + index"
-              class="game__log"
-              :data-testid="'game-log-entry-' + index"
-            >
-              {{ entry.text }}
-            </li>
-          </ol>
-        </section>
       </aside>
     </div>
 
@@ -1156,7 +1160,7 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 .game {
   position: relative;
   gap: 8px;
-  padding: 12px;
+  padding: 8px 12px 12px;
   min-height: 0;
 }
 
@@ -1183,16 +1187,18 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 }
 
 .game__chip {
-  padding: 3px 9px;
-  border: 1px solid var(--border);
+  padding: 4px 11px;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
+  background: rgba(21, 26, 48, 0.7);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .game__chip--turn {
   border-color: var(--accent-strong);
-  color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
 }
 
 .game__chip--muted {
@@ -1239,16 +1245,16 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 
 .game__badge {
   padding: 2px 8px;
-  border: 1px solid #b8872e;
+  border: 1px solid rgba(201, 162, 76, 0.55);
   border-radius: 999px;
-  background: #2a2412;
-  color: #ffd76a;
+  background: var(--gold-soft);
+  color: var(--gold-strong);
   font-size: 11px;
 }
 
 .game__badge--opponent {
   border-color: var(--border);
-  background: #14232c;
+  background: rgba(21, 26, 48, 0.7);
   color: var(--text-muted);
 }
 
@@ -1264,17 +1270,36 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 .game__main {
   display: flex;
   flex: 1;
-  gap: 12px;
+  gap: 14px;
   min-height: 0;
+  align-items: stretch;
+}
+
+/* C+ game layout: battle log on the left, both seas in the centre, a tall
+   dashed chain rail, then the bottom hand/action strip. */
+.game__log-side {
+  display: flex;
+  flex: 0 0 280px;
+  width: 280px;
+  min-height: 0;
+}
+
+.game__log-side .game__panel {
+  align-self: flex-start;
+  width: 100%;
+  max-height: 360px;
 }
 
 .game__boards {
   display: flex;
-  gap: 16px;
+  flex: 1;
+  gap: 18px;
   min-width: 0;
   flex-wrap: wrap;
   align-content: flex-start;
-  --cell: clamp(38px, min(4.4vw, calc((100dvh - 430px) / 6)), 56px);
+  justify-content: flex-start;
+  padding-top: 82px;
+  --cell: clamp(38px, min(3.5vw, calc((100dvh - 430px) / 6)), 50px);
 }
 
 .game__tabs {
@@ -1288,7 +1313,7 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #0d1b26;
+  background: var(--bg-sunken);
   color: var(--text-muted);
   font: inherit;
   font-size: 13px;
@@ -1297,23 +1322,30 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 .game__tab--active {
   border-color: var(--accent-strong);
   color: var(--text);
-  background: #14303f;
+  background: var(--accent-soft);
 }
 
 .game__side {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 260px;
+  flex: 0 0 200px;
+  width: 200px;
   min-height: 0;
-  margin-left: auto;
+}
+
+.game__side > .game__panel {
+  flex: 1;
+  padding: 12px;
+  border: 1px dashed rgba(230, 199, 120, 0.45);
+  background: rgba(32, 28, 16, 0.22);
 }
 
 .game__panel {
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
+  padding: 10px 12px;
+  border: 1px solid var(--panel-line);
+  border-radius: 10px;
+  background: var(--panel);
   min-height: 0;
 }
 
@@ -1325,11 +1357,13 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 }
 
 .game__panel-title {
-  margin: 0 0 6px;
-  color: var(--text-muted);
-  font-size: 11px;
+  margin: 0 0 8px;
+  padding-bottom: 7px;
+  border-bottom: 1px dashed var(--line-dash);
+  color: var(--text);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.08em;
 }
 
 .game__panel-empty {
@@ -1352,15 +1386,15 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   align-items: baseline;
   gap: 6px;
   padding: 4px 8px;
-  border: 1px solid #2b6c80;
+  border: 1px solid rgba(124, 92, 240, 0.5);
   border-radius: 8px;
-  background: #102b36;
+  background: var(--accent-soft);
   font-size: 13px;
 }
 
 .game__chain-item--negated {
-  border-color: #6b2b26;
-  background: #2a1414;
+  border-color: rgba(255, 92, 108, 0.45);
+  background: rgba(42, 20, 24, 0.8);
   text-decoration: line-through;
   opacity: 0.7;
 }
@@ -1434,7 +1468,7 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: linear-gradient(170deg, #12303d, #0b1c26);
+  background: linear-gradient(170deg, #232b52, #12172e);
   color: var(--text);
   font: inherit;
   text-align: left;
@@ -1447,7 +1481,7 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
 
 .card--selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgb(55 194 217 / 45%);
+  box-shadow: 0 0 0 2px rgba(124, 92, 240, 0.45);
 }
 
 .card--disabled {
@@ -1541,6 +1575,48 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   bottom: auto;
   max-height: 70%;
   overflow-y: auto;
+}
+
+@media (max-width: 1279px) {
+  .game__log-side {
+    display: none;
+  }
+
+  .game__side {
+    flex-basis: 190px;
+    width: 190px;
+  }
+
+  .game__boards {
+    padding-top: 0;
+  }
+
+  .game__tab {
+    min-height: 40px;
+  }
+
+  .game__action {
+    min-height: 40px;
+  }
+}
+
+@media (max-width: 899px) {
+  .game {
+    padding: 3px 10px 4px;
+    gap: 4px;
+  }
+
+  .game__main {
+    gap: 6px;
+  }
+
+  .game__bottom {
+    gap: 6px;
+  }
+
+  .game__hand {
+    min-height: 100px;
+  }
 }
 
 .game__chain-window {

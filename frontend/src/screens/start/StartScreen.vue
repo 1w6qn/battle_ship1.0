@@ -172,10 +172,10 @@ async function startAi(): Promise<void> {
     <div class="home-grid">
       <!-- 主行动入口：DOM 第一位，窄屏收成单列时“先能开一局”。 -->
       <section class="home-panel home-actions" data-testid="start-actions" aria-labelledby="home-actions-title">
-        <h2 id="home-actions-title" class="home-panel__title">开 一 局</h2>
-        <p class="home-actions__lead">
-          休闲与排位共用一个匹配队列；人机随时开局，不结算段位分。
-        </p>
+        <div class="home-actions__meta">
+          <h2 id="home-actions-title" class="home-panel__title">开 一 局</h2>
+          <p class="home-actions__lead">休闲与排位共用一个匹配队列；人机随时开局，不结算段位分。</p>
+        </div>
 
         <button
           type="button"
@@ -186,6 +186,7 @@ async function startAi(): Promise<void> {
         >
           <span class="home-action__title">休闲匹配</span>
           <span class="home-action__desc">随机匹配一位在线玩家 · 不计段位分</span>
+          <span class="home-action__cta" aria-hidden="true">ENTER</span>
         </button>
 
         <div v-if="home.queuePending" class="home-queue" role="status">
@@ -194,6 +195,8 @@ async function startAi(): Promise<void> {
             取消匹配
           </button>
         </div>
+
+        <p class="home-actions__start-hint" aria-hidden="true">点击按钮立即开始 · 匹配成功后自动进入布船</p>
 
         <button
           type="button"
@@ -204,6 +207,7 @@ async function startAi(): Promise<void> {
         >
           <span class="home-action__title">排位对战</span>
           <span class="home-action__desc">结算会改变段位 · 需要登录</span>
+          <span class="home-action__cta home-action__cta--gold" aria-hidden="true">RANKED</span>
         </button>
 
         <div class="home-ai">
@@ -247,6 +251,7 @@ async function startAi(): Promise<void> {
       <!-- 玩家信息：/api/profile 的服务端字段，前端只排版。 -->
       <aside class="home-panel home-player" data-testid="start-player" aria-labelledby="home-player-title">
         <h2 id="home-player-title" class="home-panel__title">指 挥 官</h2>
+        <div class="home-player__emblem" aria-hidden="true"><span>舰</span></div>
         <p class="home-player__name" data-testid="start-player-name">{{ player.name }}</p>
 
         <template v-if="player.guest">
@@ -347,33 +352,41 @@ async function startAi(): Promise<void> {
 
 <style scoped>
 .home-screen {
-  padding: 20px;
-  gap: 14px;
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 0 24px;
+  gap: 4px;
 }
 
 .home-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px 18px;
+  gap: 4px 18px;
 }
 
 .home-head__main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   min-width: 0;
 }
 
 .home-head__eyebrow {
-  margin: 0 0 4px;
-  color: var(--accent);
-  font-size: 12px;
-  letter-spacing: 0.12em;
+  margin: 0;
+  color: #8f9bc4;
+  font-size: 9px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
 .home-head__title {
   margin: 0;
-  font-size: 28px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .home-head__meta {
@@ -388,45 +401,48 @@ async function startAi(): Promise<void> {
   display: inline-flex;
   align-items: baseline;
   gap: 4px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
+  padding: 4px 12px;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: var(--bg-elevated);
-  font-size: 13px;
+  background: rgba(13, 17, 34, 0.72);
+  font-size: 12px;
   white-space: nowrap;
 }
 
 .home-pill__value {
-  color: var(--accent);
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
 .home-pill__label,
 .home-pill__unit {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .home-conn {
-  color: var(--text-muted);
+  color: var(--text-dim);
   font-size: 12px;
 }
 
 .home-conn[data-connected='true'] {
-  color: #6fe0a0;
+  color: var(--success);
 }
 
 .home-grid {
   display: grid;
   gap: 16px;
   min-width: 0;
-  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(250px, 340px);
+  grid-template-columns: minmax(0, 280px) minmax(0, 1fr) minmax(0, 292px);
   grid-template-areas: 'player actions side';
   align-items: start;
 }
 
 .home-actions {
   grid-area: actions;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .home-player {
@@ -440,20 +456,25 @@ async function startAi(): Promise<void> {
   min-width: 0;
 }
 
+/* Panel language: translucent indigo card with a violet hairline and a dashed
+   header rule, matching the C+ arena panels. */
 .home-panel {
   min-width: 0;
   padding: 14px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--panel-line);
   border-radius: var(--radius);
-  background: var(--bg-elevated);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
 }
 
 .home-panel__title {
-  margin: 0 0 10px;
-  color: var(--text-muted);
-  font-size: 11px;
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--line-dash);
+  color: var(--text);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.24em;
+  letter-spacing: 0.1em;
 }
 
 .home-panel__note {
@@ -462,22 +483,55 @@ async function startAi(): Promise<void> {
   font-size: 12px;
 }
 
-.home-actions__lead {
-  margin: 0 0 12px;
-  color: var(--text-muted);
-  font-size: 13px;
+.home-actions__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin-bottom: 8px;
 }
 
+.home-actions__meta .home-panel__title {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+}
+
+.home-actions__lead {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.home-actions__start-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  margin: 0 0 10px;
+  border: 1px dashed var(--line-dash);
+  border-radius: var(--radius-sm);
+  background: rgba(13, 17, 34, 0.45);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Action cards. The casual card is the purple hero; ranked carries the gold
+   rank language; the AI card stays a quiet panel. */
 .home-action {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   width: 100%;
-  margin-bottom: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
+  margin: 0 0 10px;
+  padding: 15px 18px;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  background: #0b1a24;
+  background: rgba(15, 19, 38, 0.72);
   color: var(--text);
   font: inherit;
   text-align: left;
@@ -485,8 +539,8 @@ async function startAi(): Promise<void> {
 }
 
 .home-action:hover:not(:disabled) {
-  border-color: var(--accent-strong);
-  background: #103240;
+  border-color: var(--accent);
+  background: rgba(124, 92, 240, 0.18);
 }
 
 .home-action:disabled {
@@ -495,8 +549,29 @@ async function startAi(): Promise<void> {
 }
 
 .home-action--primary {
+  min-height: 88px;
+  justify-content: center;
   border-color: var(--accent-strong);
-  background: #0f3a47;
+  background: var(--hero-grad);
+  box-shadow: var(--shadow-accent);
+}
+
+.home-action--primary:hover:not(:disabled) {
+  background: linear-gradient(120deg, #8a6bff, #4b32b8 70%);
+}
+
+.home-action--primary .home-action__title {
+  font-size: 23px;
+  letter-spacing: 0.04em;
+}
+
+.home-action--primary .home-action__desc {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.home-action[data-testid='start-ranked-action'] {
+  border-color: rgba(201, 162, 76, 0.5);
+  background: linear-gradient(120deg, rgba(201, 162, 76, 0.22), rgba(125, 90, 32, 0.16));
 }
 
 .home-action__title {
@@ -509,6 +584,24 @@ async function startAi(): Promise<void> {
   font-size: 12px;
 }
 
+.home-action__cta {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  padding: 6px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 999px;
+  color: #fff;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  transform: translateY(-50%);
+}
+
+.home-action__cta--gold {
+  border-color: rgba(230, 199, 120, 0.55);
+  color: var(--gold-strong);
+}
+
 .home-queue {
   display: flex;
   flex-wrap: wrap;
@@ -519,7 +612,7 @@ async function startAi(): Promise<void> {
   padding: 10px 12px;
   border: 1px dashed var(--accent-strong);
   border-radius: var(--radius);
-  background: #0e2a34;
+  background: var(--accent-soft);
 }
 
 .home-queue__text {
@@ -548,10 +641,10 @@ async function startAi(): Promise<void> {
 .home-ai__select {
   flex: 1;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #0b1a24;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
   color: var(--text);
   font: inherit;
   font-size: 13px;
@@ -561,16 +654,16 @@ async function startAi(): Promise<void> {
   margin: 0 0 10px;
   padding: 8px 10px;
   border: 1px solid var(--danger);
-  border-radius: 8px;
-  background: #2a1414;
+  border-radius: var(--radius-sm);
+  background: rgba(42, 20, 24, 0.8);
   color: #ffb3a8;
   font-size: 13px;
 }
 
 .home-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .home-player__links {
@@ -581,24 +674,46 @@ async function startAi(): Promise<void> {
 }
 
 .home-link {
-  display: inline-block;
-  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 10px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(13, 17, 34, 0.72);
   color: var(--text-muted);
   font-size: 13px;
 }
 
 .home-link:hover {
-  border-color: var(--accent-strong);
+  border-color: var(--accent);
   color: var(--text);
-  background: #14303f;
+  background: var(--accent-soft);
+}
+
+.home-player__emblem {
+  display: grid;
+  place-items: center;
+  width: 100px;
+  height: 100px;
+  margin: 2px auto 14px;
+  border: 2px solid rgba(201, 162, 76, 0.55);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 32%, rgba(201, 162, 76, 0.3), rgba(124, 92, 240, 0.18) 58%, transparent 74%);
+  box-shadow: 0 0 34px rgba(201, 162, 76, 0.18), inset 0 0 24px rgba(201, 162, 76, 0.14);
+}
+
+.home-player__emblem span {
+  color: var(--gold-strong);
+  font-size: 32px;
+  letter-spacing: 0.06em;
 }
 
 .home-player__name {
   margin: 0 0 8px;
   overflow-wrap: anywhere;
-  font-size: 22px;
+  font-size: 21px;
   font-weight: 700;
 }
 
@@ -620,17 +735,17 @@ async function startAi(): Promise<void> {
   margin-bottom: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: #0b1a24;
+  background: var(--bg-sunken);
 }
 
 .home-bar__fill {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #b8872e, #ffd76a);
+  background: linear-gradient(90deg, #b8873a, var(--gold-strong));
 }
 
 .home-bar__fill--xp {
-  background: linear-gradient(90deg, #2a8f68, #6fe0a0);
+  background: linear-gradient(90deg, #2a8f68, var(--success));
 }
 
 .home-player__level {
@@ -655,7 +770,7 @@ async function startAi(): Promise<void> {
 .home-player__kv {
   display: grid;
   gap: 4px;
-  margin: 0 0 10px;
+  margin: 0 0 12px;
 }
 
 .home-player__kv-row {
@@ -663,9 +778,10 @@ async function startAi(): Promise<void> {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 8px;
-  border-radius: 8px;
-  background: #0b1a24;
+  padding: 6px 9px;
+  border: 1px solid rgba(42, 51, 88, 0.6);
+  border-radius: var(--radius-sm);
+  background: rgba(13, 17, 34, 0.62);
 }
 
 .home-player__kv-row dt {
@@ -689,8 +805,9 @@ async function startAi(): Promise<void> {
 .home-stat {
   min-width: 0;
   padding: 8px 10px;
-  border-radius: 8px;
-  background: #0b1a24;
+  border: 1px solid rgba(42, 51, 88, 0.6);
+  border-radius: var(--radius-sm);
+  background: rgba(13, 17, 34, 0.62);
 }
 
 .home-stat--wide {
@@ -718,7 +835,7 @@ async function startAi(): Promise<void> {
 
 .home-changelog__latest {
   margin: 0 0 8px;
-  color: var(--accent);
+  color: var(--accent-cyan);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -738,7 +855,7 @@ async function startAi(): Promise<void> {
 .home-changelog__entry {
   min-width: 0;
   padding-top: 8px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid rgba(42, 51, 88, 0.7);
 }
 
 .home-changelog__entry:first-child {
@@ -748,7 +865,7 @@ async function startAi(): Promise<void> {
 
 .home-changelog__date {
   margin: 0 0 4px;
-  color: var(--text-muted);
+  color: var(--text-dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
@@ -778,19 +895,22 @@ async function startAi(): Promise<void> {
       'player'
       'side';
   }
-}
 
-@media (max-width: 520px) {
   .home-screen {
-    padding: 14px;
+    max-width: none;
+    padding: 10px 14px 22px;
   }
 
-  .home-head__title {
-    font-size: 24px;
+  .home-conn {
+    display: none;
   }
 
-  .home-action__title {
-    font-size: 16px;
+  .home-action--primary {
+    min-height: 74px;
+  }
+
+  .home-player__emblem {
+    display: none;
   }
 }
 </style>

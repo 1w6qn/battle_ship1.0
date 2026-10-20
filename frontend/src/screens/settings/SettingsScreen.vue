@@ -107,12 +107,23 @@ onMounted(() => {
     data-testid="screen-settings"
     aria-labelledby="screen-settings-title"
   >
-    <header class="settings__head">
-      <p class="settings__eyebrow">P4 · 设置</p>
-      <h1 id="screen-settings-title" class="settings__title" data-testid="settings-heading">设置</h1>
-      <p class="settings__hint">回放与观战开关、名片隐私、密码与壁纸入口；改动立即生效。</p>
-    </header>
+    <div class="settings__modal">
+      <header class="settings__head">
+        <p class="settings__eyebrow">P4 · 设置</p>
+        <h1 id="screen-settings-title" class="settings__title" data-testid="settings-heading">设置</h1>
+        <p class="settings__hint">回放与观战开关、名片隐私、密码与壁纸入口；改动立即生效。</p>
+      </header>
 
+      <div class="settings__layout">
+        <nav class="settings__nav" aria-label="设置分区">
+          <a href="#settings-replay">对局回放</a>
+          <a href="#settings-spectate">观战</a>
+          <a href="#settings-privacy">名片隐私</a>
+          <a href="#settings-password">修改密码</a>
+          <a href="#settings-wallpaper">动态壁纸</a>
+        </nav>
+
+        <div class="settings__panes">
     <section v-if="anonymous" class="settings__login" data-testid="settings-login-required">
       <h2>需要先登录</h2>
       <p>回放开关、观战开关、隐私与密码都绑定账号。</p>
@@ -123,7 +134,7 @@ onMounted(() => {
     </p>
 
     <template v-else>
-      <section class="settings__block" data-testid="settings-replay">
+      <section id="settings-replay" class="settings__block" data-testid="settings-replay">
         <h2 class="settings__block-title">对局回放</h2>
         <label class="settings__switch">
           <input
@@ -141,7 +152,7 @@ onMounted(() => {
         <p class="settings__note">任一方关闭，这一局就不会留下回放。</p>
       </section>
 
-      <section class="settings__block" data-testid="settings-spectate">
+      <section id="settings-spectate" class="settings__block" data-testid="settings-spectate">
         <h2 class="settings__block-title">观战</h2>
         <label class="settings__switch">
           <input
@@ -159,7 +170,7 @@ onMounted(() => {
         <p class="settings__note">观众只能看到双方已轰过的格子，看不到你的船位。</p>
       </section>
 
-      <section class="settings__block" data-testid="settings-privacy">
+      <section id="settings-privacy" class="settings__block" data-testid="settings-privacy">
         <h2 class="settings__block-title">名片隐私</h2>
         <label v-for="row in privacyRows" :key="row.key" class="settings__switch">
           <input
@@ -177,7 +188,7 @@ onMounted(() => {
         <p class="settings__note" data-testid="settings-privacy-status" role="status">{{ privacyStatus }}</p>
       </section>
 
-      <section class="settings__block" data-testid="settings-password">
+      <section id="settings-password" class="settings__block" data-testid="settings-password">
         <h2 class="settings__block-title">修改密码</h2>
         <form class="settings__form" @submit.prevent="submitPassword">
           <label>
@@ -213,7 +224,7 @@ onMounted(() => {
         </p>
       </section>
 
-      <section class="settings__block" data-testid="settings-wallpaper">
+      <section id="settings-wallpaper" class="settings__block" data-testid="settings-wallpaper">
         <h2 class="settings__block-title">动态壁纸</h2>
         <p class="settings__note">
           壁纸库（扫描本机 / 选择文件）仍在旧版界面里；这里提供入口与本机可用性检查。
@@ -235,40 +246,121 @@ onMounted(() => {
         </button>
       </footer>
     </template>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
+/* C+ settings: one 1040px modal, left section rail + right scrolling pane. */
 .settings {
-  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.settings__modal {
+  display: flex;
+  flex-direction: column;
+  width: 1040px;
+  max-width: 100%;
+  max-height: calc(100vh - 104px);
+  overflow: hidden;
+  border: 1px solid var(--panel-line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+}
+
+.settings__head {
+  flex: 0 0 auto;
+  padding: 16px 22px 12px;
+  border-bottom: 1px dashed var(--line-dash);
 }
 
 .settings__eyebrow {
-  margin: 0 0 4px;
-  color: var(--accent);
-  font-size: 12px;
-  letter-spacing: 0.12em;
+  margin: 0 0 2px;
+  color: #8f9bc4;
+  font-size: 10px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
 .settings__title {
   margin: 0;
-  font-size: 28px;
+  font-size: 24px;
+  line-height: 1.2;
 }
 
 .settings__hint {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings__layout {
+  display: grid;
+  grid-template-columns: 182px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 0;
+  padding: 16px 22px 20px;
+}
+
+.settings__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: start;
+  padding: 8px;
+  border: 1px solid var(--panel-line);
+  border-radius: 10px;
+  background: rgba(13, 17, 34, 0.5);
+}
+
+.settings__nav a {
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   color: var(--text-muted);
   font-size: 13px;
 }
 
-.settings__login {
+.settings__nav a:hover {
+  border-color: rgba(124, 92, 240, 0.5);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.settings__nav a:first-child {
+  border-color: rgba(124, 92, 240, 0.55);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.settings__panes {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  padding-right: 8px;
+  overflow-y: auto;
+}
+
+.settings__login,
+.settings__state {
+  margin: 0;
   padding: 14px 16px;
   border: 1px dashed var(--border);
   border-radius: var(--radius);
-  background: var(--bg-elevated);
+  background: rgba(13, 17, 34, 0.55);
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.settings__state--error {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .settings__login h2 {
@@ -281,41 +373,30 @@ onMounted(() => {
   margin: 0 0 10px;
 }
 
-.settings__state {
-  margin: 0;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.settings__state--error {
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
 .settings__block {
   display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--panel-line);
+  border-radius: 10px;
+  background: rgba(13, 17, 34, 0.5);
 }
 
 .settings__block-title {
   margin: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  letter-spacing: 0.18em;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line-dash);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
 .settings__switch {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  font-size: 14px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -328,6 +409,7 @@ onMounted(() => {
 
 .settings__switch-hint {
   display: block;
+  margin-top: 1px;
   color: var(--text-muted);
   font-size: 11px;
 }
@@ -344,22 +426,22 @@ onMounted(() => {
 
 .settings__form {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   max-width: 340px;
 }
 
 .settings__form label {
   display: grid;
   gap: 4px;
-  font-size: 12px;
   color: var(--text-muted);
+  font-size: 12px;
 }
 
 .settings__form input {
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #0b1a24;
+  background: var(--bg-sunken);
   color: var(--text);
   font: inherit;
 }
@@ -376,13 +458,51 @@ onMounted(() => {
 
 .settings__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
-  margin-top: auto;
+  padding-top: 4px;
 }
 
-.button--ghost {
-  border-color: var(--border);
-  background: transparent;
+.settings__actions .button {
+  min-height: 40px;
+  padding: 8px 20px;
+}
+
+.settings__actions [data-testid='settings-back'] {
+  border-color: var(--border-strong);
+  background: rgba(13, 17, 34, 0.72);
   color: var(--text-muted);
+}
+
+@media (max-width: 860px) {
+  .settings {
+    justify-content: flex-start;
+    padding: 12px;
+  }
+
+  .settings__modal {
+    max-height: none;
+  }
+
+  .settings__layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .settings__nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .settings__nav a {
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .settings__panes {
+    overflow: visible;
+    padding-right: 0;
+  }
 }
 </style>

@@ -149,14 +149,14 @@ function onCell(cell: BoardCell): void {
   grid-template-columns: repeat(6, var(--cell, 40px));
   gap: 3px;
   padding: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid #3b4675;
   border-radius: var(--radius);
-  background: radial-gradient(circle at 50% 0%, #0f2a38, #08151d 70%);
+  background: radial-gradient(120% 120% at 50% 0%, #1d2a55, #101733 70%);
   width: fit-content;
 }
 
 .board--opponent .board__grid {
-  box-shadow: inset 0 0 0 1px rgb(55 194 217 / 25%);
+  box-shadow: inset 0 0 0 1px rgba(124, 92, 240, 0.25);
 }
 
 .board--picking .board__grid {
@@ -168,9 +168,9 @@ function onCell(cell: BoardCell): void {
   width: var(--cell, 40px);
   height: var(--cell, 40px);
   padding: 0;
-  border: 1px solid #1b3b4c;
+  border: 1px solid #232c54;
   border-radius: 6px;
-  background: #0b1f2a;
+  background: #1b2244;
   color: var(--text-muted);
   font: inherit;
   font-size: 14px;
@@ -180,16 +180,17 @@ function onCell(cell: BoardCell): void {
 
 .cell--attackable {
   cursor: crosshair;
-  border-color: #2b6c80;
+  border-color: rgba(124, 92, 240, 0.6);
 }
 
 .cell--attackable:hover {
-  background: #17475a;
+  background: #283260;
 }
 
 .cell--ship {
-  background: #123c4a;
-  border-color: #2f7f96;
+  background: #8b96c4;
+  border-color: #a9b2d8;
+  color: #1b2140;
 }
 
 .cell--sunk {
@@ -206,7 +207,7 @@ function onCell(cell: BoardCell): void {
 }
 
 .cell--miss {
-  color: var(--accent);
+  color: var(--accent-cyan);
 }
 
 .cell--frozen {
@@ -222,8 +223,8 @@ function onCell(cell: BoardCell): void {
 }
 
 .cell--revealed {
-  background: #2c2a12;
-  border-color: #a08a2c;
+  background: rgba(201, 162, 76, 0.28);
+  border-color: rgba(201, 162, 76, 0.6);
 }
 
 .cell--hole {
@@ -246,7 +247,7 @@ function onCell(cell: BoardCell): void {
 }
 
 .cell--preview {
-  background: #1b4d5e;
+  background: #2a3563;
 }
 
 .cell__mark {
@@ -269,7 +270,7 @@ function onCell(cell: BoardCell): void {
   bottom: 0;
   font-size: 9px;
   line-height: 1;
-  color: #ffd76a;
+  color: var(--gold-strong);
 }
 
 .cell__badge--frozen {
