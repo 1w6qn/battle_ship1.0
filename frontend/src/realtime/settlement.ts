@@ -101,11 +101,12 @@ export function installSettlementListeners(socket: TypedSocket, pinia?: Pinia): 
 
 export interface SettlementChannelOptions {
   /**
-   * Keep the socket connected when the last screen releases it. Ticket #23's
-   * placement -> rps hand-off needs this: a guest seat is bound to the
-   * connection's sid, so disconnecting between screens would make every
-   * seat-bound emit fail the server's identity check (the legacy app kept one
-   * socket for the page lifetime for the same reason).
+   * Keep the socket connected when the last screen releases it. Both the
+   * home -> placement (#26) and placement -> rps (#23) hand-offs need this: a
+   * seat is bound to the connection's sid, so disconnecting between screens
+   * would make every seat-bound emit fail the server's identity check (the
+   * legacy app kept exactly one socket for the page lifetime for the same
+   * reason).
    */
   keepAlive?: boolean
 }
