@@ -9,8 +9,9 @@ import type { CardLike, LastAttackLike, PendingPickLike, Point } from '../screen
  * The game store stays the single mirror of `room_sync`/`game_state` fields
  * (hand, chain, ships, attacks, effects...). This store only keeps what the
  * server sends as *event-only* data: the log, transient prompts (chain window,
- * ship pick), notices, quick-chat history and the effect marks that have no
- * schema field (revealed cells, shield-absorbed cells, last shot).
+ * ship pick), notices, quick-chat + free-text chat history and the effect
+ * marks that have no schema field (revealed cells, shield-absorbed cells, last
+ * shot).
  *
  * Everything here arrives over the real socket channel; the test build feeds
  * the exact production reducer, never this store directly.
@@ -45,6 +46,12 @@ export interface QuickChatMessage {
   ts: number
 }
 
+export interface ChatMessage {
+  username: string
+  message: string
+  ts: number
+}
+
 export interface PickRequest extends PendingPickLike {
   ships: Array<{ positions: Point[] }>
 }
@@ -52,6 +59,7 @@ export interface PickRequest extends PendingPickLike {
 const LOG_LIMIT = 200
 const NOTICE_LIMIT = 12
 const QUICK_CHAT_LIMIT = 30
+const CHAT_LIMIT = 50
 
 function asCard(value: unknown): CardLike | null {
   if (!value || typeof value !== 'object') return null
@@ -74,6 +82,7 @@ export const useMatchStore = defineStore('match', () => {
   const shieldBrokenSelf = ref<Point[]>([])
   const shieldBrokenOpponent = ref<Point[]>([])
   const quickChat = ref<QuickChatMessage[]>([])
+  const chat = ref<ChatMessage[]>([])
   const pickRequest = ref<PickRequest | null>(null)
   const chainResolvedAt = ref(0)
   let noticeSeq = 0
@@ -124,6 +133,19 @@ export const useMatchStore = defineStore('match', () => {
     })
     if (quickChat.value.length > QUICK_CHAT_LIMIT) {
       quickChat.value.splice(0, quickChat.value.length - QUICK_CHAT_LIMIT)
+    }
+  }
+
+  function recordChatMessage(payload: Record<string, unknown>): void {
+    const message = String(payload.message ?? '').trim()
+    if (!message) return
+    chat.value.push({
+      username: String(payload.username ?? '') || '玩家',
+      message,
+      ts: Number(payload.ts ?? 0) || 0,
+    })
+    if (chat.value.length > CHAT_LIMIT) {
+      chat.value.splice(0, chat.value.length - CHAT_LIMIT)
     }
   }
 
@@ -188,6 +210,7 @@ export const useMatchStore = defineStore('match', () => {
     shieldBrokenSelf.value = []
     shieldBrokenOpponent.value = []
     quickChat.value = []
+    chat.value = []
     pickRequest.value = null
     chainResolvedAt.value = 0
   }
@@ -202,6 +225,7 @@ export const useMatchStore = defineStore('match', () => {
       shieldBrokenSelf: shieldBrokenSelf.value.slice(),
       shieldBrokenOpponent: shieldBrokenOpponent.value.slice(),
       quickChat: quickChat.value.slice(),
+      chat: chat.value.slice(),
       pickRequest: pickRequest.value ? { ...pickRequest.value } : null,
     }
   }
@@ -215,6 +239,7 @@ export const useMatchStore = defineStore('match', () => {
     shieldBrokenSelf,
     shieldBrokenOpponent,
     quickChat,
+    chat,
     pickRequest,
     chainResolvedAt,
     appendLog,
@@ -223,6 +248,7 @@ export const useMatchStore = defineStore('match', () => {
     openChainWindow,
     closeChainWindow,
     recordQuickChat,
+    recordChatMessage,
     setPickRequest,
     clearPickRequest,
     markRevealed,

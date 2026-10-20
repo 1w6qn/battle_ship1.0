@@ -226,6 +226,8 @@ def create_socket_server(
     if chat is not None:
         chat.bind(publisher)
         register_chat_handlers(sio, chat)
+        # Ticket #31: rejoin replays only the chat lines this seat missed.
+        rooms.rejoin_hook = chat.replay_missed
     register_room_handlers(sio, rooms, lobby)
     register_lobby_handlers(sio, lobby)
     register_battle_handlers(sio, gameplay, battle)

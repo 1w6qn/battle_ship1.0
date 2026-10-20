@@ -283,6 +283,17 @@ class Room:
 
     quick_chat_recent: dict[str, list[float]] = field(default_factory=dict)
     quick_chat_last: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Ticket #31: in-room free-text chat. History is bounded (legacy chat was
+    # ephemeral, but a reconnecting seat must not lose what it missed while the
+    # socket was down). chat_delivered is the per-seat watermark: a message is
+    # only replayed when the seat's socket was not connected when it went out.
+    chat_seq: int = 0
+    chat_history: list[dict[str, Any]] = field(default_factory=list)
+    chat_delivered: dict[str, int] = field(default_factory=dict)
+    chat_recent: dict[str, list[float]] = field(default_factory=dict)
+    chat_last: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     spectators: dict[str, dict[str, Any]] = field(default_factory=dict)
     spectate_chat_recent: dict[str, list[float]] = field(default_factory=dict)
     spectate_chat_last: dict[str, dict[str, Any]] = field(default_factory=dict)
