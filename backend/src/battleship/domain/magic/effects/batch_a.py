@@ -26,6 +26,7 @@ from ...battle import (
 from ...room import BOARD_SIZE, PlayerShip, Position, alive_ships, is_ship_alive
 from ..cards import MagicCard
 from ..deck import revive_sunken_ships
+from ..hooks import SHIP_DESTROYED, SHIP_SUNK
 from ..registry import register
 from .base import EffectContext, EffectResult
 
@@ -484,7 +485,45 @@ async def treasure_hunter(ctx: EffectContext) -> EffectResult:
 
 @register("百亿补贴")
 async def subsidy(ctx: EffectContext) -> EffectResult:
-    effects.grant_flag(ctx.room, ctx.caster_id, "subsidy", boundary=effects.BOUNDARY_ROUND)
+    """自己的船被击沉/摧毁时攻击次数 +3。
+
+    炮击（BattleService.sink_hooks）与效果摧毁（ctx.on_ship_destroyed）最后都
+    落在 MagicService 的同一个 SHIP_SUNK / SHIP_DESTROYED 漏斗上，所以这里只要
+    订阅两个事件、把 +3 写进租约投影即可；订阅随 subsidy 租约在大回合边界消失。
+    """
+
+    owner = ctx.caster_id
+    key = effects.flag_lease_key("subsidy", owner)
+    fresh = effects.get_lease(ctx.room, key) is None
+    lease = effects.grant_flag(
+        ctx.room, owner, "subsidy", boundary=effects.BOUNDARY_ROUND
+    )
+    if not fresh:
+        # 重复施放只刷新同一条租约；再订阅一次会让一次击沉 +6。
+        return EffectResult(True, "船被击败时攻击次数加3")
+
+    async def on_owner_ship_lost(payload: dict[str, Any]) -> None:
+        if payload.get("owner_id") != owner:
+            return
+        effects.adjust_flag(
+            ctx.room, owner, "subsidy_bonus", 3, boundary=effects.BOUNDARY_ROUND
+        )
+        player = ctx.room.players.get(owner)
+        if player is not None and player.socket_id:
+            await ctx.emit(
+                "message",
+                {"text": "百亿补贴生效，你的攻击次数 +3"},
+                to=player.socket_id,
+            )
+
+    for event in (SHIP_SUNK, SHIP_DESTROYED):
+        effects.subscribe(
+            ctx.room,
+            event,
+            on_owner_ship_lost,
+            kind=effects.KIND_NOTIFY,
+            lease_key=lease.key,
+        )
     return EffectResult(True, "船被击败时攻击次数加3")
 
 

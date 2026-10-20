@@ -392,6 +392,17 @@ def project_effect_flags(room: Any) -> None:
         player.effect_flags = rebuilt
 
 
+def reset_all(room: Any) -> None:
+    """整对象重置（败者食尘 / 调试重置）：match 边界清租约后再投影。
+
+    这是"棋盘与效果一起归零"的唯一入口；各调用点自己写 expire+project 迟早
+    漏掉投影，把幽灵标记留在 effect_flags 上。
+    """
+
+    expire(room, BOUNDARY_MATCH)
+    project_effect_flags(room)
+
+
 def clear(room: Any) -> None:
     """清空订阅、租约与待处理事件（房间重置 / 重摆棋盘 / 终局）。
 
@@ -504,5 +515,6 @@ __all__ = [
     "grant_flag",
     "project_effect_flags",
     "remove_lease",
+    "reset_all",
     "subscribe",
 ]
