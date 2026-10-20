@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { acquireMatchChannel, emitMatchEvent, matchSocket } from '../../realtime/match'
 import { useGameStore } from '../../stores/game'
 import { BOARD_SIZE, usePlacementStore } from '../../stores/placement'
+import AppOverlay from '../../components/AppOverlay.vue'
+import { getSettlementSocket } from '../../realtime/settlement'
+import { useUiStore } from '../../stores/ui'
 
 /**
  * Ticket #23: the opening placement screen.
@@ -22,17 +25,31 @@ const router = useRouter()
 const route = useRoute()
 const game = useGameStore()
 const placement = usePlacementStore()
+const ui = useUiStore()
+const leaveOpen = ref(false)
 
 let releaseChannel: (() => void) | null = null
 let offError: (() => void) | null = null
 let offMessage: (() => void) | null = null
 let submitToken = 0
+let offRoomSync: (() => void) | null = null
 
 const hasRoom = computed(() => Boolean(game.state.room_id))
 const selfName = computed(() => game.state.player_name || '你')
 const opponentName = computed(() => game.state.opponent_name || '对手')
 const seatLabel = computed(() => game.state.player_seat || '—')
 const canEdit = computed(() => hasRoom.value && !placement.locked)
+
+/** Player-language opponent status. Never guesses "offline" without a frame. */
+const opponentStatus = computed(() => {
+  if (!game.state.opponent_name) return { state: 'waiting', text: '等待对手加入房间' }
+  if (!placement.opponentStateKnown) {
+    return { state: 'unknown', text: '对手已入座 · 重新同步后才能看到对手的准备状态' }
+  }
+  if (!placement.opponentOnline) return { state: 'offline', text: '对手已掉线，等待重连（不会判你负）' }
+  if (placement.opponentReady) return { state: 'ready', text: '对手已摆好战舰，等你确认' }
+  return { state: 'thinking', text: '对手在线，正在摆战舰' }
+})
 
 interface BoardCellView {
   key: string
@@ -81,6 +98,7 @@ onMounted(() => {
   if (socket) {
     offError = socket.on('error', (payload) => placement.noteNotice(readText(payload, 'message')))
     offMessage = socket.on('message', (payload) => placement.noteNotice(readText(payload, 'message')))
+    offRoomSync = socket.on('room_sync', (payload) => placement.adoptOpponentState(payload))
   }
   placement.resetForEntry()
   if (game.state.state === 'placing_ships') placement.adoptFromServer(game.state.ships)
@@ -89,8 +107,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   offError?.()
   offMessage?.()
+  offRoomSync?.()
   offError = null
   offMessage = null
+  offRoomSync = null
   releaseChannel?.()
   releaseChannel = null
 })
@@ -117,6 +137,48 @@ function randomize(): void {
 
 function clearBoard(): void {
   placement.clearBoard()
+  placement.clearReceipt()
+}
+
+/** A refused click still answers once: the board never goes silent. */
+function toggleCell(x: number, y: number): void {
+  if (!canEdit.value) {
+    placement.noteReceipt(
+      placement.submitted || placement.pending
+        ? '已提交 · 等对手摆好就能开始猜拳；要退出可以点「离开房间」'
+        : '还没进入房间，先创建或加入房间再布船',
+    )
+    return
+  }
+  placement.clearReceipt()
+  placement.toggleCell(x, y)
+}
+
+/** Leave the waiting room through the existing surrender event (no new protocol). */
+async function leaveRoom(): Promise<void> {
+  const socket = getSettlementSocket()
+  const roomId = game.state.room_id
+  const playerId = game.state.player_id
+  if (!socket || !roomId || !playerId) {
+    leaveOpen.value = false
+    ui.notify({ code: 'leave-room-not-ready', tone: 'error', message: '连接还没就绪，稍后再试一次' })
+    return
+  }
+  try {
+    const ack = await socket.emitEvent('surrender', { room_id: roomId, player_id: playerId })
+    leaveOpen.value = false
+    if (ack?.status === 'success') {
+      placement.reset()
+      void router.push({ name: 'lobby' })
+      return
+    }
+    placement.noteReceipt(
+      typeof ack?.message === 'string' && ack.message ? ack.message : '离开房间没有成功，请稍后再试',
+    )
+  } catch (error) {
+    leaveOpen.value = false
+    placement.noteReceipt('离开房间没有成功：' + (error instanceof Error ? error.message : '网络不稳定'))
+  }
 }
 
 async function confirm(): Promise<void> {
@@ -162,7 +224,7 @@ function returnHome(): void {
     aria-labelledby="screen-placement-title"
   >
     <header class="placement__head">
-      <p class="placement__eyebrow">P4 · 布船</p>
+      <p class="placement__eyebrow">开局 · 布船</p>
       <h1 id="screen-placement-title" class="placement__title" data-testid="placement-heading">
         放置你的战舰
       </h1>
@@ -177,6 +239,16 @@ function returnHome(): void {
         对手 <b data-testid="placement-opponent">{{ opponentName }}</b>
       </span>
     </div>
+
+    <p
+      class="placement__opponent-state"
+      data-testid="placement-opponent-status"
+      :data-state="opponentStatus.state"
+      role="status"
+      aria-live="polite"
+    >
+      {{ opponentStatus.text }}
+    </p>
 
     <p v-if="!hasRoom" class="placement__empty" data-testid="placement-empty" role="status">
       还没进入房间，先创建或加入房间再布船。
@@ -203,8 +275,8 @@ function returnHome(): void {
               '第 ' + (cell.x + 1) + ' 列第 ' + (cell.y + 1) + ' 行，' +
               (cell.ship ? '已放置战舰，点击撤销' : '空格，点击放置战舰')
             "
-            :disabled="!canEdit"
-            @click="placement.toggleCell(cell.x, cell.y)"
+            :aria-disabled="!canEdit"
+            @click="toggleCell(cell.x, cell.y)"
           >
             <span v-if="cell.ship" class="placement__mark" aria-hidden="true">◆</span>
           </button>
@@ -249,6 +321,16 @@ function returnHome(): void {
 
         <p class="placement__hint" data-testid="placement-hint" role="status" aria-live="polite">
           {{ placement.hint }}
+        </p>
+
+        <p
+          v-if="placement.receipt"
+          class="placement__receipt"
+          data-testid="placement-receipt"
+          role="status"
+          aria-live="polite"
+        >
+          {{ placement.receipt }}
         </p>
 
         <p
@@ -302,11 +384,20 @@ function returnHome(): void {
           <button
             type="button"
             class="button"
+            data-primary-action="true"
             data-testid="placement-confirm"
             :disabled="!canEdit || !placement.canSubmit"
             @click="confirm"
           >
             确认放置
+          </button>
+          <button
+            type="button"
+            class="button button--ghost placement__leave"
+            data-testid="placement-leave"
+            @click="leaveOpen = true"
+          >
+            离开房间
           </button>
           <button
             v-if="!hasRoom"
@@ -320,6 +411,29 @@ function returnHome(): void {
         </div>
       </aside>
     </div>
+
+    <AppOverlay
+      v-if="leaveOpen"
+      id="placement-leave-overlay"
+      :priority="140"
+      label="离开房间确认"
+      @close="leaveOpen = false"
+    >
+      <section class="placement__confirm" data-testid="placement-leave-confirm">
+        <h2 class="placement__confirm-title">离开房间？</h2>
+        <p class="placement__confirm-text">
+          布船阶段离开会按认输处理：本局判负并结算{{ game.state.ranked ? '，排位会扣分' : '' }}。留在房间里可以等对手。
+        </p>
+        <div class="placement__confirm-actions">
+          <button type="button" class="button button--ghost" data-testid="placement-leave-cancel" @click="leaveOpen = false">
+            继续等待
+          </button>
+          <button type="button" class="button" data-testid="placement-leave-confirm-ok" @click="leaveRoom">
+            确认离开（判负）
+          </button>
+        </div>
+      </section>
+    </AppOverlay>
   </section>
 </template>
 
@@ -703,4 +817,59 @@ function returnHome(): void {
     --placement-cell: clamp(40px, 6.4vh, 48px);
   }
 }
+.placement__opponent-state {
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.placement__opponent-state[data-state='ready'] {
+  border-color: rgba(111, 224, 160, 0.45);
+  color: var(--success);
+}
+
+.placement__opponent-state[data-state='offline'] {
+  border-color: rgba(255, 92, 108, 0.45);
+  color: #ff9c8f;
+}
+
+.placement__receipt {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 215, 106, 0.45);
+  border-radius: 8px;
+  background: var(--gold-soft);
+  color: var(--gold-strong);
+  font-size: 12px;
+}
+
+.placement__confirm {
+  display: grid;
+  gap: 10px;
+  padding: 20px 22px;
+  text-align: left;
+}
+
+.placement__confirm-title {
+  margin: 0;
+  font-size: 20px;
+}
+
+.placement__confirm-text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.placement__confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 </style>
