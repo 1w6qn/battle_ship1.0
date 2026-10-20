@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BoardPanel from './BoardPanel.vue'
-import { acquireBattleChannel, sendBattleEvent } from '../../realtime/battle'
+import { acquireBattleChannel, getBattleSocket, sendBattleEvent, syncHand } from '../../realtime/battle'
 import { cardArtUrl } from '../../cards/cardArt'
 import { useGameStore } from '../../stores/game'
 import { useMatchStore } from '../../stores/match'
@@ -343,14 +343,14 @@ const discardError = ref('')
 const discardLoading = ref(false)
 
 // ---- feedback helpers ------------------------------------------------------
-function say(code: string, message: string, next = ''): void {
+function say(code: string, message: string, next = '', tone: 'info' | 'warning' = 'warning'): void {
   receiptText.value = next ? message + ' ' + next : message
   if (receiptTimer !== null) window.clearTimeout(receiptTimer)
   receiptTimer = window.setTimeout(() => {
     receiptText.value = ''
     receiptTimer = null
   }, 6000)
-  ui.notify({ code, message, next, tone: 'warning', ttl: 5000 })
+  ui.notify({ code, message, next, tone, ttl: tone === 'warning' ? 5000 : 3000 })
 }
 
 function announce(text: string): void {
@@ -416,9 +416,13 @@ function onCardClick(index: number): void {
   selectedCardIndex.value = index
   selectedCardKey.value = key
   const disabled = cardDisabledReason(card, state.value, playCtx.value)
-  if (disabled) say('game-card-disabled', disabled, '点卡片看限制条件，换个阶段或用别的卡。')
-  if (disabled) say('game-card-disabled', disabled, '点卡片看限制条件，换个阶段或用别的卡。')
-  else announce('已选中' + card.name + '。再点一次或点「使用此卡」出牌。')
+  if (disabled) {
+    say('game-card-disabled', disabled, '点卡片看限制条件，换个阶段或用别的卡。')
+  } else {
+    // Every click gets a receipt, including a successful selection (spec §5).
+    say('game-card-selected', '已选中「' + card.name + '」：再点一次或点「使用此卡」出牌。', '', 'info')
+    announce('已选中' + card.name + '。再点一次或点「使用此卡」出牌。')
+  }
 }
 
 function useSelectedCard(): void {
@@ -621,7 +625,13 @@ function buildTargets(sel: SelectionState): Record<string, unknown> {
 
 async function confirmSelection(): Promise<void> {
   const sel = selection.value
-  if (!sel || !canConfirm.value) return
+  if (!sel) return
+  if (!canConfirm.value) {
+    // Ticket #53: a native disabled button ate this click silently. The guard
+    // now says what is missing instead of doing nothing.
+    say('game-target-not-ready', '还不能确认：' + (sel.error || targetHint.value), '按横幅提示先选好目标。')
+    return
+  }
   await dispatchCard(sel.card, buildTargets(sel))
 }
 
@@ -1081,6 +1091,9 @@ watch(
 
 onMounted(() => {
   releaseChannel = acquireBattleChannel()
+  // Ticket #53: the RPS draw frame was emitted before this channel existed;
+  // ask for the authoritative hand once, so the screen never opens with 0 cards.
+  void syncHand(getBattleSocket())
   seenGameOverAt = result.gameOver ? result.gameOver.receivedAt : 0
   seenRoom = state.value.room_id
   ticker = window.setInterval(() => {
@@ -1131,6 +1144,7 @@ function backToLobby(): void {
         data-testid="game-turn-clock"
         :data-warning="clock.warning ? 'true' : 'false'"
         :data-remaining-ms="clock.remaining * 1000"
+        :data-remaining="clock.remaining"
       >
         回合计时 {{ clock.label }}
       </span>
@@ -1197,6 +1211,24 @@ function backToLobby(): void {
           :picking="!!selection"
           @cell="(x: number, y: number) => onCell('opponent', x, y)"
         />
+        <section v-show="zoomOpen" class="game-zoom" data-testid="game-self-zoom" role="dialog" aria-label="我的海域放大">
+          <header class="game-zoom__head">
+            <h2 class="game-zoom__title">我的海域</h2>
+            <button type="button" class="game-close" data-testid="game-self-zoom-close" aria-label="收起我的海域" @click="closeZoom">×</button>
+          </header>
+          <BoardPanel
+            board="self"
+            board-testid="game-board-self"
+            title-testid="game-board-title-self"
+            :title="'我的海域 · ' + selfName"
+            :subtitle="'存活 ' + state.remaining_ships + ' 艘' + (frozenMine.size ? ' · 你的 3×3 区域被冻结' : '')"
+            :cells="selfCells"
+            :selected="selectedKeys.concat(shieldSelectedKeys)"
+            :legal="legalKeys"
+            :picking="!!selection || !!match.pickRequest || shieldOpen"
+            @cell="(x: number, y: number) => onCell('self', x, y)"
+          />
+        </section>
         <p class="game-latest" data-testid="game-latest-event">{{ latestLog }}</p>
         <ul v-if="notices.length" class="game-notices" data-testid="game-notices" aria-live="polite">
           <li v-for="notice in notices" :key="notice.id" class="game-notice" :class="'game-notice--' + notice.kind">
@@ -1427,7 +1459,14 @@ function backToLobby(): void {
           <button type="button" class="button game-target__option" :class="{ 'game__action--active': selection.effectChoice === 2 }" data-testid="game-target-effect-skip" @click="setEffectChoice(2)">跳过对方本回合</button>
         </div>
         <div class="game-target__row">
-          <button type="button" class="button game-target__confirm" data-testid="game-target-confirm" :disabled="!canConfirm" @click="confirmSelection">确认使用</button>
+          <button
+            type="button"
+            class="button game-target__confirm"
+            :class="{ 'is-disabled': !canConfirm }"
+            data-testid="game-target-confirm"
+            :aria-disabled="!canConfirm"
+            @click="confirmSelection"
+          >确认使用</button>
           <button type="button" class="button button--ghost" data-testid="game-target-cancel" @click="cancelSelection">取消</button>
         </div>
       </div>
@@ -1503,24 +1542,6 @@ function backToLobby(): void {
       <p class="game-dialog__hint">在自己海域点击高亮的战舰格子。</p>
     </section>
 
-    <section v-show="zoomOpen" class="game-zoom" data-testid="game-self-zoom" role="dialog" aria-label="我的海域放大">
-      <header class="game-zoom__head">
-        <h2 class="game-zoom__title">我的海域</h2>
-        <button type="button" class="game-close" data-testid="game-self-zoom-close" aria-label="收起我的海域" @click="closeZoom">×</button>
-      </header>
-      <BoardPanel
-        board="self"
-        board-testid="game-board-self"
-        title-testid="game-board-title-self"
-        :title="'我的海域 · ' + selfName"
-        :subtitle="'存活 ' + state.remaining_ships + ' 艘' + (frozenMine.size ? ' · 你的 3×3 区域被冻结' : '')"
-        :cells="selfCells"
-        :selected="selectedKeys.concat(shieldSelectedKeys)"
-        :legal="legalKeys"
-        :picking="!!selection || !!match.pickRequest || shieldOpen"
-        @cell="(x: number, y: number) => onCell('self', x, y)"
-      />
-    </section>
 
     <section v-if="logOpen" class="game-drawer game-drawer--log" data-testid="game-log-drawer" role="dialog" aria-label="对局日志">
       <header class="game-drawer__head">

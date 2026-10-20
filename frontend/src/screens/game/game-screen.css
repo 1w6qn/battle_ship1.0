@@ -121,6 +121,7 @@
 }
 
 .game-board-column {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -565,6 +566,7 @@
 
 /* --------------------------------------------------------------- actions --- */
 .game-actions {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -840,7 +842,8 @@
   font-weight: 700;
 }
 
-.game-target__confirm:disabled {
+.game-target__confirm:disabled,
+.game-target__confirm.is-disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -1377,7 +1380,12 @@
   }
 
   .game-more-menu {
-    max-height: 38vh;
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 6px);
+    width: min(260px, 88vw);
+    z-index: 45;
+    max-height: 46vh;
     overflow-y: auto;
   }
 
