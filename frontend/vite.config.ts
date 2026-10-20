@@ -16,6 +16,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [vue()],
+    // `public/` holds the card faces, but they are imported through
+    // import.meta.glob so Vite content-hashes them into dist/assets. Disabling
+    // the public-dir copy keeps `dist` free of a second, un-hashed ~20 MB copy.
+    publicDir: false,
     define: {
       __BS_TEST_HOOKS__: JSON.stringify(testHooks),
     },

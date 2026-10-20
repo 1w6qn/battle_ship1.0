@@ -58,7 +58,7 @@ const wallpaperStatus = computed(() => {
     if (state.available === false) return state.reason || '当前环境不可用'
     return '本机可用：发现 ' + state.dirs + ' 个壁纸目录，' + state.items.length + ' 张壁纸'
   }
-  return '壁纸库只在旧版界面里管理，点上面入口进入。'
+  return '壁纸库管理暂未迁移；本机可用性可以先检查。'
 })
 
 
@@ -102,9 +102,10 @@ async function toggleWallpaper(): Promise<void> {
   await settings.checkWallpapers()
 }
 
-function openLegacyWallpaper(): void {
-  window.location.assign('/legacy')
-}
+// Phase 5 removed the old panel, so there is no legacy wallpaper manager to
+// link to any more. The entry stays visible (players look for it) but explains
+// that managing/applying wallpapers is still a migration residual.
+const WALLPAPER_MIGRATION_NOTE = '壁纸库管理暂未迁移；本机可用性可以先检查。'
 
 onMounted(() => {
   void settings.loadOwn()
@@ -310,11 +311,17 @@ onMounted(() => {
       <section id="settings-wallpaper" class="settings__block" data-testid="settings-wallpaper">
         <h2 class="settings__block-title">动态壁纸</h2>
         <p class="settings__note">
-          壁纸库（扫描本机 / 选择文件）仍在旧版界面里；这里提供入口与本机可用性检查。
+          壁纸库（扫描本机 / 选择文件）还在迁移中；这里可以先检查本机能不能用。
         </p>
         <div class="settings__wallpaper-actions">
-          <button type="button" class="button" data-testid="settings-wallpaper-entry" @click="openLegacyWallpaper">
-            打开壁纸库（旧版界面）
+          <button
+            type="button"
+            class="button"
+            data-testid="settings-wallpaper-entry"
+            disabled
+            :title="WALLPAPER_MIGRATION_NOTE"
+          >
+            壁纸库管理（暂未迁移）
           </button>
           <button type="button" class="button button--ghost" data-testid="settings-wallpaper-check" @click="toggleWallpaper">
             检查本机壁纸库
