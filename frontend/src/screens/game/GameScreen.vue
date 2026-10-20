@@ -78,6 +78,7 @@ onBeforeUnmount(() => {
   releaseChannel = null
   if (ticker !== null) window.clearInterval(ticker)
   ticker = null
+  if (chainSafety !== null) window.clearTimeout(chainSafety)
   if (mq) mq.removeEventListener('change', syncCompact)
 })
 
@@ -312,6 +313,26 @@ watch(
       selection.value = null
       clearCardSelection()
     }
+  },
+)
+
+let chainSafety: number | null = null
+
+watch(
+  () => match.chainWindow,
+  (next) => {
+    if (chainSafety !== null) {
+      window.clearTimeout(chainSafety)
+      chainSafety = null
+    }
+    if (!next) return
+    // Safety net: the server owns the window and emits chain_resolved when it
+    // closes; a lost frame must not leave a blocking dialog on screen forever.
+    chainSafety = window.setTimeout(() => {
+      if (!match.chainWindow) return
+      match.closeChainWindow()
+      match.pushNotice('连锁响应窗口已关闭，等待服务端结算', 'warning')
+    }, (next.countdown + 3) * 1000)
   },
 )
 
