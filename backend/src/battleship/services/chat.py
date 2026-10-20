@@ -19,6 +19,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ..contracts import errors as socket_errors
 from ..domain.social import quick_chat
 from ..infra.logging import get_logger
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
@@ -60,7 +61,11 @@ class ChatService:
         """Explain the refusal to the sender only, then return the error ack."""
 
         try:
-            await self._publisher.emit("error", {"message": message}, to=connection.sid)
+            await self._publisher.emit(
+                "error",
+                socket_errors.error_detail(socket_errors.OPERATION_FAILED, message),
+                to=connection.sid,
+            )
         except Exception:  # noqa: BLE001 - the ack is the authoritative result
             logger.exception("chat error frame failed")
         return {"status": "error", "message": message}

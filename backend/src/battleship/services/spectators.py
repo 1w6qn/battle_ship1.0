@@ -20,6 +20,7 @@ import asyncio
 import time
 from typing import Any, Callable
 
+from ..contracts import errors as socket_errors
 from ..domain import spectate
 from ..domain.lobby.rules import LOBBY_ROOM
 from ..domain.social import quick_chat
@@ -179,7 +180,11 @@ class SpectatorService:
         """Refuse with a reason on both paths (error frame + ack), never silently."""
 
         try:
-            await self._publisher.emit("error", {"message": message}, to=connection.sid)
+            await self._publisher.emit(
+                "error",
+                socket_errors.error_detail(socket_errors.SPECTATE_DENIED, message),
+                to=connection.sid,
+            )
         except Exception:  # noqa: BLE001 - the ack is the authoritative result
             logger.exception("spectate error frame failed")
         return {"status": "error", "message": message}

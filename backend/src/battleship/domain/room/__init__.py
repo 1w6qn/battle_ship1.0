@@ -20,6 +20,7 @@ from .models import (
     room_match_mode,
     seat_label,
     seat_order,
+    turn_timing,
 )
 from .sync import build_room_sync, card_payload, room_kind
 
@@ -43,6 +44,7 @@ __all__ = [
     "room_match_mode",
     "seat_label",
     "seat_order",
+    "turn_timing",
     "build_room_sync",
     "card_payload",
     "room_kind",
