@@ -2,7 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import MatchFoundOverlay from '../../components/MatchFoundOverlay.vue'
+import StateSurface from '../../components/StateSurface.vue'
 import { acquireLobbyChannel, getLobbySocket } from '../../realtime/lobby'
+import { useUiStore } from '../../stores/ui'
 import {
   lobbyPlayerName,
   useLobbyStore,
@@ -42,6 +44,7 @@ import {
  */
 const router = useRouter()
 const lobby = useLobbyStore()
+const ui = useUiStore()
 
 const filter = ref<LobbyFilter>('all')
 const query = ref('')
@@ -65,6 +68,26 @@ const friendListVisible = computed(
   () => lobby.friendsLoaded && !lobby.friendsGuest && !lobby.friendsError,
 )
 const queueLabel = computed(() => queueModeText(lobby.queueMode))
+/** Loading / empty / error / ready for the room list (ticket #42). */
+const roomsState = computed<'loading' | 'ready' | 'empty' | 'error'>(() => {
+  if (lobby.error) return 'error'
+  if (!lobby.hasSnapshot) return 'loading'
+  return filteredRooms.value.length ? 'ready' : 'empty'
+})
+
+// Failures land in the global queue as well: reason + next step, one place.
+watch(
+  () => lobby.error,
+  (message) => {
+    if (message) ui.notifyError('lobby-error', message)
+  },
+)
+watch(
+  () => lobby.notice,
+  (message) => {
+    if (message) ui.notify({ code: 'lobby-notice', tone: 'info', message })
+  },
+)
 
 function countText(value: number): string {
   return lobby.hasSnapshot ? String(value) : '—'
@@ -474,6 +497,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
+        <StateSurface :state="roomsState" loading-text="房间列表载入中…" @retry="refresh">
         <ul class="lobby__list" data-testid="lobby-rooms">
           <li
             v-for="room in filteredRooms"
@@ -510,7 +534,13 @@ onBeforeUnmount(() => {
             </button>
           </li>
         </ul>
-        <p v-if="!filteredRooms.length" class="lobby__empty" data-testid="lobby-rooms-empty">{{ roomsEmpty }}</p>
+        <template #empty>
+          <p class="lobby__empty" data-testid="lobby-rooms-empty">{{ roomsEmpty }}</p>
+        </template>
+        <template #error>
+          <p class="lobby__empty" data-testid="lobby-rooms-empty">{{ roomsEmpty }}</p>
+        </template>
+        </StateSurface>
 
         <div class="lobby__create">
           <input

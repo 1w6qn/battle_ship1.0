@@ -88,7 +88,7 @@ watch(
 .app-wallpaper {
   position: fixed;
   inset: 0;
-  z-index: 0;
+  z-index: var(--z-wallpaper);
   overflow: hidden;
   background: #05070f;
 }
