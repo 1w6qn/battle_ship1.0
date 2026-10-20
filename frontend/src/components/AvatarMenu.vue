@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useAuthStore } from '../stores/auth'
 import { useCollectionStore } from '../stores/collection'
 import { THEME_LABELS, useUiStore, type ThemeName } from '../stores/ui'
 
@@ -11,6 +12,7 @@ const emit = defineEmits<{ (event: 'close'): void }>()
 
 const ui = useUiStore()
 const collection = useCollectionStore()
+const auth = useAuthStore()
 const panel = ref<HTMLElement | null>(null)
 
 const themes: ThemeName[] = ['chart', 'journal', 'night']
@@ -42,6 +44,18 @@ function openCollection(): void {
 function close(): void {
   emit('close')
 }
+
+/** Guest first item: open the app-level overlay instead of the dead /login page. */
+function openLogin(): void {
+  emit('close')
+  auth.open('login')
+}
+
+/** Logged-in exit: the existing frozen /logout redirect (spec section 3). */
+function logout(): void {
+  emit('close')
+  auth.requestLogout()
+}
 </script>
 
 <template>
@@ -56,6 +70,15 @@ function close(): void {
   >
     <section class="app-menu__group" data-testid="avatar-group-mine" aria-labelledby="avatar-group-mine-title">
       <h2 id="avatar-group-mine-title" class="app-menu__title">我的</h2>
+      <button
+        v-if="auth.isGuest"
+        type="button"
+        class="app-menu__item app-menu__item--auth"
+        data-testid="avatar-item-login"
+        @click="openLogin"
+      >
+        登录 / 注册
+      </button>
       <router-link class="app-menu__item" :to="{ name: 'profile' }" data-testid="avatar-item-profile" @click="close">
         名片与战绩
       </router-link>
@@ -99,8 +122,40 @@ function close(): void {
       <router-link class="app-menu__item" :to="{ name: 'settings' }" data-testid="avatar-item-help" @click="close">
         玩法与帮助
       </router-link>
-      <a class="app-menu__item" href="/login" data-testid="avatar-item-login">登录 / 注册</a>
+      <button
+        v-if="!auth.isGuest"
+        type="button"
+        class="app-menu__item"
+        data-testid="avatar-item-logout"
+        @click="logout"
+      >
+        退出登录
+      </button>
       <p class="app-menu__version" data-testid="avatar-version">深海作战室 · 基础版</p>
     </section>
+
+    <p v-if="auth.isGuest" class="app-menu__identity" data-testid="avatar-guest-name">
+      游客 · {{ auth.guestName }} · 登录后保存段位与战绩
+    </p>
+    <p v-else class="app-menu__identity" data-testid="avatar-user-name">已登录 · {{ auth.displayName }}</p>
   </section>
 </template>
+
+<style scoped>
+/* Identity line under the three groups: the one place the guest name and the
+   logged-in name are stated without competing with the menu items. */
+.app-menu__identity {
+  margin: 0;
+  padding: 8px 10px 2px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.app-menu__item--auth {
+  border-color: var(--role-action);
+  background: var(--role-action-soft);
+  font-weight: 600;
+}
+</style>
