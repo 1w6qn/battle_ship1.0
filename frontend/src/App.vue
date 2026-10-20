@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppOverlay from './components/AppOverlay.vue'
 import AppWallpaper from './components/AppWallpaper.vue'
+import AuthOverlay from './components/AuthOverlay.vue'
 import AvatarMenu from './components/AvatarMenu.vue'
 import CardCollectionOverlay from './components/CardCollectionOverlay.vue'
 import ScreenBoundary from './components/ScreenBoundary.vue'
 import ToastHost from './components/ToastHost.vue'
 import { routeLoading } from './router'
+import { useAuthStore } from './stores/auth'
 import { useCollectionStore } from './stores/collection'
 import { useUiStore } from './stores/ui'
 
@@ -23,6 +25,7 @@ import { useUiStore } from './stores/ui'
  */
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const collection = useCollectionStore()
 const ui = useUiStore()
 
@@ -65,6 +68,21 @@ function exitMatch(): void {
   ui.cancelExit()
   void router.push({ name: 'lobby' })
 }
+
+/**
+ * Cross-ticket login entry (ticket #44): any screen may ask for the overlay by
+ * dispatching a bs:auth-required CustomEvent instead of linking to /login
+ * (the server keeps 302-ing that route to the home screen). Ticket #48 uses it
+ * for the spectate / replay guest call to action.
+ */
+function onAuthRequired(event: Event): void {
+  const detail = event instanceof CustomEvent ? (event.detail as { mode?: string; reason?: string } | null) : null
+  const mode = detail?.mode === 'register' ? 'register' : 'login'
+  auth.open(mode, typeof detail?.reason === 'string' ? detail.reason : '')
+}
+
+onMounted(() => window.addEventListener('bs:auth-required', onAuthRequired))
+onBeforeUnmount(() => window.removeEventListener('bs:auth-required', onAuthRequired))
 </script>
 
 <template>
@@ -181,6 +199,8 @@ function exitMatch(): void {
       <slot name="screen-extra" />
     </ScreenBoundary>
   </div>
+
+  <AuthOverlay v-if="auth.overlayOpen" @close="auth.close()" />
 
   <AppOverlay
     v-if="ui.exitConfirmOpen"
