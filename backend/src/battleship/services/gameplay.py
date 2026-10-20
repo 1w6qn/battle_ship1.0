@@ -41,6 +41,7 @@ from ..domain.room import (
     RoomState,
     card_payload,
     rank_payload,
+    turn_timing,
 )
 from ..infra.logging import get_logger
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
@@ -83,6 +84,10 @@ class GameplayService:
     ) -> None:
         self.rooms = rooms
         self.turn_timeout_seconds = int(turn_timeout_seconds)
+        # Ticket #43: the reconnect snapshot (built by RoomService) reads the
+        # same configured timeout the watchdog below compares against. One
+        # source, no second deadline anywhere.
+        self.rooms.turn_timeout_seconds = self.turn_timeout_seconds
         self.tick_seconds = float(tick_seconds)
         self.draw_hook = draw_hook
         self.fire_hook = fire_hook
@@ -212,6 +217,11 @@ class GameplayService:
 
         self._touch_turn(room, player_id)
 
+    def _turn_timing(self, room: Room) -> dict[str, int | None]:
+        """The countdown payload shared by every turn-starting frame."""
+
+        return turn_timing(room, self.turn_timeout_seconds)
+
     @staticmethod
     async def _maybe_await(value: Any) -> Any:
         if inspect.isawaitable(value):
@@ -326,6 +336,8 @@ class GameplayService:
                 "player": player_id,
                 "round": room.round,
             }
+            # Start the clock before the frame that advertises its deadline.
+            self._start_timer(room)
             await self._publisher.emit(
                 "game_message",
                 {"message": "回光返照：棋盘已重摆，本回合无法攻击（攻击次数为 0）"},
@@ -340,10 +352,10 @@ class GameplayService:
                     "attacks_remaining": room.attacks_remaining,
                     "round": room.round,
                     **rank_payload(room),
+                    **self._turn_timing(room),
                 },
                 room=room.id,
             )
-            self._start_timer(room)
             return True
 
         if getattr(room, "lingqi_resurgence_applied", False):
@@ -367,6 +379,7 @@ class GameplayService:
             if getattr(room, "polar_reversal_applied", False):
                 room.polar_reversal_applied = False
                 room.attacks_remaining = 0
+            self._start_timer(room)
             await self._publisher.emit(
                 "game_message",
                 {"message": "双方已重新摆放战舰，继续当前回合", "type": "info"},
@@ -381,10 +394,10 @@ class GameplayService:
                     "attacks_remaining": room.attacks_remaining,
                     "round": room.round,
                     **rank_payload(room),
+                    **self._turn_timing(room),
                 },
                 room=room.id,
             )
-            self._start_timer(room)
             return True
 
         return False
@@ -487,6 +500,7 @@ class GameplayService:
                     "round": room.round,
                     "attack_order": list(room.attack_order),
                     **rank_payload(room),
+                    **self._turn_timing(room),
                 },
                 room=room.id,
             )
@@ -596,16 +610,17 @@ class GameplayService:
                         "game_over": True,
                         "winner": outcome.get("winner"),
                     }
+            self._start_timer(room)
             await self._publisher.emit(
                 "game_state",
                 {
                     "state": RoomState.ROCK_PAPER_SCISSORS.value,
                     "round": room.round,
                     **rank_payload(room),
+                    **self._turn_timing(room),
                 },
                 room=room.id,
             )
-            self._start_timer(room)
             return {"status": "success", "new_round": True}
 
         if self.turn_start_hook is not None:
@@ -615,16 +630,19 @@ class GameplayService:
         if self.magic is not None:
             await self.magic.on_turn_switch(room)
         await self._emit_phase(room)
+        # Start the next seat's clock before the frame goes out: the frame
+        # carries the same anchor the watchdog will compare against.
+        self._start_timer(room)
         await self._publisher.emit(
             "turn_change",
             {
                 "current_attacker": room.current_attacker,
                 "attacks_remaining": room.attacks_remaining,
                 "phase": _phase_value(room),
+                **self._turn_timing(room),
             },
             room=room.id,
         )
-        self._start_timer(room)
         return {"status": "success"}
 
     async def end_turn(self, connection: Connection,

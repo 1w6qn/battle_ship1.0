@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .errors import SOCKET_ERROR_CODES, SocketError
 from .events_in import DEBUG_EVENTS, INBOUND_EVENTS, InboundEventEnvelope
 from .events_out import (
     OUTBOUND_EVENTS,
@@ -58,6 +59,7 @@ _MODELS: dict[str, type[BaseModel]] = {
     "InboundEventEnvelope": InboundEventEnvelope,
     "LatencyStats": LatencyStats,
     "MetricsResponse": MetricsResponse,
+    "SocketError": SocketError,
     "OutboundEventEnvelope": OutboundEventEnvelope,
     "RoomSync": RoomSync,
     "SeatIdentity": SeatIdentity,
@@ -87,6 +89,7 @@ def schema_bundle() -> dict[str, Any]:
                 "spectate": "spectate:<room_id>; never a seat",
             },
         },
+        "error_codes": list(SOCKET_ERROR_CODES),
         "models": {
             name: model.model_json_schema(mode="validation")
             for name, model in sorted(_MODELS.items())
@@ -202,8 +205,14 @@ def frontend_ts() -> str:
         "  skip_sid: string | null",
         "}",
         "",
+        "export interface SocketError {",
+        "  code: string",
+        "  message: string",
+        "}",
+        "",
         "export interface AckResponse {",
         "  status: 'success' | 'error'",
+        "  code: string | null",
         "  message: string | null",
         "  data: Record<string, unknown> | null",
         "}",
