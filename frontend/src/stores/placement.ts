@@ -79,6 +79,13 @@ export const usePlacementStore = defineStore('placement', () => {
   /** A mid-game redeploy (reset_gameboard) is in progress: the server still
    *  expects a place_ships even though room.state may already read attacking. */
   const resetPhase = ref(false)
+  // Opponent seat state (contract #43). It only ever arrives in room_sync; until
+  // one arrives the screen must not claim the opponent is offline.
+  const opponentReady = ref(false)
+  const opponentOnline = ref(false)
+  const opponentStateKnown = ref(false)
+  /** The single inline receipt for a refused click. */
+  const receipt = ref('')
 
   let ackTimeoutMs = DEFAULT_ACK_TIMEOUT_MS
   let tickMs = DEFAULT_TICK_MS
@@ -94,8 +101,8 @@ export const usePlacementStore = defineStore('placement', () => {
 
   /** The one status line; every reason "why the button is disabled" lives here. */
   const hint = computed(() => {
-    if (pending.value) return '正在提交，等待服务器回执…'
-    if (submitted.value) return '已提交 · 等待对手摆好，双方都就绪后进入猜拳'
+    if (pending.value) return '正在提交，等待确认…'
+    if (submitted.value) return '已提交 · 等对手摆好就能开始猜拳'
     if (!isComplete.value) {
       const missing = Math.max(0, maxShips.value - placedCount.value)
       if (missing > 0) return '还差 ' + missing + ' 格就能提交'
@@ -126,6 +133,7 @@ export const usePlacementStore = defineStore('placement', () => {
     pending.value = false
     countdown.value = 0
     error.value = ''
+    receipt.value = ''
   }
 
   /** Adopt the authoritative board from a server snapshot. */
@@ -184,7 +192,7 @@ export const usePlacementStore = defineStore('placement', () => {
         countdown.value = 0
         error.value =
           '提交后 ' + Math.max(1, Math.round(ackTimeoutMs / 1000)) +
-          ' 秒没收到服务器回执，已停止等待。可以重新提交。'
+          ' 秒没有收到确认，已停止等待。可以重新提交。'
         return
       }
       countdown.value = Math.max(0, Math.ceil(remaining / 1000))
@@ -204,7 +212,7 @@ export const usePlacementStore = defineStore('placement', () => {
       return
     }
     submitted.value = false
-    error.value = '放置战舰失败：' + (message || '服务端没有说明原因') + '。可以调整后重试。'
+    error.value = '放置战舰失败：' + (message || '原因未知') + '。可以调整后重试。'
   }
 
   /** reset_gameboard: a mid-game redeploy starts a fresh phase. */
@@ -227,6 +235,28 @@ export const usePlacementStore = defineStore('placement', () => {
     error.value = message
   }
 
+  /** One receipt for a refused click; the screen renders it in one place. */
+  function noteReceipt(message: string): void {
+    receipt.value = message
+  }
+
+  function clearReceipt(): void {
+    receipt.value = ''
+  }
+
+  /** room_sync (#43) is the only frame that carries the opponent seat state. */
+  function adoptOpponentState(payload: Record<string, unknown> | null | undefined): void {
+    if (!payload || typeof payload !== 'object') return
+    if (typeof payload.opponent_ready === 'boolean') {
+      opponentReady.value = payload.opponent_ready
+      opponentStateKnown.value = true
+    }
+    if (typeof payload.opponent_online === 'boolean') {
+      opponentOnline.value = payload.opponent_online
+      opponentStateKnown.value = true
+    }
+  }
+
   /** External browser gate only: shrink the ack wait so the timeout is testable. */
   function configureAckTiming(options: AckTiming = {}): void {
     if (typeof options.ackTimeoutMs === 'number' && options.ackTimeoutMs > 0) {
@@ -245,6 +275,10 @@ export const usePlacementStore = defineStore('placement', () => {
     error.value = ''
     resetMessage.value = ''
     resetPhase.value = false
+    receipt.value = ''
+    opponentReady.value = false
+    opponentOnline.value = false
+    opponentStateKnown.value = false
   }
 
   return {
@@ -256,6 +290,10 @@ export const usePlacementStore = defineStore('placement', () => {
     error,
     resetMessage,
     resetPhase,
+    receipt,
+    opponentReady,
+    opponentOnline,
+    opponentStateKnown,
     placedCount,
     total,
     locked,
@@ -272,6 +310,9 @@ export const usePlacementStore = defineStore('placement', () => {
     settleSubmit,
     applyReset,
     noteNotice,
+    noteReceipt,
+    clearReceipt,
+    adoptOpponentState,
     configureAckTiming,
     reset,
   }

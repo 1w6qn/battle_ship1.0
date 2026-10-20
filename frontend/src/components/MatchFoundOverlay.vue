@@ -11,9 +11,9 @@ import AppOverlay from './AppOverlay.vue'
  * contract while restoring the screen: the home/lobby screen owns the timer and
  * only navigates after this component emits done.
  *
- * Rank/level/aura are not part of the game_state contract, so they render as a
- * placeholder dash instead of being invented. When those become visible fields
- * the same slots take them without a layout change.
+ * Rank/level/aura are not part of the game_state contract, so the overlay renders
+ * only the fields it really has (names, mode, countdown) instead of a row of
+ * placeholder dashes.
  */
 const props = withDefaults(
   defineProps<{
@@ -65,12 +65,12 @@ onBeforeUnmount(stop)
   <AppOverlay
     id="match-found-overlay"
     layer="match-found"
-    :priority="120"
+    :priority="250"
     labelledby="match-found-title"
     @close="finish"
   >
     <div class="match-found__panel">
-      <p class="match-found__eyebrow">MATCH FOUND · {{ modeLabel }}</p>
+      <p class="match-found__eyebrow">{{ modeLabel }} · 对战确认</p>
       <h2 id="match-found-title" class="match-found__title">匹 配 成 功</h2>
       <p class="match-found__countdown" data-testid="match-found-countdown" role="status" aria-live="polite">
         {{ countdownText }}
@@ -80,10 +80,6 @@ onBeforeUnmount(stop)
         <article class="match-found__side" data-testid="match-found-self">
           <span class="match-found__badge" aria-hidden="true">我</span>
           <p class="match-found__name" data-testid="match-found-self-name">{{ selfName }}</p>
-          <dl class="match-found__stats">
-            <div><dt>段位</dt><dd data-testid="match-found-self-rank">—</dd></div>
-            <div><dt>等级</dt><dd data-testid="match-found-self-level">—</dd></div>
-          </dl>
         </article>
 
         <span class="match-found__versus" aria-hidden="true">VS</span>
@@ -91,15 +87,10 @@ onBeforeUnmount(stop)
         <article class="match-found__side match-found__side--rival" data-testid="match-found-opponent">
           <span class="match-found__badge match-found__badge--rival" aria-hidden="true">敌</span>
           <p class="match-found__name" data-testid="match-found-opponent-name">{{ opponentName }}</p>
-          <dl class="match-found__stats">
-            <div><dt>段位</dt><dd data-testid="match-found-opponent-rank">—</dd></div>
-            <div><dt>等级</dt><dd data-testid="match-found-opponent-level">—</dd></div>
-            <div><dt>光环</dt><dd data-testid="match-found-opponent-aura">—</dd></div>
-          </dl>
         </article>
       </div>
 
-      <button type="button" class="match-found__skip" data-testid="match-found-skip" @click="finish">
+      <button type="button" class="match-found__skip" data-primary-action="true" data-testid="match-found-skip" @click="finish">
         立即进入布船
       </button>
     </div>
