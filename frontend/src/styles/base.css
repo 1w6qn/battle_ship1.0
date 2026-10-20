@@ -42,6 +42,16 @@ a {
   outline-offset: 2px;
 }
 
+/* Accessibility size switch (ticket #49). Zoom scales the px-based type the
+   earlier screens still carry, so the preference reaches every screen. */
+html[data-font-scale='large'] body {
+  zoom: 1.12;
+}
+
+html[data-font-scale='xlarge'] body {
+  zoom: 1.24;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -658,9 +668,23 @@ a {
 
   .app-nav__link,
   .app-nav__flow {
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 12px;
     font-size: 13px;
+  }
+
+  .app-nav__icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Beat the global 40px touch floor in the 719px block below. */
+  .app-nav a[data-testid],
+  .app-nav button[data-testid],
+  .app-menu button[data-testid],
+  .app-menu a[data-testid] {
+    min-height: 44px;
+    min-width: 44px;
   }
 
   /* Immersive toolbar stays one row: the match screen is height-sensitive. */

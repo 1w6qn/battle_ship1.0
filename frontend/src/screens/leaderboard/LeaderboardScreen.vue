@@ -17,6 +17,9 @@ const profile = useProfileStore()
 
 onMounted(async () => {
   await profile.loadOwn()
+  // The wins-board position lives on /user_stats, not on /api/profile; fetch it
+  // for the pinned 我的名次 row instead of guessing from the rendered page.
+  if (profile.viewerName) await profile.loadPublic(profile.viewerName)
   if (board.record.status === 'idle') await board.loadRecord()
 })
 
@@ -41,6 +44,20 @@ function winRate(row: JsonObject): string {
 
 const activeTab = computed(() => board.activeTab)
 const activeBoard = computed(() => board.active)
+
+/** Server-position of the viewer on the board that is currently shown. */
+const myRankPosition = computed(() => {
+  if (activeTab.value === 'ranked') {
+    const rank = board.ranked.myRank
+    return typeof rank === 'number' && rank > 0 ? String(rank) : '暂无'
+  }
+  const stats = profile.viewed.stats
+  const rank = Number(stats ? stats.rank : NaN)
+  return Number.isFinite(rank) && rank > 0 ? String(rank) : '暂无'
+})
+const myRankNote = computed(() =>
+  activeTab.value === 'ranked' ? '全服排位名次' : '全服战绩名次',
+)
 const podiumRows = computed(() => {
   const rows = activeBoard.value.rows.slice(0, 3)
   if (rows.length < 3) return rows.map((row, index) => ({ row, place: index + 1 }))
@@ -71,7 +88,8 @@ function openTab(tab: 'record' | 'ranked'): void {
 
 function openUser(username: string): void {
   if (!username) return
-  void router.push({ name: 'profile', query: { username } })
+  // from=… lets the profile card return to the board the player came from.
+  void router.push({ name: 'profile', query: { username, from: 'leaderboard' } })
 }
 
 function backHome(): void {
@@ -147,6 +165,17 @@ function backHome(): void {
       还没有人打过排位 —— 打一场排位赛就会出现在这里。
     </p>
 
+    <section
+      class="leaderboard__my-rank"
+      data-testid="leaderboard-my-rank"
+      :data-board="activeTab"
+      aria-label="我的名次"
+    >
+      <span class="leaderboard__my-rank-label">我的名次</span>
+      <b class="leaderboard__my-rank-value" data-testid="leaderboard-my-rank-position">{{ myRankPosition }}</b>
+      <span class="leaderboard__my-rank-note" data-testid="leaderboard-my-rank-note">{{ myRankNote }}</span>
+    </section>
+
     <div v-if="podiumRows.length" class="leaderboard__podium" data-testid="leaderboard-podium" aria-label="前三名">
       <button
         v-for="item in podiumRows"
@@ -164,7 +193,7 @@ function backHome(): void {
       </button>
     </div>
 
-    <div v-if="activeTab === 'record'" class="leaderboard__table-wrap">
+    <div v-if="activeTab === 'record'" class="leaderboard__table-wrap" data-testid="leaderboard-scroll">
       <table class="leaderboard__table" data-testid="leaderboard-table">
         <thead>
           <tr>
@@ -183,6 +212,7 @@ function backHome(): void {
             :data-testid="'leaderboard-row-' + text(row, 'username')"
             :data-me="isMe(row) ? 'true' : 'false'"
             :class="{ 'is-me': isMe(row) }"
+            @click="openUser(text(row, 'username'))"
           >
             <td>{{ index + 1 }}</td>
             <td class="leaderboard__player">
@@ -214,7 +244,7 @@ function backHome(): void {
       </table>
     </div>
 
-    <div v-else class="leaderboard__table-wrap">
+    <div v-else class="leaderboard__table-wrap" data-testid="leaderboard-scroll">
       <table class="leaderboard__table" data-testid="leaderboard-ranked-table">
         <thead>
           <tr>
@@ -232,6 +262,7 @@ function backHome(): void {
             :data-testid="'leaderboard-ranked-row-' + text(row, 'username')"
             :data-me="isMe(row) ? 'true' : 'false'"
             :class="{ 'is-me': isMe(row) }"
+            @click="openUser(text(row, 'username'))"
           >
             <td>{{ numberText(row, 'position') }}</td>
             <td class="leaderboard__player">
@@ -538,6 +569,62 @@ function backHome(): void {
   border-color: var(--border-strong);
   background: rgba(13, 17, 34, 0.72);
   color: var(--text-muted);
+}
+
+/* Pinned "my rank" row: outside the scrolling area so it stays visible while
+   the board scrolls sideways on narrow screens (ticket #49). */
+.leaderboard__my-rank {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--role-action-soft);
+}
+
+.leaderboard__my-rank-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.leaderboard__my-rank-value {
+  color: var(--role-action);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.leaderboard__my-rank-note {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.leaderboard__table tbody tr {
+  cursor: pointer;
+}
+
+.leaderboard__table tbody tr:hover {
+  background: var(--role-self-soft);
+}
+
+@media (max-width: 719px) {
+  button[data-testid],
+  a[data-testid] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .leaderboard__tab,
+  .leaderboard__actions .button,
+  .leaderboard__actions [data-testid='leaderboard-back-home'] {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
 
 @media (max-width: 1100px) {
