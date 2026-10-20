@@ -9,17 +9,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..room import Room
+from ..room.models import field_magic_name
 from .cards import MagicCard
 from .interaction import clear_ship_picks_by_reason
 
 
 def field_active(room: Room) -> bool:
-    return room.game_effects.get("papal_edict") is True or _field_name(room) == "教皇旨意"
-
-
-def _field_name(room: Room) -> str:
-    field = getattr(room, "field_magic", None)
-    return getattr(field, "name", field) or ""
+    return room.game_effects.get("papal_edict") is True or field_magic_name(room) == "教皇旨意"
 
 
 def clear_field_magic_effects(room: Room, prev_field_name: str | None = None) -> bool:

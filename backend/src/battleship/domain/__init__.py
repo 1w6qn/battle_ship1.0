@@ -1,5 +1,1 @@
-"""backend/src/battleship/domain/__init__.py -- placeholder module.
-
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+"""Pure game rules: no framework, no database, no socket library."""

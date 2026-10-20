@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import MatchFoundOverlay from '../../components/MatchFoundOverlay.vue'
 import { acquireLobbyChannel, getLobbySocket } from '../../realtime/lobby'
 import {
   lobbyPlayerName,
@@ -346,12 +347,23 @@ function backHome(): void {
   void router.push({ name: 'start' })
 }
 
+// A matchmaking pair shows the 匹配成功 overlay first (the legacy screen's five
+// second countdown); only non-matchmaking room starts navigate immediately.
 function maybeLeaveLobbyForMatch(): void {
+  if (!lobby.startedRoomId) return
+  if (lobby.matchFound) return
   const roomId = lobby.takeStartedRoom()
   if (roomId) void router.push({ name: 'placement' })
 }
 
+function onMatchFoundDone(): void {
+  const roomId = lobby.takeStartedRoom() || lobby.matchFound?.roomId || ''
+  lobby.clearMatchFound()
+  if (roomId) void router.push({ name: 'placement' })
+}
+
 watch(() => lobby.startedRoomId, maybeLeaveLobbyForMatch)
+watch(() => lobby.matchFound, maybeLeaveLobbyForMatch)
 
 // Keep the newest line visible without ever clearing the frame (legacy
 // behaviour). The draft lives in a separate input, so this cannot wipe it.
@@ -379,6 +391,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <MatchFoundOverlay
+    v-if="lobby.matchFound"
+    :self-name="lobby.matchFound.playerName"
+    :opponent-name="lobby.matchFound.opponentName"
+    :mode="lobby.matchFound.mode"
+    @done="onMatchFoundDone"
+  />
+
   <section
     class="screen lobby"
     data-screen="lobby"

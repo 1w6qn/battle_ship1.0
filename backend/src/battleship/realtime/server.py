@@ -236,6 +236,6 @@ def create_socket_server(
     register_chain_handlers(sio, magic)
     register_reconnect_handlers(sio, rooms)
     register_spectate_handlers(sio, spectators)
-    register_debug_implementations(battle, magic, rooms)
+    register_debug_implementations(battle, magic, rooms, gameplay)
     register_debug_handlers(sio, settings, metrics)
     return sio

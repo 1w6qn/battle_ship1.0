@@ -1,5 +1,1 @@
-"""backend/src/battleship/infra/__init__.py -- placeholder module.
-
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+"""Configuration, logging, metrics, health checks and rate limiting."""

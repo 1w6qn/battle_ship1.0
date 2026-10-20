@@ -16,6 +16,14 @@ export type JsonObject = Record<string, unknown>
 export type LobbyFilter = 'all' | 'joinable' | 'watchable' | 'full'
 export type LobbyQueueMode = 'casual' | 'ranked' | null
 
+/** A real matchmaking pair the server already seated us into. */
+export interface MatchFoundInfo {
+  playerName: string
+  opponentName: string
+  mode: 'casual' | 'ranked'
+  roomId: string
+}
+
 export interface LobbyHello {
   key: string
   name: string
@@ -251,6 +259,8 @@ export const useLobbyStore = defineStore('lobby', () => {
   const notice = ref('')
   const error = ref('')
   const startedRoomId = ref('')
+  /** A queue hand-off that produced a real pair (匹配成功 overlay). */
+  const matchFound = ref<MatchFoundInfo | null>(null)
 
   const onlineCount = computed(() => snapshot.value?.onlineCount ?? 0)
   const lobbyCount = computed(() => snapshot.value?.lobbyCount ?? 0)
@@ -367,12 +377,29 @@ export const useLobbyStore = defineStore('lobby', () => {
     if (asString(payload.state) !== 'placing_ships') return
     const roomId = asString(payload.room_id)
     startedRoomId.value = roomId
+    // Only a queue hand-off is a matchmaking pair; a custom room that fills up
+    // goes straight to placement (legacy behaviour) and must not show the
+    // 匹配成功 overlay.
+    const queued = queueMode.value
+    const opponentName = asString(payload.opponent_name)
+    if (queued !== null && opponentName) {
+      matchFound.value = {
+        playerName: asString(payload.player_name) || '你',
+        opponentName,
+        mode: queued,
+        roomId,
+      }
+    }
     queueMode.value = null
     if (roomId && roomId === ownRoomId.value) {
       // The room became a real match; the "waiting room" card is done.
       ownRoomId.value = ''
       ownRoomName.value = ''
     }
+  }
+
+  function clearMatchFound(): void {
+    matchFound.value = null
   }
 
   function takeStartedRoom(): string {
@@ -419,6 +446,7 @@ export const useLobbyStore = defineStore('lobby', () => {
     notice.value = ''
     error.value = ''
     startedRoomId.value = ''
+    matchFound.value = null
   }
 
   return {
@@ -439,6 +467,7 @@ export const useLobbyStore = defineStore('lobby', () => {
     notice,
     error,
     startedRoomId,
+    matchFound,
     onlineCount,
     lobbyCount,
     queueCasual,
@@ -463,6 +492,7 @@ export const useLobbyStore = defineStore('lobby', () => {
     clearInvite,
     clearChat,
     recordGameFrame,
+    clearMatchFound,
     takeStartedRoom,
     setNotice,
     setError,

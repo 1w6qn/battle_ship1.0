@@ -1,5 +1,1 @@
-"""backend/src/battleship/realtime/__init__.py -- placeholder module.
-
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+"""Socket.IO adapters: server, handlers, emitter, identity and timers."""

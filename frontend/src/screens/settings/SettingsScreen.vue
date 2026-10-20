@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSettingsStore, type PrivacyKey } from '../../stores/settings'
 import { useAudioStore } from '../../stores/audio'
+import { useCollectionStore } from '../../stores/collection'
+import { useWallpaperStore } from '../../stores/wallpaper'
 
 /**
  * Ticket #25: settings.
@@ -14,6 +16,8 @@ import { useAudioStore } from '../../stores/audio'
 const router = useRouter()
 const settings = useSettingsStore()
 const audio = useAudioStore()
+const collection = useCollectionStore()
+const wallpaperLayer = useWallpaperStore()
 
 const oldPassword = ref('')
 const newPassword = ref('')
@@ -58,8 +62,47 @@ const wallpaperStatus = computed(() => {
     if (state.available === false) return state.reason || '当前环境不可用'
     return '本机可用：发现 ' + state.dirs + ' 个壁纸目录，' + state.items.length + ' 张壁纸'
   }
-  return '壁纸库管理暂未迁移；本机可用性可以先检查。'
+  return '点「打开壁纸库」扫描本机（仅本机访问可用），选中后立即应用到背景。'
 })
+
+const wallpaperItems = computed(() => settings.wallpaper.items)
+const wallpaperReady = computed(
+  () => settings.wallpaper.status === 'ready' && settings.wallpaper.available === true,
+)
+const appliedWallpaper = computed(() => wallpaperLayer.applied)
+
+function wallpaperTitle(item: Record<string, unknown>): string {
+  const title = typeof item.title === 'string' ? item.title.trim() : ''
+  return title || '未命名壁纸'
+}
+
+function wallpaperReason(item: Record<string, unknown>): string {
+  return typeof item.reason === 'string' ? item.reason : ''
+}
+
+function wallpaperMediaUrl(item: Record<string, unknown>): string {
+  return typeof item.media_url === 'string' ? item.media_url : ''
+}
+
+function wallpaperPreviewUrl(item: Record<string, unknown>): string {
+  return typeof item.preview_url === 'string' ? item.preview_url : ''
+}
+
+function wallpaperKind(item: Record<string, unknown>): 'video' | 'image' {
+  return item.kind === 'video' ? 'video' : 'image'
+}
+
+function applyWallpaper(item: Record<string, unknown>): void {
+  const mediaUrl = wallpaperMediaUrl(item)
+  if (!mediaUrl) return
+  wallpaperLayer.apply({
+    id: typeof item.id === 'string' ? item.id : '',
+    title: wallpaperTitle(item),
+    kind: wallpaperKind(item),
+    mediaUrl,
+    previewUrl: wallpaperPreviewUrl(item),
+  })
+}
 
 
 function onSfxVolume(event: Event): void {
@@ -102,10 +145,9 @@ async function toggleWallpaper(): Promise<void> {
   await settings.checkWallpapers()
 }
 
-// Phase 5 removed the old panel, so there is no legacy wallpaper manager to
-// link to any more. The entry stays visible (players look for it) but explains
-// that managing/applying wallpapers is still a migration residual.
-const WALLPAPER_MIGRATION_NOTE = '壁纸库管理暂未迁移；本机可用性可以先检查。'
+// Wallpaper library, migration residual closed: GET /api/wallpapers lists the
+// playable local rows, the apply button stores the server's media URL in
+// localStorage, and AppWallpaper renders/plays it on every screen.
 
 onMounted(() => {
   void settings.loadOwn()
@@ -311,23 +353,85 @@ onMounted(() => {
       <section id="settings-wallpaper" class="settings__block" data-testid="settings-wallpaper">
         <h2 class="settings__block-title">动态壁纸</h2>
         <p class="settings__note">
-          壁纸库（扫描本机 / 选择文件）还在迁移中；这里可以先检查本机能不能用。
+          扫描本机壁纸库（仅本机访问可用），选中后立即应用到背景；视频壁纸可随时暂停。
         </p>
         <div class="settings__wallpaper-actions">
           <button
             type="button"
             class="button"
             data-testid="settings-wallpaper-entry"
-            disabled
-            :title="WALLPAPER_MIGRATION_NOTE"
+            :disabled="settings.wallpaper.status === 'loading'"
+            @click="toggleWallpaper"
           >
-            壁纸库管理（暂未迁移）
+            打开壁纸库
           </button>
           <button type="button" class="button button--ghost" data-testid="settings-wallpaper-check" @click="toggleWallpaper">
             检查本机壁纸库
           </button>
+          <button type="button" class="button button--ghost" data-testid="settings-collection-open" @click="collection.open()">
+            打开图鉴 / 卡库
+          </button>
         </div>
         <p class="settings__note" data-testid="settings-wallpaper-status" role="status">{{ wallpaperStatus }}</p>
+
+        <div v-if="appliedWallpaper" class="settings__wallpaper-current" data-testid="settings-wallpaper-current">
+          <span class="settings__wallpaper-current-title" data-testid="settings-wallpaper-current-title">
+            当前壁纸：{{ appliedWallpaper.title }}
+          </span>
+          <button type="button" class="button button--ghost" data-testid="settings-wallpaper-play" @click="wallpaperLayer.togglePlay()">
+            {{ wallpaperLayer.playing ? '暂停' : '播放' }}
+          </button>
+          <button type="button" class="button button--ghost" data-testid="settings-wallpaper-clear" @click="wallpaperLayer.clear()">
+            取消壁纸
+          </button>
+        </div>
+
+        <ul v-if="wallpaperReady && wallpaperItems.length" class="settings__wallpaper-list" data-testid="settings-wallpaper-list">
+          <li
+            v-for="item in wallpaperItems"
+            :key="String(item.id)"
+            class="settings__wallpaper-item"
+            data-testid="settings-wallpaper-item"
+            :data-wallpaper-id="String(item.id)"
+            :data-supported="item.supported === true ? 'true' : 'false'"
+          >
+            <div class="settings__wallpaper-preview">
+              <img
+                v-if="wallpaperPreviewUrl(item)"
+                :src="wallpaperPreviewUrl(item)"
+                :alt="wallpaperTitle(item) + ' 预览'"
+                loading="lazy"
+                decoding="async"
+              />
+              <span v-else aria-hidden="true">{{ wallpaperKind(item) === 'video' ? '视频' : '图片' }}</span>
+            </div>
+            <div class="settings__wallpaper-meta">
+              <p class="settings__wallpaper-title">{{ wallpaperTitle(item) }}</p>
+              <p class="settings__wallpaper-kind">
+                {{ wallpaperKind(item) === 'video' ? '视频壁纸' : '图片壁纸' }}
+              </p>
+              <p v-if="item.supported !== true" class="settings__note" data-testid="settings-wallpaper-reason">
+                {{ wallpaperReason(item) || '这张壁纸无法在网页里播放' }}
+              </p>
+            </div>
+            <button
+              type="button"
+              class="button"
+              data-testid="settings-wallpaper-apply"
+              :disabled="item.supported !== true || !wallpaperMediaUrl(item)"
+              @click="applyWallpaper(item)"
+            >
+              应用
+            </button>
+          </li>
+        </ul>
+        <p
+          v-else-if="wallpaperReady && settings.wallpaper.status === 'ready'"
+          class="settings__note"
+          data-testid="settings-wallpaper-empty"
+        >
+          没有找到可用的壁纸：{{ settings.wallpaper.reason || '本机壁纸库是空的。' }}
+        </p>
       </section>
 
       <footer class="settings__actions">
@@ -544,6 +648,88 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.settings__wallpaper-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(201, 162, 76, 0.35);
+  border-radius: var(--radius-sm);
+  background: rgba(201, 162, 76, 0.08);
+}
+
+.settings__wallpaper-current-title {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings__wallpaper-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings__wallpaper-item {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(13, 17, 34, 0.62);
+}
+
+.settings__wallpaper-item[data-supported='false'] {
+  opacity: 0.72;
+}
+
+.settings__wallpaper-preview {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 54px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(6, 9, 20, 0.9);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.settings__wallpaper-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.settings__wallpaper-meta {
+  min-width: 0;
+}
+
+.settings__wallpaper-title {
+  margin: 0 0 2px;
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings__wallpaper-kind {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
 }
 
 .settings__actions {
