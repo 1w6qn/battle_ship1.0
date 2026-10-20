@@ -279,7 +279,6 @@ a {
   margin: 0;
   color: var(--text-muted);
 }
-
 /* --------------------------------------------------------------- mobile ---- */
 @media (max-width: 760px) {
   .app-nav {
@@ -315,5 +314,29 @@ a {
 
   .screen__title {
     font-size: 24px;
+  }
+}
+
+/* Ticket #33 / spec user story 8: every interactive control is a >= 40px
+   touch target on mobile. Screens keep their desktop density; only the phone
+   breakpoint is floored. */
+@media (max-width: 719px) {
+  button[data-testid],
+  input[data-testid],
+  select[data-testid],
+  a[data-testid] {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  a[data-testid] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .settings__switch {
+    min-height: 40px;
+    align-items: center;
   }
 }

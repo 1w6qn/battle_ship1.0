@@ -814,6 +814,15 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+/* Ticket #33's phone-wide 40px control floor must not stretch the absolutely
+   positioned timeline nodes (it caused a 21px horizontal overflow at 390px). */
+.replay__node[data-testid] {
+  width: 9px;
+  min-width: 0;
+  height: 9px;
+  min-height: 0;
+}
+
 .replay__node.passed {
   background: var(--gold-strong);
 }

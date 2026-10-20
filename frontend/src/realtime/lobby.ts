@@ -1,5 +1,6 @@
 import type { Pinia } from 'pinia'
-import { createTypedSocket, type TypedSocket } from '../socket/client'
+import type { TypedSocket } from '../socket/client'
+import { acquireSettlementChannel, getSettlementSocket } from './settlement'
 import { useGameStore } from '../stores/game'
 import { lobbyPlayerName, useLobbyStore } from '../stores/lobby'
 
@@ -133,19 +134,37 @@ let active: ActiveChannel | null = null
 export function acquireLobbyChannel(pinia?: Pinia): () => void {
   const lobby = useLobbyStore(pinia)
   if (!active) {
-    const socket = createTypedSocket()
+    // Ticket #33: the home screen already keeps the one shared socket alive
+    // (a seat is bound to its sid). Opening a second connection here made the
+    // same account appear twice in presence. Reuse it when present; a direct
+    // /lobby visit still owns a socket and closes it on release.
+    const reuse = getSettlementSocket() !== null
+    const releaseSettlement = acquireSettlementChannel(pinia, reuse ? { keepAlive: true } : {})
+    const socket = getSettlementSocket()
+    if (!socket) {
+      releaseSettlement()
+      throw new Error('lobby channel could not open the shared socket')
+    }
     const stopListeners = installLobbyListeners(socket, pinia)
-    const onConnect = () => {
-      lobby.markConnected(true)
-      lobby.clearError()
+    let subscribed = false
+    const subscribeOnce = () => {
+      if (subscribed) return
+      subscribed = true
       subscribe(socket, pinia)
     }
+    const onConnect = () => {
+      subscribed = false
+      lobby.markConnected(true)
+      lobby.clearError()
+      subscribeOnce()
+    }
     const onDisconnect = () => {
+      subscribed = false
       lobby.markConnected(false)
     }
     socket.socket.on('connect', onConnect)
     socket.socket.on('disconnect', onDisconnect)
-    socket.connect()
+    if (socket.socket.connected) onConnect()
     active = {
       socket,
       stop: () => {
@@ -155,7 +174,7 @@ export function acquireLobbyChannel(pinia?: Pinia): () => void {
         // The server also drops membership on disconnect; this is the polite
         // path for a route change while the connection is still open.
         if (socket.socket.connected) socket.socket.emit('lobby_unsubscribe', {})
-        socket.disconnect()
+        releaseSettlement()
       },
       refs: 0,
     }
