@@ -98,6 +98,8 @@ export const useHomeStore = defineStore('home', () => {
   const changelogFailed = ref(false)
   /** Pending matchmaking mode announced by `match_queued`. */
   const queueMode = ref<HomeMode | null>(null)
+  /** Epoch ms when the server confirmed the queue entry (waited-seconds label). */
+  const queueStartedAt = ref(0)
   /** A find_match/create_ai_room hand-off is being prepared (client guard). */
   const pendingAction = ref<'casual' | 'ranked' | 'ai' | null>(null)
   /** Last user-facing server refusal (`error` frame or an error ack). */
@@ -189,6 +191,7 @@ export const useHomeStore = defineStore('home', () => {
   function applyMatchQueued(payload: JsonObject | null | undefined): void {
     const data = asObject(payload)
     queueMode.value = data?.mode === 'ranked' ? 'ranked' : 'casual'
+    queueStartedAt.value = Date.now()
     pendingAction.value = null
     // A pair may be announced at any moment while we wait in the queue, so the
     // placement hand-off stays armed until we leave or cancel.
@@ -197,6 +200,7 @@ export const useHomeStore = defineStore('home', () => {
 
   function applyMatchCanceled(): void {
     queueMode.value = null
+    queueStartedAt.value = 0
     pendingAction.value = null
     awaitingPlacement.value = false
   }
@@ -214,6 +218,7 @@ export const useHomeStore = defineStore('home', () => {
     awaitingPlacement.value = true
     pendingAction.value = null
     queueMode.value = null
+    queueStartedAt.value = 0
   }
 
   /** Record the placing_ships frame: matchmaking pairs open the overlay. */
@@ -242,6 +247,7 @@ export const useHomeStore = defineStore('home', () => {
   function placementHandled(): void {
     awaitingPlacement.value = false
     queueMode.value = null
+    queueStartedAt.value = 0
   }
 
   function notifyError(payload: JsonObject | null | undefined): void {
@@ -338,6 +344,7 @@ export const useHomeStore = defineStore('home', () => {
     changelogLoaded.value = false
     changelogFailed.value = false
     queueMode.value = null
+    queueStartedAt.value = 0
     pendingAction.value = null
     notice.value = ''
     awaitingPlacement.value = false
@@ -358,6 +365,7 @@ export const useHomeStore = defineStore('home', () => {
     changelogLoaded,
     changelogFailed,
     queueMode,
+    queueStartedAt,
     queuePending,
     pendingAction,
     busy,

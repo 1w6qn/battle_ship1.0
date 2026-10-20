@@ -53,6 +53,17 @@ export function roomSeatsText(room: LobbyRoom): string {
   return room.players + ' / ' + room.capacity
 }
 
+/** Ticket #43 fields, shown on the room card so a player can judge the table. */
+export function roomModeText(room: LobbyRoom): string {
+  if (room.mode === 'ranked') return '排位'
+  if (room.mode === 'custom') return '自定义'
+  return '休闲'
+}
+
+export function roomVisibilityText(room: LobbyRoom): string {
+  return room.public ? '公开' : '私密'
+}
+
 export function matchNamesText(match: LobbyMatch): string {
   const names = match.names.map((name) => String(name || '玩家'))
   return (names[0] || '玩家') + ' vs ' + (names[1] || '玩家')
