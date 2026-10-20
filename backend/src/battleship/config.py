@@ -32,17 +32,11 @@ ENV_NAME_BY_FIELD: dict[str, str] = {
     "frontend_dist": "FRONTEND_DIST",
     "cors_origins_raw": "CORS_ORIGINS",
     "debug_admin_user_ids_raw": "DEBUG_ADMIN_USER_IDS",
-    "arena_screens_mode": "ARENA_SCREENS_MODE",
-    "arena_screen_list": "ARENA_SCREEN_LIST",
     "log_level": "LOG_LEVEL",
     "log_json": "LOG_JSON",
 }
 
 DEFAULT_CORS_ORIGINS = "http://localhost:5000,http://127.0.0.1:5000"
-DEFAULT_ARENA_SCREEN_LIST = (
-    "lobby room placement collection leaderboard profile "
-    "result spectate replay settings"
-)
 
 
 class ConfigError(RuntimeError):
@@ -73,20 +67,15 @@ class Settings(BaseSettings):
     # None keeps the normal random source.
     seed: int | None = None
 
-    # 新 Vue 壳的托管开关（ticket #21）。默认仍是旧模板，切换由 #20 负责；
-    # "spa" 时必须存在构建产物，缺失即启动失败（不做静默回退）。
-    frontend_mode: str = Field(default="legacy", validation_alias="FRONTEND_MODE")
+    # Phase 5：旧模板已删除，只有 Vue 壳这一种前端。这里仍识别 FRONTEND_MODE，
+    # 但只接受 "spa"——旧的部署配置若还写着 legacy，启动即失败（D30 fail-fast），
+    # 而不是静默 serving 一个不存在的页面。
+    frontend_mode: str = Field(default="spa", validation_alias="FRONTEND_MODE")
     frontend_dist: Path | None = Field(default=None, validation_alias="FRONTEND_DIST")
 
     # 环境变量是逗号分隔字符串；对外暴露解析后的列表/集合。
     cors_origins_raw: str = Field(default=DEFAULT_CORS_ORIGINS, validation_alias="CORS_ORIGINS")
     debug_admin_user_ids_raw: str = Field(default="", validation_alias="DEBUG_ADMIN_USER_IDS")
-
-    # 旧栈的 C+ 十屏门控，保留同名环境变量。
-    arena_screens_mode: str = Field(default="v2", validation_alias="ARENA_SCREENS_MODE")
-    arena_screen_list: str = Field(
-        default=DEFAULT_ARENA_SCREEN_LIST, validation_alias="ARENA_SCREEN_LIST"
-    )
 
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     log_json: bool = Field(default=True, validation_alias="LOG_JSON")
@@ -102,8 +91,11 @@ class Settings(BaseSettings):
     @classmethod
     def _known_frontend_mode(cls, value: str) -> str:
         mode = value.strip().lower()
-        if mode not in {"legacy", "spa"}:
-            raise ValueError(f"FRONTEND_MODE 非法: {value!r}（可选 legacy / spa）")
+        if mode != "spa":
+            raise ValueError(
+                f"FRONTEND_MODE={value!r} 已不可用：Phase 5 移除了 legacy 前端，"
+                "请删除该环境变量（默认即 spa）"
+            )
         return mode
 
     @field_validator("log_level")
