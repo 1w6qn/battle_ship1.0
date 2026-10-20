@@ -99,20 +99,35 @@ export function installSettlementListeners(socket: TypedSocket, pinia?: Pinia): 
   }
 }
 
+export interface SettlementChannelOptions {
+  /**
+   * Keep the socket connected when the last screen releases it. Ticket #23's
+   * placement -> rps hand-off needs this: a guest seat is bound to the
+   * connection's sid, so disconnecting between screens would make every
+   * seat-bound emit fail the server's identity check (the legacy app kept one
+   * socket for the page lifetime for the same reason).
+   */
+  keepAlive?: boolean
+}
+
 interface ActiveChannel {
   socket: TypedSocket
   stop: () => void
   refs: number
+  keepAlive: boolean
 }
 
 let active: ActiveChannel | null = null
 
 /**
  * Acquire the shared channel. The returned release function disconnects when
- * the last screen using it goes away; Pinia state survives, only the socket
- * does not.
+ * the last screen using it goes away (unless keepAlive is requested); Pinia
+ * state survives, only the socket does not.
  */
-export function acquireSettlementChannel(pinia?: Pinia): () => void {
+export function acquireSettlementChannel(
+  pinia?: Pinia,
+  options: SettlementChannelOptions = {},
+): () => void {
   if (!active) {
     const socket = createTypedSocket()
     const stopListeners = installSettlementListeners(socket, pinia)
@@ -124,16 +139,18 @@ export function acquireSettlementChannel(pinia?: Pinia): () => void {
         socket.disconnect()
       },
       refs: 0,
+      keepAlive: options.keepAlive === true,
     }
   }
   const channel = active
+  if (options.keepAlive) channel.keepAlive = true
   channel.refs += 1
   let released = false
   return () => {
     if (released) return
     released = true
     channel.refs -= 1
-    if (channel.refs <= 0 && active === channel) {
+    if (channel.refs <= 0 && active === channel && !channel.keepAlive) {
       channel.stop()
       active = null
     }
