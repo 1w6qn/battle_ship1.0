@@ -278,12 +278,52 @@ function onTrackKeydown(event: KeyboardEvent): void {
   pauseAndStep(event.key === 'ArrowRight' ? 1 : -1)
 }
 
+/**
+ * Exit goes back to where the player came from (spec story 105): the settlement
+ * or profile entry passes ?from=, and a deep link with no marker still lands on
+ * the home screen (the browser history may lead out of the app entirely).
+ */
+const exitFrom = computed(() => {
+  const raw = route.query.from
+  return Array.isArray(raw) ? String(raw[0] ?? '') : String(raw ?? '')
+})
+
+const exitLabel = computed(() => (exitFrom.value === 'game-over' ? '回结算' : '退出回放'))
+
 function leave(): void {
   stopTimer()
   store.setPlaying(false)
   store.reset()
+  if (exitFrom.value === 'game-over') {
+    void router.push({ name: 'game-over' })
+    return
+  }
+  if (exitFrom.value === 'lobby') {
+    void router.push({ name: 'lobby' })
+    return
+  }
+  if (exitFrom.value === 'profile') {
+    const raw = route.query.username
+    const username = Array.isArray(raw) ? String(raw[0] ?? '') : String(raw ?? '')
+    if (username) {
+      void router.push({ name: 'profile', query: { username } })
+      return
+    }
+    void router.push({ name: 'leaderboard' })
+    return
+  }
   void router.push({ name: 'start' })
 }
+
+/** One main board with a 我的 / 对手 viewpoint switch (spec stories 101-102). */
+const view = ref<Side>(store.youAre === 'p2' ? 'p2' : 'p1')
+
+watch(
+  () => store.youAre,
+  (value) => {
+    if (value === 'p1' || value === 'p2') view.value = value
+  },
+)
 
 watch(
   () => store.playing,
@@ -369,8 +409,37 @@ onBeforeUnmount(() => {
 
       <div class="replay__body">
         <div class="replay__main">
+          <div class="replay__views" role="tablist" aria-label="回放视角">
+            <button
+              type="button"
+              class="replay__view"
+              :class="{ 'is-active': view === 'p1' }"
+              :aria-selected="view === 'p1' ? 'true' : 'false'"
+              data-testid="replay-view-self"
+              @click="view = store.youAre === 'p2' ? 'p2' : 'p1'"
+            >
+              我的视角
+            </button>
+            <button
+              type="button"
+              class="replay__view"
+              :class="{ 'is-active': view === (store.youAre === 'p2' ? 'p1' : 'p2') }"
+              :aria-selected="view === (store.youAre === 'p2' ? 'p1' : 'p2') ? 'true' : 'false'"
+              data-testid="replay-view-opponent"
+              @click="view = store.youAre === 'p2' ? 'p1' : 'p2'"
+            >
+              对手视角
+            </button>
+          </div>
+
           <div class="replay__boards">
-            <div v-for="side in SIDES" :key="'board-' + side" class="replay__board-wrap">
+            <div
+              v-for="side in SIDES"
+              :key="'board-' + side"
+              class="replay__board-wrap"
+              :class="{ 'is-inactive': side !== view }"
+              :data-active="side === view ? 'true' : 'false'"
+            >
               <h2 class="replay__board-title" :data-testid="'replay-board-title-' + side">{{ boardTitle(side) }}</h2>
               <div
                 class="replay__board"
@@ -480,7 +549,7 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="replay__actions">
-        <button type="button" class="button button--ghost" data-testid="replay-leave" @click="leave">退出回放</button>
+        <button type="button" class="button button--ghost" data-testid="replay-leave" @click="leave">{{ exitLabel }}</button>
       </footer>
     </template>
 
@@ -665,11 +734,41 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+/* Ticket #48: one main board; the other viewpoint stays in the DOM (hidden) so
+   the arrows/tests can still count both fleets, but only one board is shown. */
 .replay__boards {
   grid-area: boards;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
+}
+
+.replay__board-wrap.is-inactive {
+  display: none;
+}
+
+.replay__views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: -6px;
+}
+
+.replay__view {
+  padding: 7px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.replay__view.is-active {
+  border-color: var(--accent-strong);
+  background: var(--accent-soft);
+  color: var(--text);
 }
 
 .replay__board-wrap {
@@ -743,6 +842,13 @@ onBeforeUnmount(() => {
 
 .replay__board .cell.frozen-area {
   outline: 1px solid #8fd7ff;
+}
+
+/* Area magic (轰炸 / 硫磺火焰): the whole row/area shares this marker so a
+   one-card wipe cannot be mistaken for a lucky single shot. Glyph unchanged. */
+.replay__board .cell.area-strike {
+  outline: 2px dashed #ffb15c;
+  outline-offset: -2px;
 }
 
 .replay__board .cell.last-stand-candidate {
