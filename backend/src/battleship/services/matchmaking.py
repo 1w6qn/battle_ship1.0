@@ -23,7 +23,15 @@ from typing import Any
 from ..contracts import errors as socket_errors
 from ..domain.anticheat import suspicion
 from ..domain.matchmaking import guard
-from ..domain.room import Player, Room, RoomState, new_room_id, rank_payload, seat_label
+from ..domain.room import (
+    Player,
+    Room,
+    RoomState,
+    new_room_id,
+    opponent_seat_state,
+    rank_payload,
+    seat_label,
+)
 from ..infra.logging import get_logger
 from ..repositories import Database
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
@@ -229,10 +237,16 @@ class MatchmakingService:
                         "player_seat": seat_label(room, str(me["sid"])),
                         "player_name": me.get("name"),
                         "opponent_name": opponent.get("name"),
+                        # Ticket #51: additive per-seat wait state; each side
+                        # sees its own opponent, so this cannot be a broadcast.
+                        **opponent_seat_state(room, str(me["sid"])),
                         **rank_fields,
                     },
                     to=me["sid"],
                 )
+            # And the snapshot the placement screen already consumes, so the
+            # wait starts with known ready/online values instead of "unknown".
+            await self.rooms.push_room_sync(room)
 
     def _bind_presence_game(self, room: Room) -> None:
         for player in room.players.values():
