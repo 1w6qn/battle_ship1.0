@@ -498,7 +498,13 @@ export function acquireBattleChannel(pinia?: Pinia): () => void {
     // Connection state is a HUD fact (spec §5), so it is mirrored into the game
     // store here — the only place that owns this socket. No second flag.
     const ui = useUiStore(pinia)
-    const onConnect = (): void => ui.setConnection(true)
+    const onConnect = (): void => {
+      ui.setConnection(true)
+      // Ticket #53: the RPS draw is emitted before this channel exists. Pull the
+      // authoritative hand once we are connected so the game screen never opens
+      // with 0 cards (frozen event, no new protocol).
+      void syncHand(socket, pinia)
+    }
     const onDisconnect = (): void => ui.setConnection(false)
     socket.socket.on('connect', onConnect)
     socket.socket.on('disconnect', onDisconnect)
@@ -526,6 +532,20 @@ export function acquireBattleChannel(pinia?: Pinia): () => void {
       channel.stop()
       active = null
     }
+  }
+}
+
+/** Ask the server for the authoritative hand of the current seat. */
+export async function syncHand(socket: TypedSocket | null, pinia?: Pinia): Promise<void> {
+  if (!socket || !socket.socket.connected) return
+  const game = useGameStore(pinia)
+  const roomId = game.state.room_id
+  const playerId = game.state.player_id
+  if (!roomId || !playerId) return
+  try {
+    await socket.emitEvent('request_hand_sync', { room_id: roomId, player_id: playerId })
+  } catch {
+    // The screen keeps the hand it already has; the next frame self-heals it.
   }
 }
 
