@@ -301,6 +301,9 @@ class GameplayService:
             actor,
         )
         self._touch_turn(room, player_id)
+        # Ticket #51: the opponent's placement screen learns "already placed"
+        # from the same authoritative snapshot (no new event, no new field).
+        await self.rooms.push_room_sync(room)
         return {"status": "success"}
 
     async def cancel_placement(self, connection: Connection,
@@ -314,13 +317,16 @@ class GameplayService:
         if not pending or pending.get("caster") != player_id:
             return dict(NO_PENDING_PLACEMENT)
         if self.magic is not None:
-            return await self.magic.cancel_placement(room, player_id)
+            result = await self.magic.cancel_placement(room, player_id)
+            await self.rooms.push_room_sync(room)
+            return result
         room.magic_temp_data.pop("pending_placement", None)
         player = room.players.get(player_id)
         if player is not None and player.socket_id:
             await self._publisher.emit(
                 "message", {"text": "已放弃剩余放置"}, to=player.socket_id
             )
+        await self.rooms.push_room_sync(room)
         return {"status": "success"}
 
     async def _complete_reset_placement(self, room: Room, player_id: str) -> bool:
@@ -441,6 +447,10 @@ class GameplayService:
                     delattr(room, "test_ai_rps_choice")
 
         room.rps_choices[player_id] = choice
+        if len(room.rps_choices) < len(room.players):
+            # Ticket #51: the waiting seat sees "opponent has chosen" live via
+            # room_sync.rps_choices instead of only after a rejoin.
+            await self.rooms.push_room_sync(room)
 
         if len(room.rps_choices) == len(room.players) and not room.rps_processed:
             room.rps_processed = True
@@ -450,6 +460,9 @@ class GameplayService:
             if outcome.status == "tie" or len(outcome.order) < 2:
                 room.rps_choices = {}
                 room.rps_processed = False
+                # A tie clears both choices: push the reset so neither screen
+                # keeps showing the other side as "already chosen".
+                await self.rooms.push_room_sync(room)
                 return {"status": "success", "message": "平局，重新猜拳"}
 
             room.attack_order = list(outcome.order)
