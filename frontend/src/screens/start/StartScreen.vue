@@ -2,9 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import MatchFoundOverlay from '../../components/MatchFoundOverlay.vue'
+import StateSurface from '../../components/StateSurface.vue'
 import { useCollectionStore } from '../../stores/collection'
 import { useGameStore } from '../../stores/game'
 import { useHomeStore } from '../../stores/home'
+import { useUiStore } from '../../stores/ui'
 import {
   acquireHomeChannel,
   createAiRoom,
@@ -36,6 +38,7 @@ const router = useRouter()
 const home = useHomeStore()
 const game = useGameStore()
 const collection = useCollectionStore()
+const ui = useUiStore()
 
 const difficulty = ref('normal')
 let releaseChannel: (() => void) | null = null
@@ -71,6 +74,21 @@ const latestText = computed(() => {
 })
 const entries = computed(() =>
   home.changelog.map((entry) => ({ ...entry, key: changelogKey(entry) })),
+)
+/** Loading / empty / error / ready for the announcement panel (ticket #42). */
+const changelogState = computed<'loading' | 'ready' | 'empty' | 'error'>(() => {
+  if (home.changelogFailed) return 'error'
+  if (!home.changelogLoaded) return 'loading'
+  return entries.value.length ? 'ready' : 'empty'
+})
+
+// The screen still renders its own notice line; the shell toast makes the same
+// result visible from anywhere (one queue, same wording).
+watch(
+  () => home.notice,
+  (message) => {
+    if (message) ui.notify({ code: 'home-notice', tone: 'error', message })
+  },
 )
 const actionsDisabled = computed(() => home.busy || home.awaitingPlacement)
 
@@ -359,22 +377,33 @@ async function startAi(): Promise<void> {
         <section class="home-panel home-changelog" data-testid="start-changelog" aria-labelledby="home-changelog-title">
           <h2 id="home-changelog-title" class="home-panel__title">最 近 公 告</h2>
           <p class="home-changelog__latest" data-testid="start-changelog-latest">{{ latestText }}</p>
-          <ul v-if="entries.length" class="home-changelog__list">
-            <li
-              v-for="entry in entries"
-              :key="entry.key"
-              class="home-changelog__entry"
-              :data-testid="'start-changelog-entry-' + entry.key"
-            >
-              <p class="home-changelog__date">{{ entry.date }}</p>
-              <ul class="home-changelog__items">
-                <li v-for="(item, index) in entry.items" :key="index">{{ item }}</li>
-              </ul>
-            </li>
-          </ul>
-          <p v-else class="home-panel__note" data-testid="start-changelog-empty">
-            {{ home.changelogLoaded ? '暂时没有公告。' : '公告载入中…' }}
-          </p>
+          <StateSurface
+            :state="changelogState"
+            loading-text="公告载入中…"
+            @retry="home.loadChangelog()"
+          >
+            <ul class="home-changelog__list">
+              <li
+                v-for="entry in entries"
+                :key="entry.key"
+                class="home-changelog__entry"
+                :data-testid="'start-changelog-entry-' + entry.key"
+              >
+                <p class="home-changelog__date">{{ entry.date }}</p>
+                <ul class="home-changelog__items">
+                  <li v-for="(item, index) in entry.items" :key="index">{{ item }}</li>
+                </ul>
+              </li>
+            </ul>
+            <template #empty>
+              <p class="home-panel__note" data-testid="start-changelog-empty">暂时没有公告。</p>
+            </template>
+            <template #error>
+              <p class="home-panel__note" data-testid="start-changelog-empty">
+                暂时没有公告（载入失败），可以重试。
+              </p>
+            </template>
+          </StateSurface>
         </section>
       </aside>
     </div>
