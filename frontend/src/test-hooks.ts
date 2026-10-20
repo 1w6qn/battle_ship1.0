@@ -10,6 +10,7 @@ import { useLeaderboardStore } from './stores/leaderboard'
 import { useProfileStore } from './stores/profile'
 import { useResultStore } from './stores/result'
 import { useSettingsStore } from './stores/settings'
+import { useLobbyStore } from './stores/lobby'
 import { GAME_STATE_SCHEMA, defaultGameState } from './stores/gameStateSchema'
 import {
   applySettlementEvent,
@@ -25,6 +26,12 @@ import {
 } from './realtime/match'
 import { usePlacementStore } from './stores/placement'
 import { useRpsStore } from './stores/rps'
+import {
+  applyLobbyEvent,
+  getLobbySocket,
+  lobbySocketConnected,
+  type LobbyEventName,
+} from './realtime/lobby'
 import { CrashProbe } from './test-crash/CrashProbe'
 import { crashTarget, requestCrash } from './test-crash/state'
 
@@ -75,6 +82,41 @@ export interface MatchTestApi {
   silenceNextAck: () => void
 }
 
+export interface LobbyTestApi {
+  socket: () => TypedSocket | null
+  connected: () => boolean
+  state: () => {
+    hello: unknown
+    snapshot: unknown
+    chat: unknown[]
+    connected: boolean
+    subscribed: boolean
+    queueMode: string | null
+    ownRoomId: string
+    ownRoomName: string
+    ownRoomPublic: boolean
+    activeInvite: unknown
+    friends: unknown[]
+    friendsLoaded: boolean
+    friendsGuest: boolean
+    friendsError: string
+    notice: string
+    error: string
+    startedRoomId: string
+  }
+  /** Feed the exact production handler with a frozen payload (test build only). */
+  feed: (event: string, payload: Record<string, unknown>) => void
+  /** Deterministic friends fixture for screenshots (no wire event exists). */
+  setFriends: (payload: Record<string, unknown>) => void
+  setNotice: (text: string) => void
+  clearError: () => void
+  clearChat: () => void
+  clearOwnRoom: () => void
+  reset: () => void
+  /** A second real Socket.IO client, used to seat/invite the other player. */
+  createSocket: () => Socket
+}
+
 export interface TestHooksApi {
   version: string
   router: Router
@@ -91,6 +133,7 @@ export interface TestHooksApi {
   settlement: SettlementTestApi
   screens: ScreensTestApi
   match: MatchTestApi
+  lobby: LobbyTestApi
   crashNext: (routeName: string) => void
 }
 
@@ -113,6 +156,19 @@ export function createTestRoot(Root: Component): Component {
     },
   })
 }
+
+const LOBBY_EVENTS: readonly string[] = [
+  'lobby_hello',
+  'lobby_state',
+  'lobby_chat_history',
+  'lobby_chat',
+  'match_queued',
+  'match_canceled',
+  'friend_invite',
+  'game_state',
+  'room_sync',
+  'error',
+]
 
 const SETTLEMENT_EVENTS: readonly string[] = [
   'game_over',
@@ -161,6 +217,8 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
         wallpaper: settings.wallpaper,
       }),
   }
+
+  const lobbyStore = useLobbyStore(pinia)
 
   const settlement: SettlementTestApi = {
     socket: () => getSettlementSocket(),
@@ -232,8 +290,48 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     },
   }
 
+  const lobby: LobbyTestApi = {
+    socket: () => getLobbySocket(),
+    connected: () => lobbySocketConnected(),
+    state: () =>
+      JSON.parse(JSON.stringify({
+        hello: lobbyStore.hello,
+        snapshot: lobbyStore.snapshot,
+        chat: lobbyStore.chat,
+        connected: lobbyStore.connected,
+        subscribed: lobbyStore.subscribed,
+        queueMode: lobbyStore.queueMode,
+        ownRoomId: lobbyStore.ownRoomId,
+        ownRoomName: lobbyStore.ownRoomName,
+        ownRoomPublic: lobbyStore.ownRoomPublic,
+        activeInvite: lobbyStore.activeInvite,
+        friends: lobbyStore.friends,
+        friendsLoaded: lobbyStore.friendsLoaded,
+        friendsGuest: lobbyStore.friendsGuest,
+        friendsError: lobbyStore.friendsError,
+        notice: lobbyStore.notice,
+        error: lobbyStore.error,
+        startedRoomId: lobbyStore.startedRoomId,
+      })),
+    feed: (event, payload) => {
+      if (!LOBBY_EVENTS.includes(event)) throw new Error('unknown lobby event: ' + event)
+      applyLobbyEvent(event as LobbyEventName, payload, pinia)
+    },
+    setFriends: (payload) => lobbyStore.recordFriends(payload),
+    setNotice: (text) => lobbyStore.setNotice(text),
+    clearError: () => lobbyStore.clearError(),
+    clearChat: () => lobbyStore.clearChat(),
+    clearOwnRoom: () => lobbyStore.clearOwnRoom(),
+    reset: () => lobbyStore.reset(),
+    createSocket: () => {
+      const socket = io({ autoConnect: false, withCredentials: true, transports: ['websocket', 'polling'] })
+      socket.connect()
+      return socket
+    },
+  }
+
   window.__BS_TEST__ = {
-    version: 'ticket-25+ticket-23',
+    version: 'ticket-25+ticket-23+ticket-24',
     router,
     currentRouteName: () => (router.currentRoute.value.name as string | null) ?? null,
     routeLoadingHistory: () => history.slice(),
@@ -250,6 +348,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     settlement,
     screens,
     match,
+    lobby,
     crashNext: (routeName: string) => requestCrash(routeName),
   }
 }
