@@ -699,4 +699,3 @@ class BattleService:
                 "players": players,
             },
         }
-

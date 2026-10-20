@@ -2,11 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BoardPanel from './BoardPanel.vue'
-import { acquireBattleChannel, sendBattleEvent } from '../../realtime/battle'
+import { acquireBattleChannel, getBattleSocket, sendBattleEvent, syncHand } from '../../realtime/battle'
 import { cardArtUrl } from '../../cards/cardArt'
 import { useGameStore } from '../../stores/game'
 import { useMatchStore } from '../../stores/match'
 import { useResultStore } from '../../stores/result'
+import { useUiStore } from '../../stores/ui'
+import { turnClockView } from './turnClock'
 import {
   areaFromAnchor,
   areaCells,
@@ -41,47 +43,30 @@ import {
 } from './view'
 
 /**
- * Ticket #27: the game screen (P4).
+ * Ticket #47: the game HUD.
  *
- * Data comes only from the Pinia stores, and the stores are only fed by the
- * real socket frames (settlement channel + battle frames). The screen formats
- * server values; it never recomputes attack counts, ship survival or card
- * legality. Card graying/hints follow the frozen legacy client rules (D10) so
- * the UI keeps telling the player the same thing it did before the rewrite.
+ * One main board (the opponent sea — the only place a turn is spent), a status
+ * band carrying the server-owned turn clock, a readable hand with an explicit
+ * detail / use / cancel loop, one target banner, one chain overlay, and
+ * drawers for the log, chat and piles. Refusals go through the global notice
+ * queue so every click says why in player language.
  *
- * The settlement channel is acquired on mount: that is what makes a game_over
- * emitted while this screen is mounted land in the result store, and it is why
- * the screen can hand over to /game-over without a reload.
+ * The screen still formats server values only: it never recomputes attack
+ * counts, ship survival or card legality.
  */
 const router = useRouter()
 const game = useGameStore()
 const match = useMatchStore()
 const result = useResultStore()
+const ui = useUiStore()
 
 let releaseChannel: (() => void) | null = null
 let ticker: number | null = null
 const now = ref(Date.now())
-
-onMounted(() => {
-  releaseChannel = acquireBattleChannel()
-  seenGameOverAt = result.gameOver ? result.gameOver.receivedAt : 0
-  seenRoom = state.value.room_id
-  ticker = window.setInterval(() => {
-    now.value = Date.now()
-  }, 250)
-  void loadQuickChatCatalog()
-  if (mq) mq.addEventListener('change', syncCompact)
-  syncCompact()
-})
-
-onBeforeUnmount(() => {
-  releaseChannel?.()
-  releaseChannel = null
-  if (ticker !== null) window.clearInterval(ticker)
-  ticker = null
-  if (chainSafety !== null) window.clearTimeout(chainSafety)
-  if (mq) mq.removeEventListener('change', syncCompact)
-})
+const liveText = ref('')
+/** Last refusal, rendered in a stable receipt element for 6s (#50 hook). */
+const receiptText = ref('')
+let receiptTimer: number | null = null
 
 const state = computed(() => game.state)
 const hand = computed<CardLike[]>(() =>
@@ -96,12 +81,24 @@ const fieldMagic = computed(() => state.value.field_magic || '无')
 const hasRoom = computed(() => Boolean(state.value.room_id))
 const turnLabel = computed(() => turnText(state.value, selfName.value, opponentName.value))
 
+// ---- status band -----------------------------------------------------------
+const clock = computed(() =>
+  turnClockView(state.value.turn_deadline, state.value.turn_timeout_seconds, now.value),
+)
+const turnOrderText = computed(() => {
+  const order = Array.isArray(state.value.attack_order) ? state.value.attack_order : []
+  if (!order.length) return ''
+  if (order[0] === state.value.player_id) return '你先手'
+  return '对手先手'
+})
+const connectionText = computed(() => (ui.connection === 'online' ? '已连接' : '重连中…'))
+const timeoutNote = computed(() => match.timeoutNote)
+
+// ---- hand selection --------------------------------------------------------
 const selectedCardIndex = ref(-1)
 const selectedCardKey = ref('')
-const noticeText = ref('')
+const detailOpen = computed(() => selectedCardIndex.value >= 0)
 
-// 仁王之盾 waits for the server's chain_resolved frame; only then may the
-// player pick up to three own ships (legacy showRenwangChoice).
 const shieldPicks = ref<number[]>([])
 const shieldError = ref('')
 const shieldOpen = computed(() => Boolean(match.shieldChoice))
@@ -173,7 +170,24 @@ const previewKeys = computed<string[]>(() => {
   return []
 })
 
-const selectedKeys = computed<string[]>(() => (selection.value ? selection.value.picks.map((p) => p.x + '-' + p.y) : []))
+/** Every cell the open target banner would accept (#47 legal-range highlight). */
+const legalKeys = computed<string[]>(() => {
+  const sel = selection.value
+  if (!sel) return []
+  const kind = sel.descriptor.kind
+  const mine = selfCells.value
+  const theirs = opponentCells.value
+  if (kind === 'shenwei') return [...mine, ...theirs].map((cell) => cell.key)
+  if (kind === 'single' || kind === 'own_ships') {
+    return mine.filter((cell) => cell.ship && !cell.sunk).map((cell) => cell.key)
+  }
+  const board = sel.descriptor.board === 'self' ? mine : theirs
+  return board.filter((cell) => !cell.hole).map((cell) => cell.key)
+})
+
+const selectedKeys = computed<string[]>(() =>
+  selection.value ? selection.value.picks.map((pick) => pick.x + '-' + pick.y) : [],
+)
 
 const canConfirm = computed(() => {
   const sel = selection.value
@@ -190,7 +204,7 @@ const canConfirm = computed(() => {
 
 const pickCountText = computed(() => {
   const sel = selection.value
-  if (!sel) return ''
+  if (!sel) return '尚未选中'
   const kind = sel.descriptor.kind
   if (kind === 'continuous') return String(sel.picks.length) + ' / ' + String(sel.descriptor.length ?? 6)
   if (kind === 'own_ships') return String(sel.picks.length) + ' / ' + String(sel.descriptor.count ?? 2)
@@ -198,17 +212,16 @@ const pickCountText = computed(() => {
   if (kind === 'area' || kind === 'line' || kind === 'shenwei') {
     if (!sel.anchor) return '尚未选中'
     if (kind === 'line') {
-      return (sel.lineDir === 'row' ? '第 ' : '第 ') + String((sel.lineDir === 'row' ? sel.anchor.y : sel.anchor.x) + 1) + (sel.lineDir === 'row' ? ' 行' : ' 列')
+      return '第 ' + String((sel.lineDir === 'row' ? sel.anchor.y : sel.anchor.x) + 1) + (sel.lineDir === 'row' ? ' 行' : ' 列')
     }
     return '第 ' + String(sel.anchor.x + 1) + '-' + String(sel.anchor.x + (sel.descriptor.size ?? 3)) + ' 列，第 ' + String(sel.anchor.y + 1) + '-' + String(sel.anchor.y + (sel.descriptor.size ?? 3)) + ' 行'
   }
-  return ''
+  return '尚未选中'
 })
 
 const targetTitle = computed(() => {
   const sel = selection.value
-  if (!sel) return ''
-  return '使用「' + sel.card.name + '」：请选择目标'
+  return sel ? '使用「' + sel.card.name + '」：请选择目标' : ''
 })
 
 const targetHint = computed(() => {
@@ -219,7 +232,7 @@ const targetHint = computed(() => {
   if (kind === 'line') return '选择行或列，再在对手海域点击一个格子'
   if (kind === 'continuous') return '依次点击 6 个连续格子（正好一整行或一整列）'
   if (kind === 'single') return '在自己海域点击一艘还活着的战舰'
-  if (kind === 'own_ships') return '在自己海域选择两艘战舰，然后选择要发动的效果'
+  if (kind === 'own_ships') return '在自己海域选择两艘战舰，然后选择要发出的效果'
   if (kind === 'shenwei') return '先选择作用棋盘，再点击 3×3 区域的左上角'
   return ''
 })
@@ -245,136 +258,138 @@ const chainRemaining = computed(() => {
   if (!window) return 0
   return Math.max(0, Math.ceil(window.countdown - (now.value - window.openedAt) / 1000))
 })
+const chainOrderText = computed(() => '第 ' + String(chainList.value.length) + ' 张')
+/** 0..1 remaining share of the response window, for the ring (#52). */
+const chainProgress = computed(() => {
+  const window = chainWindow.value
+  if (!window || !(window.countdown > 0)) return 0
+  return Math.max(0, Math.min(1, chainRemaining.value / window.countdown))
+})
 
 const logs = computed(() => match.logs.slice().reverse())
 const notices = computed(() => match.notices.slice(-4))
+const latestLog = computed(() => (match.logs.length ? match.logs[match.logs.length - 1].text : ''))
 const quickChatMessages = computed(() => match.quickChat.slice(-8).reverse())
 const chatMessages = computed(() => match.chat.slice(-30))
 
+// ---- drawers and overlays --------------------------------------------------
 const quickChatOpen = ref(false)
+const logOpen = ref(false)
+const moreOpen = ref(false)
+const discardOpen = ref(false)
+const zoomOpen = ref(false)
 const quickChatCatalog = ref<Array<{ id: string; text: string }>>([])
 const chatDraft = ref('')
 const chatError = ref('')
 const CHAT_MAX_LENGTH = 100
 const surrenderArmed = ref(false)
 const busy = ref(false)
-const sideOpen = ref(false)
 
 interface QuickChatItem {
   id: string
   text: string
 }
 
-async function loadQuickChatCatalog(): Promise<void> {
-  try {
-    const response = await fetch('/api/quick_chat', {
-      headers: { accept: 'application/json' },
-      credentials: 'same-origin',
-    })
-    if (!response.ok) return
-    const body = (await response.json()) as { items?: unknown }
-    const items = Array.isArray(body.items) ? body.items : []
-    quickChatCatalog.value = items
-      .map((item) => {
-        if (!item || typeof item !== 'object') return null
-        const record = item as Record<string, unknown>
-        const id = String(record.id ?? '')
-        const text = String(record.text ?? '')
-        return id && text ? { id, text } : null
-      })
-      .filter((item): item is QuickChatItem => item !== null)
-  } catch {
-    // The catalog is optional: a missing one only hides the phrase list.
-  }
-}
-
+// ---- self minimap, ship slots and piles ------------------------------------
 const compact = ref(false)
-const activeBoard = ref<'self' | 'opponent'>('opponent')
 let mq: MediaQueryList | null = null
 
 function syncCompact(): void {
   compact.value = mq ? mq.matches : false
-  if (compact.value) activeBoard.value = myTurn.value ? 'opponent' : 'self'
+  if (!compact.value) zoomOpen.value = false
 }
 
-if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-  mq = window.matchMedia('(max-width: 719px)')
-}
+const opponentHidden = computed(() => compact.value && zoomOpen.value)
+const boardMode = computed(() => (compact.value ? 'tabs' : 'single'))
 
-watch(myTurn, (value) => {
-  if (compact.value) activeBoard.value = value ? 'opponent' : 'self'
+const shipSlots = computed(() => {
+  const ships = Array.isArray(state.value.ships) ? state.value.ships : []
+  return ships.slice(0, 6).map((ship, index) => ({
+    index,
+    alive: ship?.alive !== false,
+    frozen: Boolean(ship?.frozen),
+    shielded: Boolean(ship?.shield),
+  }))
 })
 
-const selfHidden = computed(() => compact.value && activeBoard.value !== 'self')
-const opponentHidden = computed(() => compact.value && activeBoard.value !== 'opponent')
+const miniMapCells = computed(() => {
+  const ships = new Map<string, boolean>()
+  for (const ship of Array.isArray(state.value.ships) ? state.value.ships : []) {
+    for (const position of Array.isArray(ship?.positions) ? ship.positions : []) {
+      ships.set(position.x + '-' + position.y, ship?.alive !== false)
+    }
+  }
+  const shots = new Map<string, boolean>()
+  for (const cell of Array.isArray(state.value.opponent_attacks) ? state.value.opponent_attacks : []) {
+    if (cell) shots.set(cell.x + '-' + cell.y, Boolean(cell.hit))
+  }
+  const cells: Array<{ key: string; ship: boolean; hit: boolean; miss: boolean }> = []
+  for (let y = 0; y < 6; y += 1) {
+    for (let x = 0; x < 6; x += 1) {
+      const key = x + '-' + y
+      cells.push({ key, ship: ships.get(key) === true, hit: shots.get(key) === true, miss: shots.get(key) === false })
+    }
+  }
+  return cells
+})
 
-let seenGameOverAt = 0
-let seenRoom = ''
-let navigating = false
+interface DiscardCard {
+  name: string
+  speed: number | string
+  type: string
+}
+const discardCards = ref<DiscardCard[]>([])
+const discardError = ref('')
+const discardLoading = ref(false)
 
-function maybeGoToSettlement(): void {
-  const record = result.gameOver
-  if (!record || navigating) return
-  if (record.receivedAt === seenGameOverAt) return
-  seenGameOverAt = record.receivedAt
-  navigating = true
-  void router.push({ name: 'game-over' })
+// ---- feedback helpers ------------------------------------------------------
+function say(code: string, message: string, next = '', tone: 'info' | 'warning' = 'warning'): void {
+  receiptText.value = next ? message + ' ' + next : message
+  if (receiptTimer !== null) window.clearTimeout(receiptTimer)
+  receiptTimer = window.setTimeout(() => {
+    receiptText.value = ''
+    receiptTimer = null
+  }, 6000)
+  ui.notify({ code, message, next, tone, ttl: tone === 'warning' ? 5000 : 3000 })
 }
 
-watch(
-  () => result.gameOver?.receivedAt,
-  () => maybeGoToSettlement(),
-)
+function announce(text: string): void {
+  liveText.value = ''
+  window.setTimeout(() => {
+    liveText.value = text
+  }, 30)
+}
 
-watch(
-  () => state.value.room_id,
-  (room) => {
-    if (room && room !== seenRoom) {
-      seenRoom = room
-      match.reset()
-      selection.value = null
-      shieldPicks.value = []
-      shieldError.value = ''
-      clearCardSelection()
-    }
-  },
-)
+/** Why a click on the main board cannot fire. Empty string = it can. */
+function fireRefusal(): string {
+  if (!state.value.player_id) return '对局数据还没到，请稍候。'
+  if (state.value.state !== 'attacking') return '对局还没进入战斗。'
+  if (state.value.current_phase !== 'battle') return '现在不是战斗阶段，先点主行动进入战斗阶段。'
+  if (!myTurn.value) return '还没轮到你，等对手结束这个回合。'
+  if (!(state.value.attacks_remaining > 0)) return '本回合没有剩余攻击次数，点主行动进入结束阶段。'
+  return ''
+}
 
-let chainSafety: number | null = null
+function refuseFire(reason: string): void {
+  const code = !myTurn.value
+    ? 'game-not-your-turn'
+    : state.value.current_phase !== 'battle'
+      ? 'game-wrong-phase'
+      : !(state.value.attacks_remaining > 0)
+        ? 'game-no-attacks'
+        : 'game-cannot-fire'
+  say(code, reason, '看状态带里的回合与剩余攻击数。')
+}
 
-watch(
-  () => match.chainWindow,
-  (next) => {
-    if (chainSafety !== null) {
-      window.clearTimeout(chainSafety)
-      chainSafety = null
-    }
-    if (!next) return
-    // Safety net: the server owns the window and emits chain_resolved when it
-    // closes; a lost frame must not leave a blocking dialog on screen forever.
-    chainSafety = window.setTimeout(() => {
-      if (!match.chainWindow) return
-      match.closeChainWindow()
-      match.pushNotice('连锁响应窗口已关闭，等待服务端结算', 'warning')
-    }, (next.countdown + 3) * 1000)
-  },
-)
-
-watch(
-  () => match.notices[match.notices.length - 1]?.id,
-  (id) => {
-    if (!id) return
-    window.setTimeout(() => match.dismissNotice(id), 6000)
-  },
-)
-
+// ---- the card loop: select -> detail -> use / second click -> target ---------
 function clearCardSelection(): void {
   selectedCardIndex.value = -1
   selectedCardKey.value = ''
-  noticeText.value = ''
 }
 
+/** The ONE reason function: the card face and the click guard both call it. */
 function cardDisabled(card: CardLike): string {
+  if (selection.value) return '正在选目标：先完成或取消当前选择'
   return cardDisabledReason(card, state.value, playCtx.value)
 }
 
@@ -382,9 +397,17 @@ function cardTestIdFor(card: CardLike, index: number): string {
   return cardTestId(card, index, hand.value)
 }
 
+function typeLabel(card: CardLike): string {
+  return '速阶 ' + String(card.speed) + ' · ' + String(card.type)
+}
+
 function onCardClick(index: number): void {
   const card = hand.value[index]
   if (!card) return
+  if (selection.value) {
+    say('game-target-open', '先完成或取消当前的目标选择，再打出另一张卡。')
+    return
+  }
   const key = cardTestId(card, index, hand.value)
   if (selectedCardIndex.value === index && selectedCardKey.value === key) {
     void playCard(index)
@@ -392,8 +415,27 @@ function onCardClick(index: number): void {
   }
   selectedCardIndex.value = index
   selectedCardKey.value = key
-  const disabled = cardDisabled(card)
-  noticeText.value = disabled
+  const disabled = cardDisabledReason(card, state.value, playCtx.value)
+  if (disabled) {
+    say('game-card-disabled', disabled, '点卡片看限制条件，换个阶段或用别的卡。')
+  } else {
+    // Every click gets a receipt, including a successful selection (spec §5).
+    say('game-card-selected', '已选中「' + card.name + '」：再点一次或点「使用此卡」出牌。', '', 'info')
+    announce('已选中' + card.name + '。再点一次或点「使用此卡」出牌。')
+  }
+}
+
+function useSelectedCard(): void {
+  const index = selectedCardIndex.value
+  if (index < 0) return
+  clearCardSelection()
+  void playCard(index)
+}
+
+function cancelCardSelection(): void {
+  if (!detailOpen.value) return
+  clearCardSelection()
+  ui.notify({ code: 'game-card-deselected', message: '已取消选中的卡', tone: 'info', ttl: 2000 })
 }
 
 async function playCard(index: number): Promise<void> {
@@ -401,16 +443,13 @@ async function playCard(index: number): Promise<void> {
   if (!card) return
   const refusal = playRefusalReason(card, state.value, playCtx.value)
   if (refusal) {
-    match.pushNotice(refusal, 'warning')
+    say('game-card-refused', refusal, '看卡面上的限制说明。')
     clearCardSelection()
     return
   }
   const descriptor = targetDescriptor(card.name)
   if (!descriptor) {
     await dispatchCard(card, {})
-    // A card without a local target panel must not stay "selected": the next
-    // card that lands in the same hand slot would otherwise be played on the
-    // first click (the card that left the hand kept its index/key selected).
     clearCardSelection()
     return
   }
@@ -425,6 +464,7 @@ async function playCard(index: number): Promise<void> {
     effectChoice: null,
     error: '',
   }
+  announce('使用' + card.name + '：请选择目标')
   clearCardSelection()
 }
 
@@ -440,10 +480,12 @@ async function dispatchCard(card: CardLike, targets: Record<string, unknown>): P
     })
     selection.value = null
     if (ack.status !== 'success') {
-      match.pushNotice('使用魔法卡失败：' + (ack.message || '未知错误'), 'error')
+      const message = '使用魔法卡失败：' + (ack.message || '未知错误')
+      ui.notifyError('game-card-failed', message)
       return
     }
-    match.pushNotice('已使用「' + card.name + '」')
+    ui.notify({ code: 'game-card-used', message: '已使用「' + card.name + '」', tone: 'success' })
+    announce('已使用' + card.name)
     if (hand.value.some((item) => cardIdentity(item) === cardIdentity(card))) {
       // Self-healing like the legacy client: the server is authoritative.
       await sendBattleEvent('request_hand_sync', {
@@ -452,7 +494,8 @@ async function dispatchCard(card: CardLike, targets: Record<string, unknown>): P
       })
     }
   } catch (error) {
-    match.pushNotice('使用魔法卡失败：' + String(error), 'error')
+    const message = '使用魔法卡失败：' + String(error)
+    ui.notifyError('game-card-failed', message)
   } finally {
     busy.value = false
   }
@@ -462,7 +505,7 @@ function setSelectionError(message: string): void {
   const sel = selection.value
   if (!sel) return
   sel.error = message
-  noticeText.value = message
+  say('game-target-invalid', message, '按横幅里的提示重新点。')
 }
 
 function pickCell(board: 'self' | 'opponent', x: number, y: number): void {
@@ -550,8 +593,13 @@ function setEffectChoice(choice: number): void {
 }
 
 function cancelSelection(): void {
+  const sel = selection.value
   selection.value = null
   clearCardSelection()
+  if (sel) {
+    const message = '已取消「' + sel.card.name + '」的目标选择'
+    ui.notify({ code: 'game-target-cancelled', message, tone: 'info' })
+  }
 }
 
 function buildTargets(sel: SelectionState): Record<string, unknown> {
@@ -561,45 +609,46 @@ function buildTargets(sel: SelectionState): Record<string, unknown> {
     return { target_area: areaFromAnchor(sel.anchor.x, sel.anchor.y, descriptor.size ?? 3) }
   }
   if (kind === 'line' && sel.anchor) {
-    return {
-      target_line: {
-        type: sel.lineDir,
-        index: sel.lineDir === 'row' ? sel.anchor.y : sel.anchor.x,
-      },
-    }
+    return { target_line: { type: sel.lineDir, index: sel.lineDir === 'row' ? sel.anchor.y : sel.anchor.x } }
   }
-  if (kind === 'continuous') {
-    return { target_cells: sel.picks }
-  }
+  if (kind === 'continuous') return { target_cells: sel.picks }
   if (kind === 'single' && sel.picks.length === 1) {
     const cell = sel.picks[0]
     return { target_area: { x1: cell.x, y1: cell.y, x2: cell.x, y2: cell.y } }
   }
-  if (kind === 'own_ships') {
-    return { selected_cells: sel.picks, effect_choice: sel.effectChoice }
-  }
+  if (kind === 'own_ships') return { selected_cells: sel.picks, effect_choice: sel.effectChoice }
   if (kind === 'shenwei' && sel.anchor && sel.board) {
-    return {
-      board: sel.board,
-      target_area: areaFromAnchor(sel.anchor.x, sel.anchor.y, 3),
-    }
+    return { board: sel.board, target_area: areaFromAnchor(sel.anchor.x, sel.anchor.y, 3) }
   }
   return {}
 }
 
 async function confirmSelection(): Promise<void> {
   const sel = selection.value
-  if (!sel || !canConfirm.value) return
+  if (!sel) return
+  if (!canConfirm.value) {
+    // Ticket #53: a native disabled button ate this click silently. The guard
+    // now says what is missing instead of doing nothing.
+    say('game-target-not-ready', '还不能确认：' + (sel.error || targetHint.value), '按横幅提示先选好目标。')
+    return
+  }
   await dispatchCard(sel.card, buildTargets(sel))
 }
 
+// ---- board clicks ----------------------------------------------------------
 async function fire(x: number, y: number): Promise<void> {
-  if (!myTurn.value || state.value.current_phase !== 'battle') return
-  if (!(state.value.attacks_remaining > 0)) return
+  const refusal = fireRefusal()
+  if (refusal) {
+    refuseFire(refusal)
+    return
+  }
   const existing = (Array.isArray(state.value.attacks) ? state.value.attacks : []).some(
     (cell) => cell && cell.x === x && cell.y === y,
   )
-  if (existing) return
+  if (existing) {
+    say('game-cell-already-shot', '这一格已经打过了，换一格试试。', '已经打过的格子不会再消耗攻击次数。')
+    return
+  }
   try {
     const ack = await sendBattleEvent('attack', {
       room_id: state.value.room_id,
@@ -607,9 +656,12 @@ async function fire(x: number, y: number): Promise<void> {
       x,
       y,
     })
-    if (ack.status !== 'success') match.pushNotice(ack.message || '攻击失败', 'error')
+    if (ack.status !== 'success') {
+      ui.notifyError('game-attack-failed', ack.message || '')
+    }
   } catch (error) {
-    match.pushNotice('攻击失败：' + String(error), 'error')
+    const message = '攻击失败：' + String(error)
+    ui.notifyError('game-attack-failed', message)
   }
 }
 
@@ -626,30 +678,127 @@ function onCell(board: 'self' | 'opponent', x: number, y: number): void {
     void choosePickCell(board, x, y)
     return
   }
-  if (board === 'opponent') void fire(x, y)
-}
-
-async function choosePickCell(board: 'self' | 'opponent', x: number, y: number): Promise<void> {
-  const pick = match.pickRequest
-  if (!pick || board !== 'self') return
-  const offered = pick.ships.some((ship) => ship.positions.some((cell) => cell.x === x && cell.y === y))
-  if (!offered) {
-    match.pushNotice('请选择面板中列出的战舰格子')
+  if (board === 'self') {
+    openZoom()
     return
   }
-  const ack = await sendBattleEvent('confirm_sacrifice', {
-    room_id: state.value.room_id,
-    player_id: state.value.player_id,
-    position: { x, y },
-  })
-  if (ack.status === 'success') {
-    match.clearPickRequest()
-    match.pushNotice(ack.message || '已选择一艘战舰')
-  } else {
-    match.pushNotice(ack.message || '选择失败', 'error')
+  void fire(x, y)
+}
+
+// ---- minimap / zoom --------------------------------------------------------
+function openZoom(): void {
+  zoomOpen.value = true
+  announce('已放大我自己的海域')
+}
+
+function closeZoom(): void {
+  zoomOpen.value = false
+}
+
+// ---- one primary action per turn ------------------------------------------
+interface PrimaryAction {
+  label: string
+  event: 'enter_battle_phase' | 'enter_end_phase' | 'end_turn'
+  enabled: boolean
+  reason: string
+}
+
+const primaryAction = computed<PrimaryAction>(() => {
+  const phase = state.value.current_phase
+  if (phase === 'preparation') {
+    return {
+      label: '进入战斗阶段',
+      event: 'enter_battle_phase',
+      enabled: myTurn.value,
+      reason: myTurn.value ? '' : '还没轮到你',
+    }
+  }
+  if (phase === 'battle') {
+    return {
+      label: '进入结束阶段',
+      event: 'enter_end_phase',
+      enabled: myTurn.value,
+      reason: myTurn.value ? '' : '还没轮到你',
+    }
+  }
+  if (phase === 'end') {
+    return {
+      label: '结束回合',
+      event: 'end_turn',
+      enabled: myTurn.value,
+      reason: myTurn.value ? '' : '还没轮到你',
+    }
+  }
+  return { label: '等待开局', event: 'enter_battle_phase', enabled: false, reason: '对局还没开始' }
+})
+
+async function turnAction(event: 'enter_battle_phase' | 'enter_end_phase' | 'end_turn'): Promise<void> {
+  try {
+    const ack = await sendBattleEvent(event, {
+      room_id: state.value.room_id,
+      player_id: state.value.player_id,
+    })
+    if (ack.status !== 'success') {
+      ui.notifyError('game-phase-failed', ack.message || '')
+    }
+  } catch (error) {
+    const message = '操作失败：' + String(error)
+    ui.notifyError('game-phase-failed', message)
   }
 }
 
+function runPrimary(): void {
+  const action = primaryAction.value
+  if (!action.enabled) {
+    say('game-primary-disabled', action.label + '现在还不能点：' + (action.reason || '条件不满足'))
+    return
+  }
+  moreOpen.value = false
+  void turnAction(action.event)
+}
+
+// ---- surrender: two clicks, consequence written out ------------------------
+function armSurrender(): void {
+  if (!surrenderArmed.value) {
+    surrenderArmed.value = true
+    window.setTimeout(() => {
+      surrenderArmed.value = false
+    }, 5000)
+    ui.notify({
+      code: 'game-surrender-armed',
+      message: '再点一次「确认投降」即判负。',
+      next: surrenderConsequence.value,
+      tone: 'warning',
+      ttl: 6000,
+    })
+    return
+  }
+  surrenderArmed.value = false
+  void sendSurrender()
+}
+
+const surrenderConsequence = computed(() => {
+  const ranked = Boolean(state.value.ranked)
+  return ranked
+    ? '本局立即判负；排位赛会按失败结算并扣段位分。'
+    : '本局立即判负；休闲对人机对局不计段位分。'
+})
+
+async function sendSurrender(): Promise<void> {
+  try {
+    const ack = await sendBattleEvent('surrender', {
+      room_id: state.value.room_id,
+      player_id: state.value.player_id,
+    })
+    if (ack.status !== 'success') {
+      ui.notifyError('game-surrender-failed', ack.message || '')
+    }
+  } catch (error) {
+    ui.notifyError('game-surrender-failed', String(error))
+  }
+}
+
+// ---- shield choice / sacrifice pick (server-driven dialogs) ----------------
 function toggleShieldShip(x: number, y: number): void {
   if (!match.shieldChoice) return
   const ships = Array.isArray(state.value.ships) ? state.value.ships : []
@@ -664,15 +813,11 @@ function toggleShieldShip(x: number, y: number): void {
     return
   }
   const at = shieldPicks.value.indexOf(index)
-  if (at >= 0) {
-    shieldPicks.value.splice(at, 1)
-  } else {
-    if (shieldPicks.value.length >= 3) {
-      shieldError.value = '最多选择 3 艘战舰'
-      return
-    }
-    shieldPicks.value.push(index)
-  }
+  if (at >= 0) shieldPicks.value.splice(at, 1)
+  else if (shieldPicks.value.length >= 3) {
+    shieldError.value = '最多选择 3 艘战舰'
+    return
+  } else shieldPicks.value.push(index)
   shieldError.value = ''
 }
 
@@ -693,7 +838,6 @@ async function confirmShieldChoice(): Promise<void> {
     match.clearShieldChoice()
     shieldPicks.value = []
     shieldError.value = ''
-    match.pushNotice(ack.message || '已为战舰添加护盾')
   } catch (error) {
     shieldError.value = '加盾失败：' + String(error)
   }
@@ -708,12 +852,31 @@ async function cancelShieldChoice(): Promise<void> {
     match.clearShieldChoice()
     shieldPicks.value = []
     shieldError.value = ''
-    match.pushNotice(ack.status === 'success' ? '已取消仁王之盾选择' : (ack.message || '已取消本次选择'))
   } catch (error) {
     shieldError.value = '取消失败：' + String(error)
   }
 }
 
+async function choosePickCell(board: 'self' | 'opponent', x: number, y: number): Promise<void> {
+  const pick = match.pickRequest
+  if (!pick || board !== 'self') return
+  const offered = pick.ships.some((ship) => ship.positions.some((cell) => cell.x === x && cell.y === y))
+  if (!offered) {
+    say('game-pick-invalid', '请选择面板中列出的战舰格子')
+    return
+  }
+  const ack = await sendBattleEvent('confirm_sacrifice', {
+    room_id: state.value.room_id,
+    player_id: state.value.player_id,
+    position: { x, y },
+  })
+  if (ack.status === 'success') {
+    match.clearPickRequest()
+  } else {
+  }
+}
+
+// ---- chain -----------------------------------------------------------------
 async function respondChain(card: CardLike): Promise<void> {
   const ack = await sendBattleEvent('chain_response', {
     room_id: state.value.room_id,
@@ -723,7 +886,7 @@ async function respondChain(card: CardLike): Promise<void> {
     targets: [],
   })
   match.closeChainWindow()
-  if (ack.status !== 'success') match.pushNotice('连锁失败：' + (ack.message || '未知错误'), 'error')
+  if (ack.status !== 'success') ui.notifyError('game-chain-failed', ack.message || '')
 }
 
 async function passChain(): Promise<void> {
@@ -733,7 +896,31 @@ async function passChain(): Promise<void> {
     chain: false,
   })
   match.closeChainWindow()
-  if (ack.status !== 'success') match.pushNotice(ack.message || '连锁响应失败', 'error')
+  if (ack.status !== 'success') ui.notifyError('game-chain-failed', ack.message || '')
+}
+
+// ---- chat / piles ----------------------------------------------------------
+async function loadQuickChatCatalog(): Promise<void> {
+  try {
+    const response = await fetch('/api/quick_chat', {
+      headers: { accept: 'application/json' },
+      credentials: 'same-origin',
+    })
+    if (!response.ok) return
+    const body = (await response.json()) as { items?: unknown }
+    const items = Array.isArray(body.items) ? body.items : []
+    quickChatCatalog.value = items
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null
+        const record = item as Record<string, unknown>
+        const id = String(record.id ?? '')
+        const text = String(record.text ?? '')
+        return id && text ? { id, text } : null
+      })
+      .filter((item): item is QuickChatItem => item !== null)
+  } catch {
+    // The catalog is optional: a missing one only hides the phrase list.
+  }
 }
 
 async function sendQuickChat(item: QuickChatItem): Promise<void> {
@@ -743,7 +930,7 @@ async function sendQuickChat(item: QuickChatItem): Promise<void> {
     msg_id: item.id,
   })
   if (ack.status === 'success') quickChatOpen.value = false
-  else match.pushNotice(ack.message || '快捷语发送失败', 'error')
+  else ui.notifyError('game-chat-failed', ack.message || '')
 }
 
 async function sendChat(): Promise<void> {
@@ -766,147 +953,247 @@ async function sendChat(): Promise<void> {
       chatError.value = ''
     } else {
       chatError.value = ack?.message || '消息发送失败，请稍后再试'
-      match.pushNotice(chatError.value, 'error')
     }
   } catch (error) {
     chatError.value = '消息发送失败：' + String(error)
-    match.pushNotice(chatError.value, 'error')
   }
 }
 
-async function turnAction(event: 'enter_battle_phase' | 'enter_end_phase' | 'end_turn'): Promise<void> {
+async function openDiscard(): Promise<void> {
+  discardOpen.value = true
+  discardLoading.value = true
+  discardError.value = ''
   try {
-    const ack = await sendBattleEvent(event, {
+    const ack = (await sendBattleEvent('get_discard_pile', {
       room_id: state.value.room_id,
       player_id: state.value.player_id,
-    })
-    if (ack.status !== 'success') match.pushNotice(ack.message || '操作失败', 'error')
+    })) as { status?: string; discard_pile?: unknown }
+    const list = Array.isArray(ack?.discard_pile) ? ack.discard_pile : []
+    discardCards.value = list.map((item) => {
+      const record = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
+      return {
+        name: String(record.name ?? ''),
+        speed: (record.speed as number | string) ?? 0,
+        type: String(record.type ?? ''),
+      }
+    }).filter((card) => Boolean(card.name))
+    if (ack?.status !== 'success') discardError.value = '弃牌堆读取失败'
   } catch (error) {
-    match.pushNotice('操作失败：' + String(error), 'error')
+    discardError.value = '弃牌堆读取失败：' + String(error)
+  } finally {
+    discardLoading.value = false
   }
 }
 
-async function surrender(): Promise<void> {
-  if (!surrenderArmed.value) {
-    surrenderArmed.value = true
-    window.setTimeout(() => {
-      surrenderArmed.value = false
-    }, 4000)
-    return
+// ---- keyboard: Esc closes the top layer (#47) ------------------------------
+function closeTopLayer(): boolean {
+  if (zoomOpen.value) {
+    closeZoom()
+    return true
   }
-  surrenderArmed.value = false
-  const ack = await sendBattleEvent('surrender', {
-    room_id: state.value.room_id,
-    player_id: state.value.player_id,
-  })
-  if (ack.status !== 'success') match.pushNotice(ack.message || '投降失败', 'error')
+  if (discardOpen.value) {
+    discardOpen.value = false
+    return true
+  }
+  if (quickChatOpen.value) {
+    quickChatOpen.value = false
+    return true
+  }
+  if (logOpen.value) {
+    logOpen.value = false
+    return true
+  }
+  if (moreOpen.value) {
+    moreOpen.value = false
+    return true
+  }
+  if (selection.value) {
+    cancelSelection()
+    return true
+  }
+  if (detailOpen.value) {
+    cancelCardSelection()
+    return true
+  }
+  return false
 }
 
-function showBoard(side: 'self' | 'opponent'): void {
-  activeBoard.value = side
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    if (closeTopLayer()) {
+      event.preventDefault()
+    }
+  }
 }
 
-const selfSubtitle = computed(() => '存活 ' + String(state.value.remaining_ships) + ' 艘')
-const opponentSubtitle = computed(() => '存活 ' + String(state.value.opponent_remaining_ships) + ' 艘')
-const myFrozenText = computed(() => (frozenMine.value.size ? '你的 3×3 区域被冻结' : ''))
-const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 区域被冻结' : ''))
+// ---- lifecycle -------------------------------------------------------------
+let seenGameOverAt = 0
+let seenRoom = ''
+let navigating = false
+
+function maybeGoToSettlement(): void {
+  const record = result.gameOver
+  if (!record || navigating) return
+  if (record.receivedAt === seenGameOverAt) return
+  seenGameOverAt = record.receivedAt
+  navigating = true
+  void router.push({ name: 'game-over' })
+}
+
+watch(
+  () => result.gameOver?.receivedAt,
+  () => maybeGoToSettlement(),
+)
+
+watch(
+  () => state.value.room_id,
+  (room) => {
+    if (!room || room === seenRoom) return
+    seenRoom = room
+    match.reset()
+    selection.value = null
+    shieldPicks.value = []
+    shieldError.value = ''
+    zoomOpen.value = false
+    quickChatOpen.value = false
+    logOpen.value = false
+    moreOpen.value = false
+    discardOpen.value = false
+    clearCardSelection()
+  },
+)
+
+watch(
+  () => state.value.current_attacker,
+  (attacker) => {
+    if (!attacker) return
+    announce(myTurn.value ? '轮到你行动' : '轮到' + opponentName.value + '行动')
+  },
+)
+
+watch(
+  () => match.lastAttack,
+  (attack) => {
+    if (!attack) return
+    const owner = attack.attacker === state.value.player_id ? '你的炮击' : '对手的炮击'
+    const resultText = attack.shipSunk ? '击沉一艘战舰' : attack.hit ? '命中' : '未命中'
+    announce(owner + '：第 ' + (attack.x + 1) + ' 列第 ' + (attack.y + 1) + ' 行，' + resultText)
+  },
+)
+
+watch(
+  () => match.chainWindow,
+  (window) => {
+    if (!window) return
+    announce('连锁响应窗口：剩余 ' + String(window.countdown) + ' 秒，可以用速阶 3 的卡响应')
+  },
+)
+
+onMounted(() => {
+  releaseChannel = acquireBattleChannel()
+  // Ticket #53: the RPS draw frame was emitted before this channel existed;
+  // ask for the authoritative hand once, so the screen never opens with 0 cards.
+  void syncHand(getBattleSocket())
+  seenGameOverAt = result.gameOver ? result.gameOver.receivedAt : 0
+  seenRoom = state.value.room_id
+  ticker = window.setInterval(() => {
+    now.value = Date.now()
+  }, 250)
+  void loadQuickChatCatalog()
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    mq = window.matchMedia('(max-width: 719px)')
+    mq.addEventListener('change', syncCompact)
+    syncCompact()
+  }
+  window.addEventListener('keydown', onKeydown)
+})
+
+onBeforeUnmount(() => {
+  releaseChannel?.()
+  releaseChannel = null
+  if (ticker !== null) window.clearInterval(ticker)
+  ticker = null
+  if (mq) mq.removeEventListener('change', syncCompact)
+  mq = null
+  window.removeEventListener('keydown', onKeydown)
+})
+
+function backToLobby(): void {
+  void router.push({ name: 'lobby' })
+}
 </script>
-
 <template>
   <section
     class="screen game"
     data-screen="game"
     data-testid="screen-game"
-    :data-board-mode="compact ? 'tabs' : 'side'"
+    :data-board-mode="boardMode"
     aria-labelledby="screen-game-title"
   >
     <h1 id="screen-game-title" class="visually-hidden">对局</h1>
 
-    <header class="game__hud" data-testid="game-hud">
-      <div class="game__chips">
-        <span class="game__chip" data-testid="game-round">第 {{ state.round }} 回合</span>
-        <span class="game__chip" data-testid="game-phase">{{ phaseText }}</span>
-        <span class="game__chip game__chip--turn" data-testid="game-attacker">{{ turnLabel }}</span>
-        <span class="game__chip" data-testid="game-attacks">剩余攻击 {{ state.attacks_remaining }}</span>
-        <span class="game__chip game__chip--muted" data-testid="game-mode">{{ modeText }}</span>
-        <span class="game__chip game__chip--muted" data-testid="game-field-magic">场地：{{ fieldMagic }}</span>
-      </div>
-      <div class="game__players">
-        <span class="game__name" data-testid="game-self-name">{{ selfName }}</span>
-        <span class="game__vs" aria-hidden="true">VS</span>
-        <span class="game__name" data-testid="game-opponent-name">{{ opponentName }}</span>
-        <span class="game__ships" data-testid="game-ships">{{ shipsText }}</span>
-      </div>
-      <div class="game__effects">
-        <ul class="game__badges" data-testid="game-effect-self" aria-label="我的效果">
-          <li
-            v-for="badge in selfEffects"
-            :key="'self-' + badge.key"
-            class="game__badge"
-            :data-testid="'game-effect-self-' + badge.key"
-            :title="badge.description + (badge.expires ? '（' + badge.expires + '）' : '')"
-          >
-            {{ badge.label }}
-          </li>
-        </ul>
-        <ul class="game__badges game__badges--opponent" data-testid="game-effect-opponent" aria-label="对手的效果">
-          <li
-            v-for="badge in opponentEffects"
-            :key="'opponent-' + badge.key"
-            class="game__badge game__badge--opponent"
-            :data-testid="'game-effect-opponent-' + badge.key"
-            :title="badge.description + (badge.expires ? '（' + badge.expires + '）' : '')"
-          >
-            {{ badge.label }}
-          </li>
-        </ul>
-      </div>
+    <header class="game-status" data-testid="game-hud">
+      <span class="game-status__chip" data-testid="game-round">第 {{ state.round }} 回合</span>
+      <span class="game-status__chip" data-testid="game-phase">{{ phaseText }}</span>
+      <span class="game-status__chip game-status__chip--turn" data-testid="game-attacker">{{ turnLabel }}</span>
+      <span class="game-status__chip game-status__chip--num" data-testid="game-attacks">剩余攻击 {{ state.attacks_remaining }}</span>
+      <span
+        v-if="clock.visible"
+        class="game-status__chip game-status__chip--clock"
+        :class="{ 'is-warning': clock.warning, 'is-expired': clock.expired }"
+        data-testid="game-turn-clock"
+        :data-warning="clock.warning ? 'true' : 'false'"
+        :data-remaining-ms="clock.remaining * 1000"
+        :data-remaining="clock.remaining"
+      >
+        回合计时 {{ clock.label }}
+      </span>
+      <span v-if="turnOrderText" class="game-status__chip game-status__chip--muted" data-testid="game-turn-order">{{ turnOrderText }}</span>
+      <span class="game-status__chip game-status__chip--muted" data-testid="game-mode">{{ modeText }}</span>
+      <span class="game-status__chip game-status__chip--muted" data-testid="game-field-magic">场地：{{ fieldMagic }}</span>
+      <span
+        class="game-status__chip"
+        :class="ui.connection === 'online' ? 'is-online' : 'is-offline'"
+        data-testid="game-connection"
+      >{{ connectionText }}</span>
+      <span class="game-status__names">
+        <span data-testid="game-self-name">{{ selfName }}</span>
+        <span class="game-status__vs" aria-hidden="true">VS</span>
+        <span data-testid="game-opponent-name">{{ opponentName }}</span>
+        <span class="game-status__ships" data-testid="game-ships">{{ shipsText }}</span>
+      </span>
     </header>
 
-    <p v-if="!hasRoom" class="game__empty" data-testid="game-empty">
+    <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true" data-testid="game-live">{{ liveText }}</p>
+    <p v-if="receiptText" class="game-receipt" data-testid="game-receipt" role="status" aria-live="polite">{{ receiptText }}</p>
+
+    <p v-if="timeoutNote" class="game-banner game-banner--warning" data-testid="game-timeout-note">
+      {{ timeoutNote }}
+    </p>
+    <p v-if="!hasRoom" class="game-empty" data-testid="game-empty">
       还没有收到对局数据。进对局时会自动显示双方海域、手牌与本回合状态；刷新后请从大厅或布船重新进入。
     </p>
 
-    <div class="game__main">
-      <aside class="game__log-side" aria-label="对局日志栏">
-
-        <section class="game__panel game__panel--log" data-testid="game-log" aria-label="对局日志">
-          <h2 class="game__panel-title">对局日志</h2>
-          <p v-if="!logs.length" class="game__panel-empty">暂无记录</p>
-          <ol v-else class="game__logs">
-            <li
-              v-for="(entry, index) in logs"
-              :key="'log-' + index"
-              class="game__log"
-              :data-testid="'game-log-entry-' + index"
-            >
-              {{ entry.text }}
-            </li>
-          </ol>
-        </section>
-      </aside>
-
-      <div class="game__boards" data-testid="game-board-switch">
-        <div v-if="compact" class="game__tabs" role="tablist" aria-label="切换棋盘">
+    <div class="game-body">
+      <div class="game-board-column">
+        <div v-if="compact" class="game-tabs" role="tablist" aria-label="切换棋盘">
           <button
             type="button"
-            class="game__tab"
-            :class="{ 'game__tab--active': activeBoard === 'opponent' }"
+            class="game-tab"
             role="tab"
-            :aria-selected="activeBoard === 'opponent'"
+            :aria-selected="!zoomOpen"
             data-testid="game-board-tab-opponent"
-            @click="showBoard('opponent')"
+            @click="closeZoom"
           >
             对手海域
           </button>
           <button
             type="button"
-            class="game__tab"
-            :class="{ 'game__tab--active': activeBoard === 'self' }"
+            class="game-tab"
             role="tab"
-            :aria-selected="activeBoard === 'self'"
+            :aria-selected="zoomOpen"
             data-testid="game-board-tab-self"
-            @click="showBoard('self')"
+            @click="openZoom"
           >
             我的海域
           </button>
@@ -916,59 +1203,119 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
           board-testid="game-board-opponent"
           title-testid="game-board-title-opponent"
           :title="'对手海域 · ' + opponentName"
-          :subtitle="opponentSubtitle + (theirFrozenText ? ' · ' + theirFrozenText : '')"
+          :subtitle="'存活 ' + state.opponent_remaining_ships + ' 艘' + (frozenTheirs.size ? ' · 对方 3×3 区域被冻结' : '')"
           :cells="opponentCells"
           :preview="previewKeys"
+          :legal="legalKeys"
           :hidden="opponentHidden"
           :picking="!!selection"
-          @cell="(x, y) => onCell('opponent', x, y)"
+          @cell="(x: number, y: number) => onCell('opponent', x, y)"
         />
-        <BoardPanel
-          board="self"
-          board-testid="game-board-self"
-          title-testid="game-board-title-self"
-          :title="'我的海域 · ' + selfName"
-          :subtitle="selfSubtitle + (myFrozenText ? ' · ' + myFrozenText : '')"
-          :cells="selfCells"
-          :selected="selectedKeys.concat(shieldSelectedKeys)"
-          :hidden="selfHidden"
-          :picking="!!selection || !!match.pickRequest || shieldOpen"
-          @cell="(x, y) => onCell('self', x, y)"
-        />
+        <section v-show="zoomOpen" class="game-zoom" data-testid="game-self-zoom" role="dialog" aria-label="我的海域放大">
+          <header class="game-zoom__head">
+            <h2 class="game-zoom__title">我的海域</h2>
+            <button type="button" class="game-close" data-testid="game-self-zoom-close" aria-label="收起我的海域" @click="closeZoom">×</button>
+          </header>
+          <BoardPanel
+            board="self"
+            board-testid="game-board-self"
+            title-testid="game-board-title-self"
+            :title="'我的海域 · ' + selfName"
+            :subtitle="'存活 ' + state.remaining_ships + ' 艘' + (frozenMine.size ? ' · 你的 3×3 区域被冻结' : '')"
+            :cells="selfCells"
+            :selected="selectedKeys.concat(shieldSelectedKeys)"
+            :legal="legalKeys"
+            :picking="!!selection || !!match.pickRequest || shieldOpen"
+            @cell="(x: number, y: number) => onCell('self', x, y)"
+          />
+        </section>
+        <p class="game-latest" data-testid="game-latest-event">{{ latestLog }}</p>
+        <ul v-if="notices.length" class="game-notices" data-testid="game-notices" aria-live="polite">
+          <li v-for="notice in notices" :key="notice.id" class="game-notice" :class="'game-notice--' + notice.kind">
+            {{ notice.text }}
+          </li>
+        </ul>
       </div>
 
-      <p v-if="compact && chainList.length" class="game__chain-strip" data-testid="game-chain-summary">
-        连锁：{{ chainList.map((item) => item.name).join(' → ') }}
-      </p>
-      <aside class="game__side" :class="{ 'game__side--open': sideOpen }">
-        <section class="game__panel" data-testid="game-chain" aria-label="连锁">
-          <h2 class="game__panel-title">连锁</h2>
-          <p v-if="!chainList.length" class="game__panel-empty" data-testid="game-chain-empty">当前没有连锁</p>
-          <ol v-else class="game__chain" data-testid="game-chain-stack">
-            <li
-              v-for="(item, index) in chainList"
-              :key="'chain-' + index"
-              class="game__chain-item"
-              :class="{ 'game__chain-item--negated': item.negated }"
-              :data-testid="'game-chain-item-' + index"
-            >
-              <b :data-testid="'game-chain-item-' + index + '-name'">{{ item.name }}</b>
-              <span v-if="item.negated" class="game__chain-negated">已无效</span>
-            </li>
-          </ol>
-        </section>
+      <aside class="game-rail" aria-label="我的海域与工具">
+        <button
+          type="button"
+          class="game-map"
+          data-testid="game-mini-map"
+          aria-label="我的海域小地图，点开可放大"
+          @click="openZoom"
+        >
+          <span class="game-map__grid" aria-hidden="true">
+            <span
+              v-for="cell in miniMapCells"
+              :key="cell.key"
+              class="game-map__cell"
+              :class="{ 'is-ship': cell.ship, 'is-hit': cell.hit, 'is-miss': cell.miss }"
+            ></span>
+          </span>
+          <span class="game-map__label">
+            我的海域 · 存活 {{ state.remaining_ships }} 艘
+            <span v-if="frozenMine.size" class="game-map__note">3×3 冻结中</span>
+          </span>
+        </button>
 
+        <ol class="game-slots" data-testid="game-ship-slots" aria-label="六个舰位">
+          <li
+            v-for="slot in shipSlots"
+            :key="slot.index"
+            class="game-slot"
+            :class="{ 'is-lost': !slot.alive, 'is-frozen': slot.frozen, 'is-shielded': slot.shielded }"
+            :data-testid="'game-ship-slot-' + slot.index"
+          >
+            舰 {{ slot.index + 1 }}
+          </li>
+        </ol>
+
+        <div class="game-rail__actions">
+          <button type="button" class="game-mini-button" data-testid="game-log-open" @click="logOpen = true">日志</button>
+          <button type="button" class="game-mini-button" data-testid="game-chat-open" @click="quickChatOpen = true">聊天</button>
+          <button type="button" class="game-mini-button" data-testid="game-piles" @click="openDiscard">弃牌堆</button>
+        </div>
+
+        <p v-if="!chainList.length" class="game-chain-empty" data-testid="game-chain-empty">当前没有连锁</p>
+
+        <ul class="game-badges" data-testid="game-effect-self" aria-label="我的效果">
+          <li
+            v-for="badge in selfEffects"
+            :key="'self-' + badge.key"
+            class="game-badge"
+            :data-testid="'game-effect-self-' + badge.key"
+            :title="badge.description + (badge.expires ? '（' + badge.expires + '）' : '')"
+          >{{ badge.label }}</li>
+        </ul>
+        <ul class="game-badges game-badges--opponent" data-testid="game-effect-opponent" aria-label="对手的效果">
+          <li
+            v-for="badge in opponentEffects"
+            :key="'opponent-' + badge.key"
+            class="game-badge game-badge--opponent"
+            :data-testid="'game-effect-opponent-' + badge.key"
+            :title="badge.description + (badge.expires ? '（' + badge.expires + '）' : '')"
+          >{{ badge.label }}</li>
+        </ul>
+
+        <p v-if="state.priority_waiting" class="game-banner" data-testid="game-priority-waiting">
+          等待对方响应「{{ state.priority_waiting.action_text }}」
+        </p>
+        <p v-if="state.shenji_waiting" class="game-banner" data-testid="game-shenji-waiting">{{ state.shenji_waiting.text }}</p>
+        <p v-if="pendingPick && !match.pickRequest" class="game-banner" data-testid="game-pending-pick">
+          待处理：{{ pendingPick.message }}
+        </p>
       </aside>
     </div>
 
-    <div class="game__bottom">
-      <section class="game__hand-wrap" aria-label="手牌">
-        <div class="game__stats" data-testid="game-stats">
-          <span data-testid="game-stat-hits">命中 {{ hits }}</span>
-          <span data-testid="game-stat-shots">开火 {{ shots }}</span>
+    <div class="game-bottom">
+      <section class="game-hand-wrap" aria-label="手牌">
+        <div class="game-hand-head">
+          <span class="game-hand-stats" data-testid="game-stats">命中 {{ hits }} · 开火 {{ shots }}</span>
+          <span class="game-hand-count" data-testid="game-hand-count">手牌 {{ hand.length }} 张</span>
         </div>
-        <div class="game__hand" data-testid="game-hand">
-          <p v-if="!hand.length" class="game__hand-empty" data-testid="game-hand-empty">手上没有魔法卡</p>
+        <div class="game-hand" data-testid="game-hand">
+          <p v-if="!hand.length" class="game-hand-empty" data-testid="game-hand-empty">手上没有魔法卡</p>
           <button
             v-for="(card, index) in hand"
             :key="cardTestIdFor(card, index)"
@@ -982,8 +1329,9 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
             :data-testid="cardTestIdFor(card, index)"
             :data-card-name="card.name"
             :data-card-speed="String(card.speed)"
+            :data-type="String(card.type)"
             :aria-pressed="selectedCardIndex === index"
-            :aria-label="card.name + '，速阶 ' + String(card.speed) + '，' + card.type"
+            :aria-label="card.name + '，' + typeLabel(card) + (cardDisabled(card) ? '，' + cardDisabled(card) : '，可以使用')"
             :title="cardDisabled(card) || card.description || card.name"
             @click="onCardClick(index)"
           >
@@ -996,96 +1344,241 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
               loading="eager"
               decoding="async"
             />
-            <span class="card__name">{{ card.name }}</span>
-            <span class="card__gems" :title="'速阶 ' + String(card.speed)">{{ speedGems(cardSpeed(card)) }}</span>
-            <span class="card__type">{{ String(card.speed) }} · {{ card.type }}</span>
-            <span class="card__desc">{{ card.description }}</span>
+            <span class="card__body">
+              <span class="card__name">{{ card.name }}</span>
+              <span class="card__gems" :title="'速阶 ' + String(card.speed)">
+                {{ speedGems(cardSpeed(card)) }}<span class="card__speed">{{ card.speed }}</span>
+              </span>
+              <span class="card__type">{{ typeLabel(card) }}</span>
+              <span class="card__desc">{{ card.description }}</span>
+              <span v-if="cardDisabled(card)" class="card__reason">{{ cardDisabled(card) }}</span>
+            </span>
           </button>
         </div>
       </section>
 
-      <div class="game__actions" data-testid="game-actions">
-        <p class="game__hint" data-testid="game-turn-hint">{{ turnLabel }} · {{ phaseText }}</p>
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-enter-battle"
-          :disabled="!myTurn || state.current_phase !== 'preparation'"
-          @click="turnAction('enter_battle_phase')"
-        >
-          进入战斗阶段
-        </button>
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-enter-end"
-          :disabled="!myTurn || state.current_phase !== 'battle'"
-          @click="turnAction('enter_end_phase')"
-        >
-          进入结束阶段
-        </button>
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-end-turn"
-          :disabled="!myTurn || state.current_phase !== 'end'"
-          @click="turnAction('end_turn')"
-        >
-          结束回合
-        </button>
-        <button
-          type="button"
-          class="button game__action game__action--danger"
-          data-testid="game-surrender"
-          @click="surrender"
-        >
-          {{ surrenderArmed ? '再次点击确认投降' : '投降' }}
-        </button>
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-quick-chat-button"
-          @click="quickChatOpen = !quickChatOpen"
-        >
-          快捷语
-        </button>
-        <button
-          v-if="compact"
-          type="button"
-          class="button game__action"
-          data-testid="game-log-toggle"
-          @click="sideOpen = !sideOpen"
-        >
-          日志
-        </button>
+      <div class="game-actions" data-testid="game-actions">
+        <p class="game-turn-hint" data-testid="game-turn-hint">{{ turnLabel }} · {{ phaseText }}</p>
+        <div class="game-actions__row">
+          <button
+            type="button"
+            class="button game-primary"
+            data-primary-action
+            data-testid="game-primary"
+            :disabled="!primaryAction.enabled"
+            @click="runPrimary"
+          >
+            {{ primaryAction.label }}
+          </button>
+          <button
+            type="button"
+            class="button button--ghost game-more"
+            data-testid="game-more"
+            :aria-expanded="moreOpen"
+            aria-haspopup="true"
+            @click="moreOpen = !moreOpen"
+          >
+            更多操作
+          </button>
+        </div>
+        <div v-show="moreOpen" class="game-more-menu" data-testid="game-more-menu" role="menu" aria-label="更多操作">
+          <button
+            type="button"
+            class="button button--ghost game-more__item"
+            role="menuitem"
+            data-testid="game-enter-battle"
+            :disabled="!myTurn || state.current_phase !== 'preparation'"
+            @click="turnAction('enter_battle_phase')"
+          >进入战斗阶段</button>
+          <button
+            type="button"
+            class="button button--ghost game-more__item"
+            role="menuitem"
+            data-testid="game-enter-end"
+            :disabled="!myTurn || state.current_phase !== 'battle'"
+            @click="turnAction('enter_end_phase')"
+          >进入结束阶段</button>
+          <button
+            type="button"
+            class="button button--ghost game-more__item"
+            role="menuitem"
+            data-testid="game-end-turn"
+            :disabled="!myTurn || state.current_phase !== 'end'"
+            @click="turnAction('end_turn')"
+          >结束回合</button>
+          <button type="button" class="button button--ghost game-more__item" role="menuitem" data-testid="game-log-toggle" @click="logOpen = true">对局日志</button>
+          <button type="button" class="button button--ghost game-more__item" role="menuitem" data-testid="game-quick-chat-button" @click="quickChatOpen = true">快捷语与聊天</button>
+          <button type="button" class="button button--ghost game-more__item" role="menuitem" data-testid="game-more-piles" @click="openDiscard">弃牌堆</button>
+          <button
+            type="button"
+            class="button button--danger game-more__item"
+            role="menuitem"
+            data-testid="game-surrender"
+            :class="{ 'is-armed': surrenderArmed }"
+            @click="armSurrender"
+          >{{ surrenderArmed ? '确认投降（判负）' : '投降' }}</button>
+          <p class="game-more__note" data-testid="game-surrender-consequence">{{ surrenderConsequence }}</p>
+        </div>
       </div>
     </div>
 
-    <section v-if="quickChatOpen" class="game__drawer" data-testid="game-quick-chat" aria-label="局内聊天">
-      <header class="game__drawer-head">
-        <h2 class="game__panel-title">局内聊天</h2>
-        <button type="button" class="button game__action" data-testid="game-quick-chat-close" @click="quickChatOpen = false">
-          关闭
-        </button>
+    <section v-if="detailOpen && hand[selectedCardIndex]" class="game-detail" data-testid="game-card-detail" aria-label="卡牌详情">
+      <header class="game-detail__head">
+        <h2 class="game-detail__name">{{ hand[selectedCardIndex].name }}</h2>
+        <button type="button" class="game-close" data-testid="game-card-detail-close" aria-label="关闭卡牌详情" @click="cancelCardSelection">×</button>
       </header>
-      <section class="game__chat-text" data-testid="game-chat" aria-label="文字聊天">
-        <ol class="game__chat-log" data-testid="game-chat-messages" aria-live="polite">
+      <p class="game-detail__meta">{{ typeLabel(hand[selectedCardIndex]) }}</p>
+      <p class="game-detail__desc">{{ hand[selectedCardIndex].description }}</p>
+      <p v-if="cardDisabled(hand[selectedCardIndex])" class="game-detail__reason" data-testid="game-card-detail-reason">
+        {{ cardDisabled(hand[selectedCardIndex]) }}
+      </p>
+      <div class="game-detail__actions">
+        <button type="button" class="button game-detail__use" data-testid="game-card-detail-use" :disabled="!!cardDisabled(hand[selectedCardIndex])" @click="useSelectedCard">使用此卡</button>
+        <button type="button" class="button button--ghost" data-testid="game-card-detail-cancel" @click="cancelCardSelection">取消选择</button>
+      </div>
+    </section>
+
+    <section v-if="selection" class="game-target" data-testid="game-target" aria-label="目标选择" role="region">
+      <div class="game-target__main">
+        <h2 class="game-target__title" data-testid="game-target-title">{{ targetTitle }}</h2>
+        <p class="game-target__hint" data-testid="game-target-hint">{{ targetHint }}</p>
+        <p class="game-target__selected" data-testid="game-target-selected">已选：{{ pickCountText }}</p>
+        <p v-if="selection.error" class="game-target__error" data-testid="game-target-error" role="alert">{{ selection.error }}</p>
+      </div>
+      <div class="game-target__controls">
+        <div v-if="selection.descriptor.kind === 'line'" class="game-target__row">
+          <button type="button" class="button game-target__option" :class="{ 'game__action--active': selection.lineDir === 'row' }" data-testid="game-target-line-row" @click="setLineDir('row')">整行</button>
+          <button type="button" class="button game-target__option" :class="{ 'game__action--active': selection.lineDir === 'col' }" data-testid="game-target-line-col" @click="setLineDir('col')">整列</button>
+        </div>
+        <div v-if="selection.descriptor.kind === 'shenwei'" class="game-target__row">
+          <button type="button" class="button game-target__option" :class="{ 'game__action--active': selection.board === 'self' }" data-testid="game-target-board-self" @click="setBoardSide('self')">我的棋盘</button>
+          <button type="button" class="button game-target__option" :class="{ 'game__action--active': selection.board === 'opponent' }" data-testid="game-target-board-opponent" @click="setBoardSide('opponent')">对手棋盘</button>
+        </div>
+        <div v-if="selection.descriptor.kind === 'own_ships'" class="game-target__row">
+          <button type="button" class="button game-target__option" :class="{ 'game__action--active': selection.effectChoice === 1 }" data-testid="game-target-effect-destroy" @click="setEffectChoice(1)">摧毁对方一艘战舰</button>
+          <button type="button" class="button game-target__option" :class="{ 'game__action--active': selection.effectChoice === 2 }" data-testid="game-target-effect-skip" @click="setEffectChoice(2)">跳过对方本回合</button>
+        </div>
+        <div class="game-target__row">
+          <button
+            type="button"
+            class="button game-target__confirm"
+            :class="{ 'is-disabled': !canConfirm }"
+            data-testid="game-target-confirm"
+            :aria-disabled="!canConfirm"
+            @click="confirmSelection"
+          >确认使用</button>
+          <button type="button" class="button button--ghost" data-testid="game-target-cancel" @click="cancelSelection">取消</button>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="chainList.length || chainWindow" class="game-chain-panel" data-testid="game-chain-overlay" role="dialog" aria-label="连锁">
+      <header class="game-chain-panel__head">
+        <h2 class="game-chain-panel__title">连锁 {{ chainOrderText }}</h2>
+        <button type="button" class="game-close" data-testid="game-chain-close" aria-label="收起连锁" @click="match.closeChainWindow()">×</button>
+      </header>
+      <ol v-if="chainList.length" class="game-chain-stack" data-testid="game-chain-stack">
+        <li
+          v-for="(item, index) in chainList"
+          :key="'chain-' + index"
+          class="game-chain-item"
+          :class="{ 'game-chain-item--negated': item.negated }"
+          :data-testid="'game-chain-item-' + index"
+        >
+          <b :data-testid="'game-chain-item-' + index + '-name'">{{ item.name }}</b>
+          <span class="game-chain-index">第 {{ index + 1 }} 张</span>
+          <span v-if="item.negated" class="game-chain-negated">已无效</span>
+        </li>
+      </ol>
+      <section v-if="chainWindow" class="game-chain-window" data-testid="game-chain-window">
+        <p class="game-chain-window__who">
+          出牌者：<b data-testid="game-chain-window-caster">{{ chainWindow.caster === state.player_id ? selfName : opponentName }}</b>
+        </p>
+        <p class="game-chain-window__card">
+          对方使用了
+          <b data-testid="game-chain-window-card">{{ chainWindow.card ? chainWindow.card.name : '魔法卡' }}</b>
+          ，你可以用速阶 3 的卡连锁它。
+        </p>
+        <div class="game-chain-clock">
+          <div
+            class="game-chain-ring"
+            :style="{ '--chain-progress': String(chainProgress) }"
+            aria-hidden="true"
+          ></div>
+          <p class="game-chain-countdown" data-testid="game-chain-window-countdown">剩余 {{ chainRemaining }} 秒</p>
+        </div>
+        <p class="game-chain-window__consequence" data-testid="game-chain-window-consequence">
+          不响应：对方的卡直接生效，你放弃这次连锁机会（这一手不会退回来）。
+        </p>
+        <div class="game-chain-window__actions">
+          <button
+            v-for="(card, index) in speed3Hand"
+            :key="chainCardTestId(card, index, speed3Hand)"
+            type="button"
+            class="button"
+            :data-testid="chainCardTestId(card, index, speed3Hand)"
+            @click="respondChain(card)"
+          >连锁「{{ card.name }}」</button>
+          <button type="button" class="button button--ghost" data-testid="game-chain-pass" @click="passChain">不响应</button>
+        </div>
+      </section>
+    </section>
+
+    <section v-if="shieldOpen" class="game-dialog game-shield-choice" data-testid="game-shield-choice" role="dialog" aria-label="仁王之盾选择">
+      <h2 class="game-dialog__title" data-testid="game-shield-choice-title">「仁王之盾」：请选择要保护的战舰</h2>
+      <p class="game-dialog__hint" data-testid="game-shield-choice-hint">在自己海域点击高亮的战舰格；再点一次取消选择。</p>
+      <p class="game-dialog__hint" data-testid="game-shield-choice-count">已选 {{ shieldPicks.length }} / 3 艘</p>
+      <p v-if="shieldError" class="game-dialog__error" data-testid="game-shield-choice-error">{{ shieldError }}</p>
+      <p class="game-dialog__hint" data-testid="game-shield-choice-status">服务端没有选择倒计时；点「取消选择」可放弃本次加盾。</p>
+      <div class="game-dialog__actions">
+        <button type="button" class="button" data-testid="game-shield-choice-confirm" :disabled="shieldPicks.length === 0" @click="confirmShieldChoice">确认加盾</button>
+        <button type="button" class="button button--ghost" data-testid="game-shield-choice-cancel" @click="cancelShieldChoice">取消选择</button>
+      </div>
+    </section>
+
+    <section v-if="match.pickRequest" class="game-dialog game-pick" data-testid="game-ship-pick" role="alertdialog" aria-label="选船">
+      <h2 class="game-dialog__title">请选择一艘自己的战舰</h2>
+      <p class="game-dialog__hint" data-testid="game-ship-pick-message">{{ match.pickRequest.message }}</p>
+      <p class="game-dialog__hint">在自己海域点击高亮的战舰格子。</p>
+    </section>
+
+
+    <section v-if="logOpen" class="game-drawer game-drawer--log" data-testid="game-log-drawer" role="dialog" aria-label="对局日志">
+      <header class="game-drawer__head">
+        <h2 class="game-drawer__title">对局日志</h2>
+        <button type="button" class="game-close" data-testid="game-log-drawer-close" aria-label="关闭日志" @click="logOpen = false">×</button>
+      </header>
+      <p v-if="!logs.length" class="game-drawer__empty" data-testid="game-log-empty">暂无记录</p>
+      <ol v-else class="game-log" data-testid="game-log">
+        <li v-for="(entry, index) in logs" :key="'log-' + index" class="game-log__entry" :data-testid="'game-log-entry-' + index">
+          {{ entry.text }}
+        </li>
+      </ol>
+    </section>
+
+    <section v-if="quickChatOpen" class="game-drawer game-drawer--chat" data-testid="game-quick-chat" aria-label="局内聊天">
+      <header class="game-drawer__head">
+        <h2 class="game-drawer__title">局内聊天</h2>
+        <button type="button" class="game-close" data-testid="game-quick-chat-close" aria-label="关闭聊天" @click="quickChatOpen = false">×</button>
+      </header>
+      <section class="game-chat-text" data-testid="game-chat" aria-label="文字聊天">
+        <ol class="game-chat-log" data-testid="game-chat-messages" aria-live="polite">
           <li
             v-for="(message, index) in chatMessages"
             :key="'chat-' + index"
-            class="game__chat-line"
-            :class="{ 'game__chat-line--mine': message.username === selfName }"
+            class="game-chat-line"
+            :class="{ 'game-chat-line--mine': message.username === selfName }"
             :data-testid="'game-chat-message-' + index"
           >
             <b>{{ message.username }}</b>：{{ message.message }}
           </li>
         </ol>
-        <p v-if="!chatMessages.length" class="game__panel-empty" data-testid="game-chat-empty">还没有人说话</p>
-        <p v-if="chatError" class="game__target-error" data-testid="game-chat-error">{{ chatError }}</p>
-        <div class="game__chat-form">
+        <p v-if="!chatMessages.length" class="game-drawer__empty" data-testid="game-chat-empty">还没有人说话</p>
+        <p v-if="chatError" class="game-dialog__error" data-testid="game-chat-error">{{ chatError }}</p>
+        <div class="game-chat-form">
           <input
             v-model="chatDraft"
-            class="game__chat-input"
+            class="game-chat-input"
             type="text"
             :maxlength="CHAT_MAX_LENGTH"
             placeholder="说点什么…"
@@ -1093,206 +1586,38 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
             data-testid="game-chat-input"
             @keydown.enter.prevent="sendChat"
           />
-          <button type="button" class="button game__action" data-testid="game-chat-send" @click="sendChat">
-            发送
-          </button>
+          <button type="button" class="button" data-testid="game-chat-send" @click="sendChat">发送</button>
         </div>
       </section>
-      <h3 class="game__panel-title">快捷语</h3>
-      <ul class="game__chat-items">
+      <h3 class="game-drawer__subtitle">快捷语</h3>
+      <ul class="game-chat-items">
         <li v-for="item in quickChatCatalog" :key="item.id">
-          <button
-            type="button"
-            class="button game__chat-item"
-            :data-testid="'game-quick-chat-item-' + item.id"
-            @click="sendQuickChat(item)"
-          >
-            {{ item.text }}
-          </button>
+          <button type="button" class="button button--ghost game-chat-item" :data-testid="'game-quick-chat-item-' + item.id" @click="sendQuickChat(item)">{{ item.text }}</button>
         </li>
       </ul>
-      <p v-if="!quickChatCatalog.length" class="game__panel-empty">快捷语目录暂不可用</p>
-      <ol class="game__chat-log" data-testid="game-quick-chat-messages">
-        <li
-          v-for="(message, index) in quickChatMessages"
-          :key="'qc-' + index"
-          class="game__chat-message"
-          :data-testid="'game-quick-chat-message-' + index"
-        >
+      <p v-if="!quickChatCatalog.length" class="game-drawer__empty">快捷语目录暂不可用</p>
+      <ol class="game-chat-log" data-testid="game-quick-chat-messages">
+        <li v-for="(message, index) in quickChatMessages" :key="'qc-' + index" class="game-chat-line" :data-testid="'game-quick-chat-message-' + index">
           <b>{{ message.name }}</b>：{{ message.text }}
         </li>
       </ol>
     </section>
 
-    <section v-if="selection" class="game__target" data-testid="game-target" aria-label="目标选择">
-      <h2 class="game__panel-title" data-testid="game-target-title">{{ targetTitle }}</h2>
-      <p class="game__target-hint" data-testid="game-target-hint">{{ targetHint }}</p>
-      <p class="game__target-selected" data-testid="game-target-selected">已选：{{ pickCountText }}</p>
-      <p v-if="selection.error" class="game__target-error" data-testid="game-target-error">{{ selection.error }}</p>
-      <div v-if="selection.descriptor.kind === 'line'" class="game__target-row">
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-target-line-row"
-          :class="{ 'game__action--active': selection.lineDir === 'row' }"
-          @click="setLineDir('row')"
-        >
-          整行
-        </button>
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-target-line-col"
-          :class="{ 'game__action--active': selection.lineDir === 'col' }"
-          @click="setLineDir('col')"
-        >
-          整列
-        </button>
-      </div>
-      <div v-if="selection.descriptor.kind === 'shenwei'" class="game__target-row">
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-target-board-self"
-          :class="{ 'game__action--active': selection.board === 'self' }"
-          @click="setBoardSide('self')"
-        >
-          我的棋盘
-        </button>
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-target-board-opponent"
-          :class="{ 'game__action--active': selection.board === 'opponent' }"
-          @click="setBoardSide('opponent')"
-        >
-          对手棋盘
-        </button>
-      </div>
-      <div v-if="selection.descriptor.kind === 'own_ships'" class="game__target-row">
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-target-effect-destroy"
-          :class="{ 'game__action--active': selection.effectChoice === 1 }"
-          @click="setEffectChoice(1)"
-        >
-          摧毁对方一艘战舰
-        </button>
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-target-effect-skip"
-          :class="{ 'game__action--active': selection.effectChoice === 2 }"
-          @click="setEffectChoice(2)"
-        >
-          跳过对方本回合
-        </button>
-      </div>
-      <div class="game__target-row">
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-target-confirm"
-          :disabled="!canConfirm"
-          @click="confirmSelection"
-        >
-          确认使用
-        </button>
-        <button type="button" class="button game__action" data-testid="game-target-cancel" @click="cancelSelection">
-          取消
-        </button>
-      </div>
+    <section v-if="discardOpen" class="game-drawer game-drawer--discard" data-testid="game-discard-drawer" role="dialog" aria-label="弃牌堆">
+      <header class="game-drawer__head">
+        <h2 class="game-drawer__title">弃牌堆</h2>
+        <button type="button" class="game-close" data-testid="game-discard-close" aria-label="关闭弃牌堆" @click="discardOpen = false">×</button>
+      </header>
+      <p v-if="discardLoading" class="game-drawer__empty">正在读取弃牌堆…</p>
+      <p v-if="discardError" class="game-dialog__error" data-testid="game-discard-error">{{ discardError }}</p>
+      <p v-if="!discardLoading && !discardCards.length && !discardError" class="game-drawer__empty" data-testid="game-discard-empty">弃牌堆还是空的</p>
+      <ul class="game-discard-list" data-testid="game-discard-list">
+        <li v-for="(card, index) in discardCards" :key="'discard-' + index" class="game-discard-item" :data-testid="'game-discard-item-' + index">
+          {{ card.name }}
+        </li>
+      </ul>
+      <p class="game-drawer__empty">牌堆剩余数量服务端没有下发，这里只显示已经进弃牌堆的卡，不猜数字。</p>
     </section>
-
-    <section
-      v-if="shieldOpen"
-      class="game__target game__shield-choice"
-      data-testid="game-shield-choice"
-      role="dialog"
-      aria-label="仁王之盾选择"
-    >
-      <h2 class="game__panel-title" data-testid="game-shield-choice-title">「仁王之盾」：请选择要保护的战舰</h2>
-      <p class="game__target-hint" data-testid="game-shield-choice-hint">
-        在自己海域点击高亮的战舰格；再点一次取消选择。
-      </p>
-      <p class="game__target-selected" data-testid="game-shield-choice-count">
-        已选 {{ shieldPicks.length }} / 3 艘
-      </p>
-      <p v-if="shieldError" class="game__target-error" data-testid="game-shield-choice-error">{{ shieldError }}</p>
-      <p class="game__target-hint" data-testid="game-shield-choice-status">
-        服务端没有选择倒计时；点「取消选择」可放弃本次加盾。
-      </p>
-      <div class="game__target-row">
-        <button
-          type="button"
-          class="button game__action"
-          data-testid="game-shield-choice-confirm"
-          :disabled="shieldPicks.length === 0"
-          @click="confirmShieldChoice"
-        >
-          确认加盾
-        </button>
-        <button type="button" class="button game__action" data-testid="game-shield-choice-cancel" @click="cancelShieldChoice">
-          取消选择
-        </button>
-      </div>
-    </section>
-
-    <section v-if="chainWindow" class="game__chain-window" data-testid="game-chain-window" role="alertdialog" aria-label="连锁响应">
-      <h2 class="game__panel-title">连锁响应窗口</h2>
-      <p class="game__target-hint">
-        对方使用了
-        <b data-testid="game-chain-window-card">{{ chainWindow.card ? chainWindow.card.name : '魔法卡' }}</b>
-        ，你可以用速阶 3 的卡连锁它。
-      </p>
-      <p class="game__chain-countdown" data-testid="game-chain-window-countdown">剩余 {{ chainRemaining }} 秒</p>
-      <div class="game__target-row">
-        <button
-          v-for="(card, index) in speed3Hand"
-          :key="chainCardTestId(card, index, speed3Hand)"
-          type="button"
-          class="button game__action"
-          :data-testid="chainCardTestId(card, index, speed3Hand)"
-          @click="respondChain(card)"
-        >
-          连锁「{{ card.name }}」
-        </button>
-        <button type="button" class="button game__action" data-testid="game-chain-pass" @click="passChain">
-          不响应
-        </button>
-      </div>
-    </section>
-
-    <section v-if="match.pickRequest" class="game__pick" data-testid="game-ship-pick" role="alertdialog" aria-label="选船">
-      <h2 class="game__panel-title">请选择一艘自己的战舰</h2>
-      <p class="game__target-hint" data-testid="game-ship-pick-message">{{ match.pickRequest.message }}</p>
-      <p class="game__panel-empty">在自己海域点击高亮的战舰格子。</p>
-    </section>
-
-    <p v-if="pendingPick && !match.pickRequest" class="game__banner" data-testid="game-pending-pick">
-      待处理：{{ pendingPick.message }}
-    </p>
-    <p v-if="state.priority_waiting" class="game__banner" data-testid="game-priority-waiting">
-      等待对方响应「{{ state.priority_waiting.action_text }}」
-    </p>
-    <p v-if="state.shenji_waiting" class="game__banner" data-testid="game-shenji-waiting">
-      {{ state.shenji_waiting.text }}
-    </p>
-
-    <p v-if="noticeText" class="game__notice-text" data-testid="game-card-hint">{{ noticeText }}</p>
-
-    <ul v-if="notices.length" class="game__notices" data-testid="game-notices" aria-live="polite">
-      <li
-        v-for="notice in notices"
-        :key="notice.id"
-        class="game__notice"
-        :class="'game__notice--' + notice.kind"
-        :data-testid="'game-notice-' + notice.id"
-      >
-        {{ notice.text }}
-      </li>
-    </ul>
   </section>
 </template>
 

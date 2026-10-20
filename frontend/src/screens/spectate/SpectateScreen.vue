@@ -203,6 +203,24 @@ function leaveScreen(): void {
 function startOver(): void {
   void router.push({ name: 'lobby' })
 }
+
+/**
+ * Ticket #48: phones show one board with a viewpoint tab; desktops keep both
+ * boards side by side. The hidden board stays mounted (display: none) so the
+ * spectator snapshot and the sentinel cells are unchanged.
+ */
+const view = ref<SeatLabel>('p1')
+/** A guest is refused by the server ("观战需要先登录"); that is a login CTA. */
+const loginRequired = computed(() => store.phase === 'error' && /登录/.test(store.error))
+const authRequested = ref(false)
+
+function requestLogin(): void {
+  authRequested.value = true
+  // #44 owns the login overlay; this is the agreed cross-ticket entry point.
+  window.dispatchEvent(
+    new CustomEvent('bs:auth-required', { detail: { reason: '观战需要先登录' } }),
+  )
+}
 </script>
 
 <template>
@@ -226,9 +244,23 @@ function startOver(): void {
     </section>
 
     <section v-else-if="store.phase === 'error'" class="spectate__notice spectate__notice--error" data-testid="spectate-error" role="alert">
-      <h2>进不去这一局</h2>
+      <h2>{{ loginRequired ? '登录后可以观战' : '进不去这一局' }}</h2>
       <p>{{ store.error }}</p>
-      <button type="button" class="button" data-testid="spectate-leave" @click="startOver">返回大厅</button>
+      <div class="spectate__notice-actions">
+        <button
+          v-if="loginRequired"
+          type="button"
+          class="button"
+          data-testid="spectate-login"
+          @click="requestLogin"
+        >
+          去登录
+        </button>
+        <button type="button" class="button" data-testid="spectate-leave" @click="startOver">返回大厅</button>
+      </div>
+      <p v-if="authRequested" class="spectate__muted" data-testid="spectate-login-requested" role="status">
+        已打开登录入口。
+      </p>
     </section>
 
     <template v-else-if="joined && hasSnapshot">
@@ -244,8 +276,37 @@ function startOver(): void {
 
       <div class="spectate__body">
         <div class="spectate__main">
+          <div class="spectate__views" role="tablist" aria-label="观战视角">
+            <button
+              type="button"
+              class="spectate__view"
+              :class="{ 'is-active': view === 'p1' }"
+              :aria-selected="view === 'p1' ? 'true' : 'false'"
+              data-testid="spectate-view-p1"
+              @click="view = 'p1'"
+            >
+              {{ nameOf('p1') }} 的棋盘
+            </button>
+            <button
+              type="button"
+              class="spectate__view"
+              :class="{ 'is-active': view === 'p2' }"
+              :aria-selected="view === 'p2' ? 'true' : 'false'"
+              data-testid="spectate-view-p2"
+              @click="view = 'p2'"
+            >
+              {{ nameOf('p2') }} 的棋盘
+            </button>
+          </div>
+
           <div class="spectate__boards">
-            <div v-for="side in SIDES" :key="'board-' + side" class="spectate__board-wrap">
+            <div
+              v-for="side in SIDES"
+              :key="'board-' + side"
+              class="spectate__board-wrap"
+              :class="{ 'is-inactive': side !== view }"
+              :data-active="side === view ? 'true' : 'false'"
+            >
               <h2 class="spectate__board-title" :data-testid="'spectate-board-title-' + side">{{ boardTitle(side) }}</h2>
               <p class="spectate__board-meta">
                 <span :data-testid="'spectate-name-' + side">{{ nameOf(side) }}</span>
@@ -462,6 +523,51 @@ function startOver(): void {
   display: grid;
   gap: 20px;
   margin-top: 45px;
+}
+
+.spectate__notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Phones (<900px): one board + a viewpoint tab, never two stacked boards. */
+.spectate__views {
+  display: none;
+  gap: 6px;
+}
+
+.spectate__view {
+  padding: 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.spectate__view.is-active {
+  border-color: var(--accent-strong);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+@media (max-width: 899px) {
+  .spectate__views {
+    display: flex;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+
+  .spectate__boards {
+    margin-top: 8px;
+  }
+
+  .spectate__board-wrap.is-inactive {
+    display: none;
+  }
 }
 
 .spectate__board-wrap {

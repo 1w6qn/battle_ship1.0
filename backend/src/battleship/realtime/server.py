@@ -67,7 +67,9 @@ def create_socket_server(
 ) -> socketio.AsyncServer:
     presence = presence or (rooms.presence if rooms is not None else None)
     presence = presence or PresenceService()
-    rooms = rooms or RoomService(presence=presence)
+    rooms = rooms or RoomService(
+        presence=presence, turn_timeout_seconds=settings.turn_timeout_seconds
+    )
     lobby = lobby or LobbyService(rooms, presence)
     # Without a database nobody may be watched: unknown (None) fails closed.
     spectators = spectators or SpectatorService(rooms)

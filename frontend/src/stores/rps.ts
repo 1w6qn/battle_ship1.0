@@ -27,6 +27,10 @@ export const useRpsStore = defineStore('rps', () => {
   const waiting = ref(false)
   const countdown = ref(0)
   const error = ref('')
+  // Opponent seat state (contract #43); known only after a room_sync frame.
+  const opponentReady = ref(false)
+  const opponentOnline = ref(false)
+  const opponentStateKnown = ref(false)
 
   let ackTimeoutMs = DEFAULT_ACK_TIMEOUT_MS
   let tickMs = DEFAULT_TICK_MS
@@ -97,6 +101,18 @@ export const useRpsStore = defineStore('rps', () => {
     error.value = message
   }
 
+  function adoptOpponentState(payload: Record<string, unknown> | null | undefined): void {
+    if (!payload || typeof payload !== 'object') return
+    if (typeof payload.opponent_ready === 'boolean') {
+      opponentReady.value = payload.opponent_ready
+      opponentStateKnown.value = true
+    }
+    if (typeof payload.opponent_online === 'boolean') {
+      opponentOnline.value = payload.opponent_online
+      opponentStateKnown.value = true
+    }
+  }
+
   /** External browser gate only: shrink the ack wait so the timeout is testable. */
   function configureAckTiming(options: AckTiming = {}): void {
     if (typeof options.ackTimeoutMs === 'number' && options.ackTimeoutMs > 0) {
@@ -112,6 +128,9 @@ export const useRpsStore = defineStore('rps', () => {
     waiting.value = false
     countdown.value = 0
     error.value = ''
+    opponentReady.value = false
+    opponentOnline.value = false
+    opponentStateKnown.value = false
   }
 
   return {
@@ -120,11 +139,15 @@ export const useRpsStore = defineStore('rps', () => {
     waiting,
     countdown,
     error,
+    opponentReady,
+    opponentOnline,
+    opponentStateKnown,
     resetForEntry,
     beginChoice,
     settleAck,
     applyResult,
     noteNotice,
+    adoptOpponentState,
     configureAckTiming,
     reset,
   }

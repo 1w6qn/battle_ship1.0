@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import AppOverlay from './AppOverlay.vue'
 import { cardArtUrl } from '../cards/cardArt'
 import { CARDS, cardsBySpeed, cardsByType, type CardInfo } from '../cards/cardData'
 
@@ -17,6 +18,8 @@ import { CARDS, cardsBySpeed, cardsByType, type CardInfo } from '../cards/cardDa
  * keeps the gate deterministic (an IntersectionObserver alone could leave a
  * headless browser waiting forever).
  */
+const props = defineProps<{ returnFocus?: () => HTMLElement | null }>()
+
 const emit = defineEmits<{ (event: 'close'): void }>()
 
 type Mode = 'speed' | 'type'
@@ -101,14 +104,12 @@ function close(): void {
 </script>
 
 <template>
-  <div
-    class="collection"
-    data-testid="collection-overlay"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="collection-title"
-    tabindex="-1"
-    @keydown.esc="close"
+  <AppOverlay
+    id="collection-overlay"
+    :priority="50"
+    labelledby="collection-title"
+    :return-focus="props.returnFocus"
+    @close="close"
   >
     <div class="collection__panel">
       <header class="collection__head">
@@ -213,31 +214,20 @@ function close(): void {
         <p v-else class="collection__done" data-testid="collection-done">已加载全部 {{ total }} 张卡牌。</p>
       </footer>
     </div>
-  </div>
+  </AppOverlay>
 </template>
 
 <style scoped>
-.collection {
-  position: fixed;
-  inset: 0;
-  z-index: 55;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: rgba(4, 7, 18, 0.82);
-  backdrop-filter: blur(2px);
-}
-
 .collection__panel {
   display: flex;
   flex-direction: column;
   width: min(1120px, 100%);
-  max-height: 92vh;
+  max-height: 88vh;
   padding: 18px 20px;
-  border: 1px solid var(--panel-line, #4b3f7a);
-  border-radius: var(--radius, 14px);
-  background: var(--panel, rgba(16, 20, 40, 0.96));
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-deck);
+  color: var(--text-primary);
 }
 
 .collection__head {
@@ -370,6 +360,16 @@ function close(): void {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* Field magic = double border, judge magic = dashed top edge (spec §2, #52). */
+.collection-card[data-type='场地'] {
+  border-style: double;
+  border-width: 3px;
+}
+
+.collection-card[data-type='判定'] {
+  border-top: 2px dashed var(--role-action);
 }
 
 .collection-card {

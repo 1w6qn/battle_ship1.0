@@ -42,6 +42,7 @@ from ..domain.room import (
     RoomState,
     card_payload,
     rank_payload,
+    turn_timing,
 )
 from ..infra.logging import get_logger
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
@@ -84,6 +85,17 @@ class GameplayService:
     ) -> None:
         self.rooms = rooms
         self.turn_timeout_seconds = int(turn_timeout_seconds)
+        # Ticket #52: no post-hoc stamping. The composition root already injected
+        # the timeout into RoomService (one source for the reconnect snapshot);
+        # here we only fail fast if the two wiring points disagree.
+        configured = self.rooms.turn_timeout_seconds
+        if configured is not None and int(configured) != self.turn_timeout_seconds:
+            raise ValueError(
+                "turn timeout mismatch: RoomService has "
+                + str(configured)
+                + " but GameplayService was built with "
+                + str(self.turn_timeout_seconds)
+            )
         self.tick_seconds = float(tick_seconds)
         self.draw_hook = draw_hook
         self.fire_hook = fire_hook
@@ -213,6 +225,11 @@ class GameplayService:
 
         self._touch_turn(room, player_id)
 
+    def _turn_timing(self, room: Room) -> dict[str, int | None]:
+        """The countdown payload shared by every turn-starting frame."""
+
+        return turn_timing(room, self.turn_timeout_seconds)
+
     @staticmethod
     async def _maybe_await(value: Any) -> Any:
         if inspect.isawaitable(value):
@@ -292,6 +309,9 @@ class GameplayService:
             actor,
         )
         self._touch_turn(room, player_id)
+        # Ticket #51: the opponent's placement screen learns "already placed"
+        # from the same authoritative snapshot (no new event, no new field).
+        await self.rooms.push_room_sync(room)
         return {"status": "success"}
 
     async def cancel_placement(self, connection: Connection,
@@ -305,13 +325,16 @@ class GameplayService:
         if not pending or pending.get("caster") != player_id:
             return dict(NO_PENDING_PLACEMENT)
         if self.magic is not None:
-            return await self.magic.cancel_placement(room, player_id)
+            result = await self.magic.cancel_placement(room, player_id)
+            await self.rooms.push_room_sync(room)
+            return result
         room.magic_temp_data.pop("pending_placement", None)
         player = room.players.get(player_id)
         if player is not None and player.socket_id:
             await self._publisher.emit(
                 "message", {"text": "已放弃剩余放置"}, to=player.socket_id
             )
+        await self.rooms.push_room_sync(room)
         return {"status": "success"}
 
     async def _complete_reset_placement(self, room: Room, player_id: str) -> bool:
@@ -327,6 +350,8 @@ class GameplayService:
                 "player": player_id,
                 "round": room.round,
             }
+            # Start the clock before the frame that advertises its deadline.
+            self._start_timer(room)
             await self._publisher.emit(
                 "game_message",
                 {"message": "回光返照：棋盘已重摆，本回合无法攻击（攻击次数为 0）"},
@@ -341,10 +366,10 @@ class GameplayService:
                     "attacks_remaining": room.attacks_remaining,
                     "round": room.round,
                     **rank_payload(room),
+                    **self._turn_timing(room),
                 },
                 room=room.id,
             )
-            self._start_timer(room)
             return True
 
         if getattr(room, "lingqi_resurgence_applied", False):
@@ -368,6 +393,7 @@ class GameplayService:
             if getattr(room, "polar_reversal_applied", False):
                 room.polar_reversal_applied = False
                 room.attacks_remaining = 0
+            self._start_timer(room)
             await self._publisher.emit(
                 "game_message",
                 {"message": "双方已重新摆放战舰，继续当前回合", "type": "info"},
@@ -382,10 +408,10 @@ class GameplayService:
                     "attacks_remaining": room.attacks_remaining,
                     "round": room.round,
                     **rank_payload(room),
+                    **self._turn_timing(room),
                 },
                 room=room.id,
             )
-            self._start_timer(room)
             return True
 
         return False
@@ -429,6 +455,10 @@ class GameplayService:
                     delattr(room, "test_ai_rps_choice")
 
         room.rps_choices[player_id] = choice
+        if len(room.rps_choices) < len(room.players):
+            # Ticket #51: the waiting seat sees "opponent has chosen" live via
+            # room_sync.rps_choices instead of only after a rejoin.
+            await self.rooms.push_room_sync(room)
 
         if len(room.rps_choices) == len(room.players) and not room.rps_processed:
             room.rps_processed = True
@@ -438,6 +468,9 @@ class GameplayService:
             if outcome.status == "tie" or len(outcome.order) < 2:
                 room.rps_choices = {}
                 room.rps_processed = False
+                # A tie clears both choices: push the reset so neither screen
+                # keeps showing the other side as "already chosen".
+                await self.rooms.push_room_sync(room)
                 return {"status": "success", "message": "平局，重新猜拳"}
 
             room.attack_order = list(outcome.order)
@@ -498,6 +531,7 @@ class GameplayService:
                     "round": room.round,
                     "attack_order": list(room.attack_order),
                     **rank_payload(room),
+                    **self._turn_timing(room),
                 },
                 room=room.id,
             )
@@ -646,6 +680,7 @@ class GameplayService:
                         "game_over": True,
                         "winner": outcome.get("winner"),
                     }
+            self._start_timer(room)
             await hooks.emit(
                 room,
                 hooks.ROUND_START,
@@ -657,10 +692,10 @@ class GameplayService:
                     "state": RoomState.ROCK_PAPER_SCISSORS.value,
                     "round": room.round,
                     **rank_payload(room),
+                    **self._turn_timing(room),
                 },
                 room=room.id,
             )
-            self._start_timer(room)
             return {"status": "success", "new_round": True}
 
         if self.turn_start_hook is not None:
@@ -681,16 +716,19 @@ class GameplayService:
             },
         )
         await self._emit_phase(room)
+        # Start the next seat's clock before the frame goes out: the frame
+        # carries the same anchor the watchdog will compare against.
+        self._start_timer(room)
         await self._publisher.emit(
             "turn_change",
             {
                 "current_attacker": room.current_attacker,
                 "attacks_remaining": room.attacks_remaining,
                 "phase": _phase_value(room),
+                **self._turn_timing(room),
             },
             room=room.id,
         )
-        self._start_timer(room)
         return {"status": "success"}
 
     async def end_turn(self, connection: Connection,

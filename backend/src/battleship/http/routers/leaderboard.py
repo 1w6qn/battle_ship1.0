@@ -5,7 +5,7 @@ Both are public reads with the frozen legacy shapes:
 * `/api/leaderboard` -> a bare array of accounts that have actually played,
   ordered wins DESC then longest_streak DESC, with name style and level
   projected from the progression module;
-* `/api/ranked_leaderboard` -> `{leaderboard, total, constants}`; only accounts
+* `/api/ranked_leaderboard` -> `{leaderboard, total, constants, my_rank}`; only accounts
   with a `user_rank` row appear (a never-played account must not fill the tail
   with "二级水手Ⅰ 0分"), `position` is the full-server position, and every row's
   rank view comes from `domain.progression.ranks` -- the client never
@@ -14,11 +14,12 @@ Both are public reads with the frozen legacy shapes:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from ...domain.progression import leveling, profile_spec, ranks
 from ...services.progression import ProgressionService
+from ..deps import get_current_user_id
 
 router = APIRouter(tags=["leaderboard"])
 
@@ -61,7 +62,10 @@ def wins_leaderboard(request: Request):
 
 
 @router.get("/api/ranked_leaderboard")
-def ranked_leaderboard(request: Request):
+def ranked_leaderboard(
+    request: Request,
+    user_id: str | None = Depends(get_current_user_id),
+):
     limit = max(1, min(_int(request.query_params.get("limit"), 100), 200))
     offset = max(0, _int(request.query_params.get("offset"), 0))
 
@@ -69,6 +73,9 @@ def ranked_leaderboard(request: Request):
     service = ProgressionService(database)
     with database.unit_of_work() as uow:
         rows = uow.stats.rank_leaderboard(limit=limit, offset=offset)
+        # Ticket #43: the viewer's full-server position (1-based); 0 means the
+        # account has no rank row yet, which the contract reports as null.
+        my_rank = (uow.stats.rank_position(user_id) or None) if user_id else None
         briefs = uow.users.list_by_ids(
             [str(row.get("user_id") or "") for row in rows]
         )
@@ -110,4 +117,5 @@ def ranked_leaderboard(request: Request):
         "leaderboard": leaderboard,
         "total": int(total),
         "constants": ranks.constants(),
+        "my_rank": my_rank,
     })

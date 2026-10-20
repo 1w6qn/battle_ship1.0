@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from ..contracts import errors as socket_errors
 from ..contracts.identity import (
     IdentityClaim,
     SeatIdentity,
@@ -41,6 +42,7 @@ from ..domain.room import (
     card_payload,
     new_room_id,
     opponent_of,
+    opponent_seat_state,
     rank_payload,
     room_kind,
     seat_label,
@@ -114,6 +116,7 @@ class RoomService:
         waiting_room_ttl_seconds: float = WAITING_ROOM_TTL_SECONDS,
         presence: PresenceService | None = None,
         capability_gate: Callable[[str | None, str], str] | None = None,
+        turn_timeout_seconds: int | None = None,
     ) -> None:
         self.rooms: dict[str, Room] = {}
         self.match_queue: list[dict[str, Any]] = []
@@ -129,6 +132,15 @@ class RoomService:
         # room service does not depend on the auth service and unit callers keep
         # working without a database (None = nobody is banned).
         self.capability_gate = capability_gate
+        # Ticket #52: the countdown in the reconnect snapshot is derived from this
+        # one configured timeout plus the room's own watchdog anchor. The
+        # composition root injects it here exactly once (main.py / realtime
+        # server); None means "this instance has no watchdog" for unit-style
+        # callers, and the snapshot then reports no deadline instead of a
+        # second, implicit zero.
+        self.turn_timeout_seconds: int | None = (
+            None if turn_timeout_seconds is None else max(0, int(turn_timeout_seconds))
+        )
         self._publisher: EventPublisher = NullPublisher()
         self._tasks: set[asyncio.Task] = set()
         # Ticket #9 wires this to BattleService.settle_forfeit; without it the
@@ -265,7 +277,11 @@ class RoomService:
         denied = self._capability_denied(connection, capability)
         if not denied:
             return None
-        await self._publisher.emit("error", {"message": denied}, to=connection.sid)
+        await self._publisher.emit(
+            "error",
+            socket_errors.error_detail(socket_errors.OPERATION_FAILED, denied),
+            to=connection.sid,
+        )
         return {"status": "error", "message": denied}
 
     async def create_room(self, connection: Connection, data: dict[str, Any] | None) -> dict:
@@ -343,7 +359,11 @@ class RoomService:
 
         room = self.get_room(room_id)
         if room is None:
-            await self._publisher.emit("error", {"message": "房间不存在"}, to=connection.sid)
+            await self._publisher.emit(
+                "error",
+                socket_errors.error_detail(socket_errors.ROOM_NOT_FOUND, "房间不存在"),
+                to=connection.sid,
+            )
             return {"status": "error", "message": "房间不存在"}
 
         self._drop_my_other_waiting_rooms(player_id, room.id)
@@ -369,7 +389,11 @@ class RoomService:
             }
 
         if len(room.players) >= 2:
-            await self._publisher.emit("error", {"message": "房间已满"}, to=connection.sid)
+            await self._publisher.emit(
+                "error",
+                socket_errors.error_detail(socket_errors.ROOM_FULL, "房间已满"),
+                to=connection.sid,
+            )
             return {"status": "error", "message": "房间已满"}
 
         room.players[player_id] = Player(
@@ -400,6 +424,10 @@ class RoomService:
                         "player_seat": seat_label(room, seat_id),
                         "player_name": seat.name,
                         "opponent_name": opponent.name if opponent else None,
+                        # Ticket #51: additive per-seat wait state (the room
+                        # broadcast game_state cannot carry it: the two seats'
+                        # "opponent" differ).
+                        **opponent_seat_state(room, seat_id),
                     },
                     to=seat.socket_id,
                 )
@@ -408,6 +436,10 @@ class RoomService:
             connection.sid, name=player_name, user_id=connection.user_id
         )
         self._bind_presence_game(room)
+        # Ticket #51: both seats learn the other one's ready/online state as
+        # soon as the room is full, instead of waiting for a rejoin snapshot.
+        if len(room.players) == 2:
+            await self.push_room_sync(room)
         return {
             "status": "success",
             "player_id": player_id,
@@ -507,7 +539,10 @@ class RoomService:
                 )
                 self._spawn(self._cleanup_room_after(room.id, 3))
             else:
-                await self._publisher.emit("error", {"message": "对局已结束"}, to=connection.sid)
+                payload = socket_errors.error_detail(
+                    socket_errors.GAME_OVER, "对局已结束"
+                )
+                await self._publisher.emit("error", payload, to=connection.sid)
             return {"status": "success"}
 
         seat = room.players[str(player_id)]
@@ -528,8 +563,18 @@ class RoomService:
         # the client on a stale/blank screen. The snapshot is idempotent, so it
         # is always sent on a successful rejoin.
         await self._publisher.emit(
-            "room_sync", build_room_sync(room, str(player_id)), to=connection.sid
+            "room_sync",
+            build_room_sync(
+                room,
+                str(player_id),
+                turn_timeout_seconds=self.turn_timeout_seconds or 0,
+            ),
+            to=connection.sid,
         )
+        # Ticket #51: the seat that stayed also needs the flipped
+        # `opponent_online` while the placement/RPS wait is on screen.
+        if room.state in (RoomState.PLACING_SHIPS, RoomState.ROCK_PAPER_SCISSORS):
+            await self.push_room_sync(room, skip=str(player_id))
         # A failure here must never turn a successful rejoin into an error ack;
         # the seat is already back in the room at this point.
         if self.rejoin_hook is not None:
@@ -542,6 +587,32 @@ class RoomService:
                     exc_info=error,
                 )
         return {"status": "success", "reconnected": was_reconnect}
+
+    async def push_room_sync(self, room: Room, *, skip: str | None = None) -> int:
+        """Push the authoritative snapshot to every connected seat in a room.
+
+        Ticket #51: the placement / RPS waits read the opponent's ready/online
+        state out of `room_sync`, but that frame used to arrive only on
+        enter/rejoin. Re-using the same existing event (no new protocol, no new
+        fields) keeps one source of truth: `build_room_sync` already derives
+        `opponent_ready` / `opponent_online` and `rps_choices`.
+        """
+
+        sent = 0
+        for seat_id, seat in room.players.items():
+            if not seat.socket_id or seat_id == skip:
+                continue
+            await self._publisher.emit(
+                "room_sync",
+                build_room_sync(
+                    room,
+                    str(seat_id),
+                    turn_timeout_seconds=self.turn_timeout_seconds,
+                ),
+                to=seat.socket_id,
+            )
+            sent += 1
+        return sent
 
     async def request_hand_sync(self, connection: Connection,
                                 data: dict[str, Any] | None) -> dict:
@@ -638,6 +709,10 @@ class RoomService:
                     },
                     to=other.socket_id,
                 )
+        # Ticket #51: while placement/RPS waits, the staying seat must see the
+        # opponent flip to offline without waiting for a rejoin snapshot.
+        if room.state in (RoomState.PLACING_SHIPS, RoomState.ROCK_PAPER_SCISSORS):
+            await self.push_room_sync(room, skip=player_id)
         await asyncio.sleep(self.grace_seconds)
         await self._disconnect_timeout(room_id, player_id, token)
 

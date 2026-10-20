@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from ...contracts.identity import ai_player_id
 from ..effects import EffectState
 
 BOARD_SIZE = 6
@@ -198,6 +199,58 @@ def field_magic_name(room: "Room") -> str:
 
 def rank_payload(room: "Room") -> dict[str, Any]:
     return {"ranked": bool(getattr(room, "ranked", False)), "mode": room_match_mode(room)}
+
+
+def turn_timing(room: "Room", timeout_seconds: int | None) -> dict[str, int | None]:
+    """The single derivation of the client-visible turn countdown.
+
+    The two pieces of truth are exactly the ones the watchdog compares in
+    `GameplayService.sweep_timeouts()`: the room's own anchor
+    (`turn_started_at`) and the configured timeout. Nothing else stores a
+    deadline, so the countdown the player sees cannot drift from the instant
+    the server performs its fallback action.
+
+    `turn_deadline` is null whenever no timed turn is running (placement / RPS
+    / game over / timeout disabled), which the client renders by hiding the
+    timer instead of guessing one.
+    """
+
+    timeout = max(0, int(timeout_seconds or 0))
+    state = getattr(room.state, "value", room.state)
+    started = getattr(room, "turn_started_at", None)
+    deadline: int | None = None
+    if (
+        timeout > 0
+        and state == RoomState.ATTACKING.value
+        and started is not None
+        and room.current_attacker
+        and room.turn_timer_attacker == room.current_attacker
+    ):
+        deadline = int(round((float(started) + timeout) * 1000))
+    return {"turn_deadline": deadline, "turn_timeout_seconds": timeout}
+
+
+def seat_ready(player: "Player" | None) -> bool:
+    """A seat is ready once its board is placed (placement rules, not new state)."""
+
+    return player is not None and bool(player.ships)
+
+
+def opponent_seat_state(room: "Room", player_id: str) -> dict[str, bool]:
+    """`opponent_ready` / `opponent_online` from state the room already has.
+
+    Ready = the opponent's board exists; online = a live socket is seated (an
+    AI seat is always reachable and never appears in the disconnect table).
+    """
+
+    opponent_id = opponent_of(room, player_id)
+    opponent = room.players.get(opponent_id) if opponent_id else None
+    if opponent is None:
+        return {"opponent_ready": False, "opponent_online": False}
+    online = bool(opponent.socket_id) and opponent_id not in (room.disconnected or {})
+    if room.is_ai_room and opponent_id == ai_player_id(room.id):
+        online = True
+    return {"opponent_ready": seat_ready(opponent), "opponent_online": online}
 
 
 def new_room_id() -> str:

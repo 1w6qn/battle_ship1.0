@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { acquireSettlementChannel } from '../../realtime/settlement'
+import { createAiRoom, emitFindMatch } from '../../realtime/home'
+import { acquireSettlementChannel, getSettlementSocket } from '../../realtime/settlement'
 import { useGameStore } from '../../stores/game'
+import { useHomeStore } from '../../stores/home'
 import { useResultStore } from '../../stores/result'
+import { useUiStore } from '../../stores/ui'
 import {
-  modeText,
+  aiDifficulty,
+  matchModeLabel,
+  matchModeOf,
   outcomeOf,
   progressPercent,
   readArray,
@@ -17,6 +22,7 @@ import {
   summaryText,
   toObjects,
   verdictText,
+  type MatchMode,
   type Outcome,
 } from './view'
 
@@ -31,17 +37,41 @@ import {
  */
 const router = useRouter()
 const game = useGameStore()
+const home = useHomeStore()
 const result = useResultStore()
+const ui = useUiStore()
 
 let releaseChannel: (() => void) | null = null
+let barTimer: ReturnType<typeof setTimeout> | null = null
+let settleTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Ticket #48: the three exits are three different actions.
+ *  - 再来一局 re-queues the same mode (AI: same difficulty) and hands off to the
+ *    normal matchmaking / placement flow; the settlement store is cleared only
+ *    once the new match really starts.
+ *  - 返回大厅 and 返回首页 go to two different screens.
+ * The current match's mode comes from the game store (recorded at match start),
+ * the AI difficulty from the last AI launch (localStorage bs.aiDifficulty,
+ * default normal).
+ */
+const busy = ref(false)
+const barsShown = ref(false)
+const barsSettled = ref(false)
+const barsInstant = ref(false)
+const friendState = ref<'idle' | 'sending' | 'sent' | 'error'>('idle')
+const friendMessage = ref('')
 
 onMounted(() => {
   releaseChannel = acquireSettlementChannel()
+  runBars()
 })
 
 onBeforeUnmount(() => {
   releaseChannel?.()
   releaseChannel = null
+  if (barTimer !== null) clearTimeout(barTimer)
+  if (settleTimer !== null) clearTimeout(settleTimer)
 })
 
 const gameOver = computed(() => result.gameOver)
@@ -57,16 +87,24 @@ const summary = computed(() => {
 
 const selfName = computed(() => game.state.player_name || '你')
 const opponentName = computed(() => game.state.opponent_name || '对手')
-const seatLabel = computed(() => game.state.player_seat || '—')
-const mode = computed(() => modeText(game.state.ranked, game.state.mode))
+// Unknown values are hidden, never a row of "—" (spec story 93). The seat line
+// only exists when the server really stamped a seat label.
+const seatLabel = computed(() => game.state.player_seat || '')
+const modeKey = computed<MatchMode>(() =>
+  matchModeOf(game.state.ranked, game.state.mode, game.state.is_ai_room),
+)
+const modeLabel = computed(() => matchModeLabel(modeKey.value))
 
 const attacks = computed(() => (Array.isArray(game.state.attacks) ? game.state.attacks : []))
 const hits = computed(() => attacks.value.filter((cell) => cell && cell.hit).length)
-const roundText = computed(() => (hasResult.value && game.state.round > 0 ? String(game.state.round) : '—'))
-const fireText = computed(() => (hasResult.value && attacks.value.length ? hits.value + ' / ' + attacks.value.length : '—'))
-const shipsText = computed(() =>
-  hasResult.value ? game.state.remaining_ships + ' / ' + game.state.opponent_remaining_ships : '—',
+const roundText = computed(() => (hasResult.value && game.state.round > 0 ? String(game.state.round) : ''))
+const fireText = computed(() =>
+  hasResult.value && attacks.value.length ? hits.value + ' / ' + attacks.value.length : '',
 )
+const shipsText = computed(() =>
+  hasResult.value ? game.state.remaining_ships + ' / ' + game.state.opponent_remaining_ships : '',
+)
+const hasStats = computed(() => Boolean(roundText.value || fireText.value || shipsText.value))
 
 const rank = computed(() => result.rank)
 const rankDeltaText = computed(() => signed(readNumber(rank.value, 'delta') ?? 0))
@@ -76,8 +114,9 @@ const rankRole = computed(() => {
   if (role === 'loser') return '败方'
   return ''
 })
-const rankBeforeLabel = computed(() => readString(readObject(rank.value, 'before'), 'label') || '—')
-const rankAfterLabel = computed(() => readString(readObject(rank.value, 'after'), 'label') || '—')
+const rankBeforeLabel = computed(() => readString(readObject(rank.value, 'before'), 'label'))
+const rankAfterLabel = computed(() => readString(readObject(rank.value, 'after'), 'label'))
+const showRankTiers = computed(() => Boolean(rankBeforeLabel.value && rankAfterLabel.value))
 const rankFill = computed(() => {
   const after = readObject(rank.value, 'after')
   return progressPercent(readNumber(after, 'progress'), readNumber(after, 'sub_points'))
@@ -116,24 +155,205 @@ const xpBreakdown = computed(() =>
 )
 const achievementItems = computed(() => result.achievements)
 
-function leaveResult(): void {
-  result.reset()
-  game.reset()
-  void router.push({ name: 'start' })
+/** Bars: a 600ms CSS reveal that can be skipped; no bar lasts beyond 2s. */
+function runBars(): void {
+  if (barTimer !== null) clearTimeout(barTimer)
+  if (settleTimer !== null) clearTimeout(settleTimer)
+  barTimer = null
+  settleTimer = null
+  barsShown.value = false
+  barsInstant.value = false
+  barsSettled.value = false
+  if (!result.rank && !result.xp) {
+    barsSettled.value = true
+    return
+  }
+  barTimer = setTimeout(() => {
+    barsShown.value = true
+  }, 40)
+  settleTimer = setTimeout(() => {
+    barsSettled.value = true
+  }, 900)
 }
 
-function playAgain(): void {
-  leaveResult()
+function skipBars(): void {
+  if (barTimer !== null) clearTimeout(barTimer)
+  if (settleTimer !== null) clearTimeout(settleTimer)
+  barTimer = null
+  settleTimer = null
+  barsInstant.value = true
+  barsShown.value = true
+  barsSettled.value = true
+}
+
+watch(
+  () => [Boolean(result.rank), Boolean(result.xp)],
+  () => {
+    if (result.rank || result.xp) runBars()
+  },
+)
+
+const rankBarWidth = computed(() => (barsShown.value ? rankFill.value : 0))
+const xpBarWidth = computed(() => (barsShown.value ? xpFill.value : 0))
+const barsAnimating = computed(() => !barsSettled.value && Boolean(result.rank || result.xp))
+
+/**
+ * The opponent as a person, not a string: the server's private recent_opponent
+ * frame carries the account id only when both seats are accounts (AI / guest
+ * seats have none), so the friend and profile actions appear exactly then.
+ */
+const opponent = computed(() => result.recentOpponent)
+const opponentUsername = computed(() => readString(opponent.value, 'username'))
+const opponentRelation = computed(() => readString(opponent.value, 'relation'))
+const opponentNameText = computed(() => opponentUsername.value || opponentName.value)
+const showAddFriend = computed(
+  () =>
+    Boolean(opponentUsername.value) &&
+    opponentRelation.value !== 'friend' &&
+    opponentRelation.value !== 'self',
+)
+const friendButtonText = computed(() => {
+  if (friendState.value === 'sending') return '发送中…'
+  if (friendState.value === 'sent') return '已发送申请'
+  return '加对手好友'
+})
+
+async function addFriend(): Promise<void> {
+  const username = opponentUsername.value
+  if (!username || friendState.value === 'sending' || friendState.value === 'sent') return
+  friendState.value = 'sending'
+  friendMessage.value = ''
+  try {
+    const response = await fetch('/api/friends/request', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ username }),
+    })
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>
+    if (!response.ok) {
+      friendState.value = 'error'
+      friendMessage.value =
+        typeof body.error === 'string' ? body.error : '好友申请发送失败，请稍后再试'
+      return
+    }
+    const status = typeof body.status === 'string' ? body.status : ''
+    if (status === 'sent' || status === 'pending') {
+      friendState.value = 'sent'
+      friendMessage.value = '好友申请已发送，等对方通过'
+      return
+    }
+    if (status === 'friend') {
+      friendState.value = 'sent'
+      friendMessage.value = '你们已经是好友了'
+      return
+    }
+    friendState.value = 'error'
+    friendMessage.value =
+      status === 'self'
+        ? '不能加自己为好友'
+        : typeof body.error === 'string'
+          ? body.error
+          : '好友申请发送失败，请稍后再试'
+  } catch {
+    friendState.value = 'error'
+    friendMessage.value = '网络不稳定，请稍后再试'
+  }
+}
+
+function openOpponentProfile(): void {
+  if (!opponentUsername.value) return
+  void router.push({ name: 'profile', query: { username: opponentUsername.value } })
+}
+
+function resetSettlement(): void {
+  result.reset()
+  game.reset()
 }
 
 function returnHome(): void {
-  leaveResult()
+  resetSettlement()
+  void router.push({ name: 'start' })
+}
+
+/** 返回大厅 is a different destination from 返回首页 (spec story 97). */
+function returnLobby(): void {
+  resetSettlement()
+  void router.push({ name: 'lobby' })
+}
+
+/**
+ * 再来一局: queue again with this match's mode, or reopen an AI room with the
+ * same difficulty. Custom rooms cannot be re-opened from the settlement (the
+ * room is gone), so that mode offers only the two exits.
+ */
+async function socketReady(socket: ReturnType<typeof getSettlementSocket>, timeoutMs = 3000): Promise<boolean> {
+  if (!socket) return false
+  if (socket.socket.connected) return true
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    if (socket.socket.connected) return true
+  }
+  return false
+}
+
+async function playAgain(): Promise<void> {
+  if (busy.value) return
+  const key = modeKey.value
+  if (key === 'custom') {
+    // Ticket #52: the custom room is gone after settlement, so "再来一局" can
+    // never become "返回大厅" (spec §7: the three exits are different actions).
+    ui.notify({ code: 'settlement-play-again-custom', tone: 'info', message: '自定义房间不能重开，回大厅再开一桌。' })
+    return
+  }
+  const socket = getSettlementSocket()
+  if (!(await socketReady(socket))) {
+    ui.notify({ code: 'settlement-requeue', tone: 'error', message: '实时连接还没就绪，请稍后再试' })
+    return
+  }
+  const live = socket as NonNullable<typeof socket>
+  const playerName = game.state.player_name || '玩家'
+  busy.value = true
+  try {
+    if (key === 'ai') {
+      const created = await createAiRoom(live, playerName, aiDifficulty())
+      if (!created.ok) {
+        ui.notify({
+          code: 'settlement-requeue',
+          tone: 'error',
+          message: created.message || '人机对战暂时不可用',
+        })
+        return
+      }
+      home.expectPlacement()
+      resetSettlement()
+      void router.push({ name: 'placement' })
+      return
+    }
+    const mode: 'casual' | 'ranked' = key === 'ranked' ? 'ranked' : 'casual'
+    home.expectPlacement()
+    resetSettlement()
+    await router.push({ name: 'start', query: { requeued: mode } })
+    const ack = await emitFindMatch(live, playerName, mode)
+    if (ack.status === 'error') {
+      ui.notify({
+        code: 'settlement-requeue',
+        tone: 'error',
+        message: ack.message || '重新排队失败，请回首页再试',
+      })
+    }
+  } catch {
+    ui.notify({ code: 'settlement-requeue', tone: 'error', message: '网络不稳定，请再试一次' })
+  } finally {
+    busy.value = false
+  }
 }
 
 function openReplay(): void {
   const id = matchId.value
   if (!id) return
-  void router.push({ name: 'replay', query: { match_id: id } })
+  void router.push({ name: 'replay', query: { match_id: id, from: 'game-over' } })
 }
 </script>
 
@@ -146,7 +366,7 @@ function openReplay(): void {
     aria-labelledby="screen-game-over-title"
   >
     <header class="game-over__head">
-      <p class="game-over__eyebrow">{{ hasResult ? mode + ' · 结算' : 'P3 · 结算' }}</p>
+      <p class="game-over__eyebrow">{{ hasResult ? modeLabel + ' · 结算' : 'P3 · 结算' }}</p>
       <h1 id="screen-game-over-title" class="game-over__title" data-testid="game-over-heading">结算</h1>
       <p v-if="hasResult" class="game-over__verdict" data-testid="game-over-verdict">{{ verdict }}</p>
       <p v-if="hasResult" class="game-over__summary" data-testid="game-over-reason">{{ summary }}</p>
@@ -154,14 +374,14 @@ function openReplay(): void {
         <div class="game-over__player">
           <span class="game-over__player-role">你</span>
           <b class="game-over__player-name" data-testid="game-over-self">{{ selfName }}</b>
-          <span class="game-over__player-seat">{{ seatLabel }}</span>
+          <span v-if="seatLabel" class="game-over__player-seat">{{ seatLabel }}</span>
         </div>
         <div class="game-over__vs" aria-hidden="true">VS</div>
         <div class="game-over__player game-over__player--opponent">
           <span class="game-over__player-role">对手</span>
           <b class="game-over__player-name" data-testid="game-over-opponent">{{ opponentName }}</b>
         </div>
-        <span class="game-over__mode" data-testid="game-over-mode">{{ mode }}</span>
+        <span class="game-over__mode" data-testid="game-over-mode">{{ modeLabel }}</span>
       </section>
     </header>
 
@@ -173,23 +393,59 @@ function openReplay(): void {
     </section>
 
     <template v-else>
-      <section class="game-over__stats" data-testid="game-over-stats" aria-label="本局数据">
+      <section v-if="hasStats" class="game-over__stats" data-testid="game-over-stats" aria-label="本局数据">
         <h2 class="game-over__section-title">本 局 数 据</h2>
         <dl class="game-over__stat-grid">
-          <div class="game-over__stat">
+          <div v-if="roundText" class="game-over__stat">
             <dt>回合</dt>
             <dd data-testid="game-over-stat-round">{{ roundText }}</dd>
           </div>
-          <div class="game-over__stat">
+          <div v-if="fireText" class="game-over__stat">
             <dt>命中 / 开火</dt>
             <dd data-testid="game-over-stat-fire">{{ fireText }}</dd>
           </div>
-          <div class="game-over__stat">
+          <div v-if="shipsText" class="game-over__stat">
             <dt>剩余战舰</dt>
             <dd data-testid="game-over-stat-ships">{{ shipsText }}</dd>
           </div>
         </dl>
       </section>
+
+      <section v-if="hasResult && opponentUsername" class="game-over__opponent" data-testid="game-over-opponent-card">
+        <p class="game-over__opponent-name">
+          对手 <b data-testid="game-over-opponent-name">{{ opponentNameText }}</b>
+        </p>
+        <div class="game-over__opponent-actions">
+          <button type="button" class="button button--ghost" data-testid="game-over-opponent-profile" @click="openOpponentProfile">
+            查看对手档案
+          </button>
+          <button
+            v-if="showAddFriend"
+            type="button"
+            class="button"
+            data-testid="game-over-add-friend"
+            :disabled="friendState === 'sending' || friendState === 'sent'"
+            @click="addFriend"
+          >
+            {{ friendButtonText }}
+          </button>
+          <p
+            v-if="friendMessage"
+            class="game-over__friend-note"
+            :class="{ 'is-error': friendState === 'error' }"
+            data-testid="game-over-friend-status"
+            role="status"
+          >
+            {{ friendMessage }}
+          </p>
+        </div>
+      </section>
+
+      <p v-if="barsAnimating" class="game-over__skip">
+        <button type="button" class="button button--ghost" data-testid="game-over-skip-animation" @click="skipBars">
+          跳过动画
+        </button>
+      </p>
 
       <div class="game-over__cards">
         <section v-if="rank" class="game-over__rank" data-testid="game-over-rank" aria-label="段位变化">
@@ -198,7 +454,7 @@ function openReplay(): void {
             <b class="game-over__rank-delta" data-testid="game-over-rank-delta">{{ rankDeltaText }}</b>
             <span class="game-over__rank-role" data-testid="game-over-rank-role">{{ rankRole }}</span>
           </p>
-          <div class="game-over__rank-tiers">
+          <div v-if="showRankTiers" class="game-over__rank-tiers">
             <span class="game-over__rank-label" data-testid="game-over-rank-before">{{ rankBeforeLabel }}</span>
             <span class="game-over__rank-arrow" aria-hidden="true">→</span>
             <span class="game-over__rank-label game-over__rank-label--after" data-testid="game-over-rank-after">
@@ -206,7 +462,12 @@ function openReplay(): void {
             </span>
           </div>
           <div class="game-over__bar" role="img" :aria-label="'段位进度 ' + rankFill + '%'">
-            <div class="game-over__bar-fill" data-testid="game-over-rank-fill" :style="{ width: rankFill + '%' }"></div>
+            <div
+              class="game-over__bar-fill"
+              :class="{ 'is-instant': barsInstant }"
+              data-testid="game-over-rank-fill"
+              :style="{ width: rankBarWidth + '%' }"
+            ></div>
           </div>
           <p v-if="rankNote" class="game-over__rank-note" data-testid="game-over-rank-note">{{ rankNote }}</p>
         </section>
@@ -218,7 +479,12 @@ function openReplay(): void {
             <span class="game-over__xp-level" data-testid="game-over-xp-level">{{ xpLevelText }}</span>
           </p>
           <div class="game-over__bar" role="img" :aria-label="'经验进度 ' + xpFill + '%'">
-            <div class="game-over__bar-fill game-over__bar-fill--xp" data-testid="game-over-xp-fill" :style="{ width: xpFill + '%' }"></div>
+            <div
+              class="game-over__bar-fill game-over__bar-fill--xp"
+              :class="{ 'is-instant': barsInstant }"
+              data-testid="game-over-xp-fill"
+              :style="{ width: xpBarWidth + '%' }"
+            ></div>
           </div>
           <p class="game-over__xp-progress" data-testid="game-over-xp-progress">{{ xpProgressText }}</p>
           <p v-if="xpLevelUpText" class="game-over__xp-levelup" data-testid="game-over-xp-levelup">{{ xpLevelUpText }}</p>
@@ -248,11 +514,25 @@ function openReplay(): void {
     </template>
 
     <footer class="game-over__actions">
-      <button type="button" class="button" data-testid="game-over-play-again" @click="playAgain">
-        再来一局
-      </button>
+      <div v-if="modeKey !== 'custom'" class="game-over__action-block">
+        <button
+          type="button"
+          class="button"
+          data-testid="game-over-play-again"
+          :disabled="busy"
+          @click="playAgain"
+        >
+          {{ busy ? '正在排队…' : '再来一局' }}
+        </button>
+        <small class="game-over__action-hint" data-testid="game-over-play-again-hint">
+          {{ modeKey === 'ai' ? '按同样难度再开一局' : modeKey === 'ranked' ? '会重新排队并计分' : '重新排队' }}
+        </small>
+      </div>
       <button v-if="matchId" type="button" class="button button--ghost" data-testid="game-over-replay" @click="openReplay">
         本局回放
+      </button>
+      <button type="button" class="button button--ghost" data-testid="game-over-return-lobby" @click="returnLobby">
+        返回大厅
       </button>
       <button type="button" class="button button--ghost" data-testid="game-over-return-home" @click="returnHome">
         返回首页
@@ -539,6 +819,12 @@ function openReplay(): void {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #b8873a, var(--gold-strong));
+  /* Ticket #48: 600ms reveal, inside the 2s budget, and skippable. */
+  transition: width 600ms ease-out;
+}
+
+.game-over__bar-fill.is-instant {
+  transition: none;
 }
 
 .game-over__rank-note {
@@ -639,8 +925,68 @@ function openReplay(): void {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
+  align-items: flex-start;
   gap: 10px;
   padding-top: 4px;
+}
+
+.game-over__action-block {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+}
+
+.game-over__action-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.game-over__skip {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+}
+
+.game-over__opponent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  width: 100%;
+  max-width: 1120px;
+  padding: 12px 18px;
+  border: 1px solid var(--panel-line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.game-over__opponent-name {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.game-over__opponent-name b {
+  color: var(--text);
+}
+
+.game-over__opponent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.game-over__friend-note {
+  margin: 0;
+  color: var(--success);
+  font-size: 12px;
+}
+
+.game-over__friend-note.is-error {
+  color: var(--danger);
 }
 
 .game-over__actions .button {

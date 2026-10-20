@@ -1,7 +1,7 @@
 // GENERATED from backend contracts (JSON Schema). Do not edit by hand.
 // Regenerate: python -m battleship.contracts.export_schema --format ts --out frontend/src/socket/events.gen.ts
 export const CONTRACT_SCHEMA_VERSION = 1
-export const CONTRACT_SCHEMA_HASH = 'e5c6d683cf63f3705cbb52745e14c1740decdc2d187b02f2a75d4f052b5213b6'
+export const CONTRACT_SCHEMA_HASH = '175d5811dd71c826dd750b3b4b098ee59f517f46f3422390879254b4dd063f03'
 
 export const INBOUND_EVENTS = [
   'connect',
@@ -169,6 +169,31 @@ export const DEBUG_EVENTS = [
   'test_auto_attack',
 ] as const
 
+export const SOCKET_ERROR_CODES = [
+  'operation_failed',
+  'invalid_seat',
+  'invalid_room',
+  'room_not_found',
+  'room_full',
+  'identity_failed',
+  'game_over',
+  'not_in_room',
+  'placement_invalid',
+  'no_pending_placement',
+  'invalid_rps_choice',
+  'opponent_disconnected',
+  'chain_busy',
+  'invalid_turn',
+  'not_in_lobby',
+  'chat_too_fast',
+  'empty_message',
+  'room_create_failed',
+  'already_queued',
+  'spectate_denied',
+  'unknown_event',
+  'debug_disabled',
+  'debug_forbidden',
+] as const
 export const ROOM_SYNC_FIELDS = [
   'room_id',
   'state',
@@ -215,6 +240,10 @@ export const ROOM_SYNC_FIELDS = [
   'pending_sacrifice',
   'pending_sacrifice_ships',
   'rps_choices',
+  'turn_deadline',
+  'turn_timeout_seconds',
+  'opponent_ready',
+  'opponent_online',
 ] as const
 
 export type RoomSyncField = (typeof ROOM_SYNC_FIELDS)[number]
@@ -243,6 +272,11 @@ export interface OutboundEventEnvelope {
   to: string | null
   room: string | null
   skip_sid: string | null
+}
+
+export interface SocketError {
+  code: string
+  message: string
 }
 
 export interface AckResponse {

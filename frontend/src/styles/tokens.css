@@ -1,52 +1,265 @@
-/* Arena design tokens (C+ baseline, D29).
-   The palette is the old C+ arena theme: near-black indigo surfaces, a violet
-   accent, cyan secondary and gold for rank/wins. Screens should use these
-   tokens rather than raw colours so the visual language stays in one place. */
+/* Design tokens — "深海作战室 / 航图" (redesign phase 1, ticket #42).
+ *
+ * The old C+ violet palette is gone. This file is the single source of visual
+ * truth: surfaces, role colours, three text levels, borders, radii, spacing,
+ * motion and the layer scale. Screens must use these tokens instead of raw
+ * colours so a theme flip reaches every screen at once.
+ *
+ * Three themes hang off <html data-theme="…">; the first paint applies the
+ * stored choice before Vue mounts (main.ts), so switching is instant and never
+ * flashes the default. prefers-reduced-motion is honoured below; the shell also
+ * exposes an explicit data-motion="reduced" override for the settings switch.
+ *
+ * Layer scale: wallpaper < shell < nav < overlay < match-found. The overlay
+ * primitive and the match-found dialog both teleport to <body>; the tokens are
+ * the contract that keeps the match result above the card archive.
+ */
 :root {
   color-scheme: dark;
 
-  --bg: #0b0d18;
-  --bg-page:
-    radial-gradient(700px 420px at 50% -8%, rgba(124, 92, 240, 0.35), transparent 70%),
-    radial-gradient(600px 400px at 12% 105%, rgba(78, 200, 224, 0.16), transparent 70%),
-    repeating-conic-gradient(from 200deg at 50% -10%,
-      rgba(255, 255, 255, 0.028) 0deg 3deg, transparent 3deg 11deg),
-    linear-gradient(180deg, #0d1020 0%, #0b0d18 55%, #090b14 100%);
-  --bg-elevated: #151a30;
-  --bg-raised: #1b2140;
-  --bg-sunken: #0d1122;
+  /* ---- three surfaces: sea / deck / chamber ---------------------------- */
+  --surface-sea: #06111a;
+  --surface-deck: #0b1a24;
+  --surface-chamber: #102a35;
 
-  --border: #2a3358;
-  --border-strong: #3b4675;
-  --panel: rgba(21, 26, 48, 0.82);
-  --panel-line: rgba(124, 92, 240, 0.22);
-  --line-dash: rgba(124, 92, 240, 0.35);
+  /* Legacy aliases used by the screens (kept in sync with the three surfaces). */
+  --bg: var(--surface-sea);
+  --bg-page: var(--surface-sea);
+  --bg-elevated: var(--surface-deck);
+  --bg-raised: var(--surface-chamber);
+  --bg-sunken: #030b11;
+  --panel: rgba(11, 26, 36, 0.86);
+  --panel-line: rgba(120, 196, 214, 0.22);
 
-  --text: #e7ecff;
-  --text-muted: #a2adcf;
-  --text-dim: #8b96bb;
+  /* ---- role colours ---------------------------------------------------- */
+  --role-action: #f0b64e;       /* 可行动：琥珀 */
+  --role-self: #62d2e8;         /* 己方/信息：青 */
+  --role-enemy: #f2796f;        /* 敌方/伤害：珊瑚红 */
+  --role-success: #5fd3a0;      /* 成功/恢复：海绿 */
+  --role-warning: #e9a83f;      /* 警告：琥珀 */
+  --role-disabled: #6b7d86;     /* 禁用：石板灰 */
+  --role-action-soft: rgba(240, 182, 78, 0.16);
+  --role-self-soft: rgba(98, 210, 232, 0.14);
+  --role-enemy-soft: rgba(242, 121, 111, 0.16);
+  --role-success-soft: rgba(95, 211, 160, 0.14);
 
-  --accent: #7c5cf0;
-  --accent-strong: #8f79f5;
-  --accent-soft: rgba(124, 92, 240, 0.16);
-  --accent-cyan: #4ec8e0;
-  --gold: #c9a24c;
-  --gold-strong: #e6c778;
-  --gold-soft: rgba(201, 162, 76, 0.14);
-  --danger: #ff5c6c;
-  --success: #6fe0a0;
+  /* Legacy role aliases. */
+  --accent: var(--role-action);
+  --accent-strong: #ffd27a;
+  --accent-soft: var(--role-action-soft);
+  --accent-cyan: var(--role-self);
+  --gold: var(--role-action);
+  --gold-strong: #ffd27a;
+  --gold-soft: var(--role-action-soft);
+  --danger: var(--role-enemy);
+  --success: var(--role-success);
 
+  /* ---- text: three levels --------------------------------------------- */
+  --text-primary: #e9f4f7;
+  --text-secondary: #a9c1cb;
+  --text-tertiary: #7d97a3;
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-dim: var(--text-tertiary);
+
+  /* ---- borders and decoration ----------------------------------------- */
+  --border-subtle: rgba(120, 196, 214, 0.16);
+  --border-strong: rgba(120, 196, 214, 0.34);
+  --border: var(--border-subtle);
+  --line-dash: var(--border-subtle);
+  --focus-ring: var(--role-self);
+  --grid-line: rgba(98, 210, 232, 0.07);
+  --scrim: rgba(2, 8, 12, 0.72);
+
+  /* ---- geometry and spacing ------------------------------------------- */
+  --radius-pill: 999px;
+  --radius-lg: 16px;
   --radius: 12px;
   --radius-sm: 8px;
-  --shadow-panel: 0 14px 34px rgba(0, 0, 0, 0.5);
-  --shadow-accent: 0 14px 34px rgba(107, 76, 224, 0.4);
-
-  --hero-grad: linear-gradient(120deg, #7a5af0, #4029a4 70%);
-  --rank-grad: linear-gradient(120deg, #b8873a, #7d5a20);
-
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 16px;
   --space-4: 24px;
-  --font: 'Segoe UI', system-ui, -apple-system, 'Microsoft YaHei', sans-serif;
+  --space-5: 32px;
+  --space-6: 48px;
+
+  /* ---- motion ---------------------------------------------------------- */
+  --duration-hit: 120ms;
+  --duration-fast: 180ms;
+  --duration-slow: 320ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* ---- layer scale ----------------------------------------------------- */
+  --z-wallpaper: -1;
+  --z-shell: 1;
+  --z-nav: 20;
+  --z-overlay: 100;
+  --z-match-found: 200;
+  --z-toast: 300;
+
+  /* ---- depth ----------------------------------------------------------- */
+  --shadow-panel: 0 10px 26px rgba(0, 0, 0, 0.38);
+  --shadow-accent: 0 10px 24px rgba(240, 182, 78, 0.22);
+  --hero-grad: linear-gradient(120deg, #1a4b5a, #0c2733 72%);
+  --rank-grad: linear-gradient(120deg, #8a6320, #5a3f12);
+
+  --font: 'Segoe UI', system-ui, -apple-system, 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  --font-mono: 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+}
+
+/* ---------------------------------------------------------------- 夜航 ---
+ * High-contrast night watch: near-black sea, brighter ink and borders. */
+html[data-theme='night'] {
+  color-scheme: dark;
+
+  --surface-sea: #000308;
+  --surface-deck: #050b12;
+  --surface-chamber: #0a141d;
+  --bg: var(--surface-sea);
+  --bg-page: var(--surface-sea);
+  --bg-elevated: var(--surface-deck);
+  --bg-raised: var(--surface-chamber);
+  --bg-sunken: #000000;
+  --panel: #050b12;
+  --panel-line: rgba(150, 230, 255, 0.5);
+
+  --role-action: #ffc74d;
+  --role-self: #7ee8ff;
+  --role-enemy: #ff8b7e;
+  --role-success: #74f0b4;
+  --role-warning: #ffc74d;
+  --role-disabled: #8fa3ad;
+  --role-action-soft: rgba(255, 199, 77, 0.22);
+  --role-self-soft: rgba(126, 232, 255, 0.2);
+  --role-enemy-soft: rgba(255, 139, 126, 0.22);
+  --role-success-soft: rgba(116, 240, 180, 0.2);
+
+  --text-primary: #ffffff;
+  --text-secondary: #d5e6ee;
+  --text-tertiary: #a9c1cb;
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-dim: var(--text-tertiary);
+
+  --border-subtle: rgba(150, 230, 255, 0.36);
+  --border-strong: rgba(150, 230, 255, 0.6);
+  --border: var(--border-subtle);
+  --line-dash: var(--border-subtle);
+  --grid-line: rgba(126, 232, 255, 0.12);
+  --scrim: rgba(0, 0, 0, 0.82);
+
+  --hero-grad: linear-gradient(120deg, #0d3b4a, #021018 72%);
+  --shadow-accent: 0 10px 24px rgba(255, 199, 77, 0.28);
+}
+
+/* ------------------------------------------------------------ 航海日志 ---
+ * Daylight chart table: warm paper surfaces, the same semantic roles darkened
+ * until each one clears 4.5:1 against the paper. This is deliberately not an
+ * inversion of the dark theme. */
+html[data-theme='journal'] {
+  color-scheme: light;
+
+  --surface-sea: #f3efe2;
+  --surface-deck: #faf7ec;
+  --surface-chamber: #ffffff;
+  --bg: var(--surface-sea);
+  --bg-page: var(--surface-sea);
+  --bg-elevated: var(--surface-deck);
+  --bg-raised: var(--surface-chamber);
+  --bg-sunken: #e6e0cf;
+  --panel: #faf7ec;
+  --panel-line: rgba(32, 84, 96, 0.28);
+
+  --role-action: #8a5300;
+  --role-self: #0a5f70;
+  --role-enemy: #9d2f22;
+  --role-success: #1d6b47;
+  --role-warning: #8a5300;
+  --role-disabled: #6b7a80;
+  --role-action-soft: rgba(138, 83, 0, 0.12);
+  --role-self-soft: rgba(10, 95, 112, 0.12);
+  --role-enemy-soft: rgba(157, 47, 34, 0.12);
+  --role-success-soft: rgba(29, 107, 71, 0.12);
+
+  --text-primary: #17262b;
+  --text-secondary: #3c5157;
+  --text-tertiary: #52666d;
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-dim: var(--text-tertiary);
+
+  --border-subtle: rgba(32, 84, 96, 0.24);
+  --border-strong: rgba(32, 84, 96, 0.45);
+  --border: var(--border-subtle);
+  --line-dash: var(--border-subtle);
+  --grid-line: rgba(32, 84, 96, 0.08);
+  --scrim: rgba(28, 36, 38, 0.42);
+
+  --shadow-panel: 0 8px 20px rgba(48, 62, 66, 0.14);
+  --shadow-accent: 0 8px 20px rgba(138, 83, 0, 0.16);
+  --hero-grad: linear-gradient(120deg, #dcd3b8, #c9c0a4 72%);
+  --rank-grad: linear-gradient(120deg, #b28a3a, #7d5a20);
+}
+
+/* --------------------------------------------------- font scale ----------
+ * The accessibility size switch (ticket #49). base.css maps the three levels
+ * to a body zoom so every screen scales, including components that still carry
+ * fixed px sizes from earlier tickets. */
+:root {
+  --font-scale: 1;
+}
+
+/* --------------------------------------------------- high contrast -----
+ * Orthogonal to the three themes: stronger borders and pure ink. A separate
+ * block per colour scheme keeps the light theme readable. */
+html[data-contrast='high'] {
+  --border-subtle: rgba(180, 240, 255, 0.45);
+  --border-strong: rgba(180, 240, 255, 0.75);
+  --border: var(--border-subtle);
+  --panel-line: rgba(180, 240, 255, 0.45);
+  --line-dash: rgba(180, 240, 255, 0.45);
+  --text-primary: #ffffff;
+  --text-secondary: #e4f4fb;
+  --text-tertiary: #c6dfe9;
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-dim: var(--text-tertiary);
+  --grid-line: rgba(126, 232, 255, 0.16);
+}
+
+html[data-theme='journal'][data-contrast='high'] {
+  --border-subtle: rgba(0, 52, 64, 0.55);
+  --border-strong: rgba(0, 52, 64, 0.8);
+  --border: var(--border-subtle);
+  --panel-line: rgba(0, 52, 64, 0.55);
+  --line-dash: rgba(0, 52, 64, 0.55);
+  --text-primary: #000000;
+  --text-secondary: #14242a;
+  --text-tertiary: #2b4249;
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-dim: var(--text-tertiary);
+}
+
+/* --------------------------------------------------- reduced motion -------
+ * Functional transitions only: state changes keep their opacity fade, all
+ * movement, scaling and looping glow is dropped. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html[data-motion='reduced'] *,
+html[data-motion='reduced'] *::before,
+html[data-motion='reduced'] *::after {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+  scroll-behavior: auto !important;
 }

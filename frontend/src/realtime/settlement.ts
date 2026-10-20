@@ -1,6 +1,8 @@
 import type { Pinia } from 'pinia'
 import { createTypedSocket, type TypedSocket } from '../socket/client'
 import { useGameStore } from '../stores/game'
+import { useUiStore } from '../stores/ui'
+import { rememberSeat, restoreSeat } from './reconnect'
 import { useResultStore } from '../stores/result'
 
 /**
@@ -20,8 +22,11 @@ export type SettlementEventName =
   | 'rank_changed'
   | 'achievements_unlocked'
   | 'ships_updated'
+  | 'recent_opponent'
 
-const SETTLEMENT_EVENTS: readonly SettlementEventName[] = [
+// Typed listeners: only the frames that exist in the generated outbound union.
+// recent_opponent is absent there (see the raw listener below).
+const SETTLEMENT_EVENTS = [
   'game_over',
   'game_state',
   'room_sync',
@@ -29,7 +34,7 @@ const SETTLEMENT_EVENTS: readonly SettlementEventName[] = [
   'rank_changed',
   'achievements_unlocked',
   'ships_updated',
-]
+] as const
 
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : ''
@@ -81,6 +86,9 @@ export function applySettlementEvent(
     case 'achievements_unlocked':
       result.recordAchievements(payload)
       break
+    case 'recent_opponent':
+      result.recordRecentOpponent(payload)
+      break
     case 'ships_updated':
       game.applyServerState({
         remaining_ships: payload.player_remaining_ships,
@@ -92,10 +100,27 @@ export function applySettlementEvent(
 
 export function installSettlementListeners(socket: TypedSocket, pinia?: Pinia): () => void {
   const offs = SETTLEMENT_EVENTS.map((event) =>
-    socket.on(event, (payload) => applySettlementEvent(event, payload, pinia)),
+    socket.on(event, (payload) => {
+      applySettlementEvent(event, payload, pinia)
+      // Keep a reconnect token warm while the seat is bound to this connection.
+      if (event === 'game_state' || event === 'room_sync') void rememberSeat(socket, pinia)
+    }),
   )
+  // The server has pushed this private frame since the legacy settlement hook
+  // (one per seat, only when both seats are accounts), but the frozen outbound
+  // registry in events.gen.ts predates it. Listening on the raw client keeps the
+  // typed union honest without regenerating (and re-hashing) the contract.
+  const onRecent = (payload: Record<string, unknown>) => {
+    applySettlementEvent('recent_opponent', payload, pinia)
+  }
+  const raw = socket.socket as unknown as {
+    on: (event: string, listener: (payload: Record<string, unknown>) => void) => void
+    off: (event: string, listener: (payload: Record<string, unknown>) => void) => void
+  }
+  raw.on('recent_opponent', onRecent)
   return () => {
     for (const off of offs) off()
+    raw.off('recent_opponent', onRecent)
   }
 }
 
@@ -132,10 +157,24 @@ export function acquireSettlementChannel(
   if (!active) {
     const socket = createTypedSocket()
     const stopListeners = installSettlementListeners(socket, pinia)
+    // One connection truth for the whole shell (spec §5, ticket #52): every
+    // channel reuses this socket, so it reports here once.
+    const ui = useUiStore(pinia)
+    const onConnect = (): void => {
+      ui.setConnection(true)
+      // Ticket #53: a reconnect gives a new socket id; rebind the seat with the
+      // frozen get_reconnect_token / rejoin_room pair before anything else.
+      void restoreSeat(socket, pinia)
+    }
+    const onDisconnect = (): void => ui.setConnection(false)
+    socket.socket.on('connect', onConnect)
+    socket.socket.on('disconnect', onDisconnect)
     socket.connect()
     active = {
       socket,
       stop: () => {
+        socket.socket.off('connect', onConnect)
+        socket.socket.off('disconnect', onDisconnect)
         stopListeners()
         socket.disconnect()
       },

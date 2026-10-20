@@ -16,10 +16,12 @@ from .models import (
     is_ship_alive,
     new_room_id,
     opponent_of,
+    opponent_seat_state,
     rank_payload,
     room_match_mode,
     seat_label,
     seat_order,
+    turn_timing,
 )
 from .sync import build_room_sync, card_payload, room_kind
 
@@ -39,10 +41,12 @@ __all__ = [
     "is_ship_alive",
     "new_room_id",
     "opponent_of",
+    "opponent_seat_state",
     "rank_payload",
     "room_match_mode",
     "seat_label",
     "seat_order",
+    "turn_timing",
     "build_room_sync",
     "card_payload",
     "room_kind",

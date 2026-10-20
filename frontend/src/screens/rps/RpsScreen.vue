@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { acquireMatchChannel, emitMatchEvent, matchSocket } from '../../realtime/match'
 import { useGameStore } from '../../stores/game'
 import { useRpsStore } from '../../stores/rps'
 import { choiceName, rpsResultView } from './view'
+import AppOverlay from '../../components/AppOverlay.vue'
+import { getSettlementSocket } from '../../realtime/settlement'
+import { useUiStore } from '../../stores/ui'
 
 /**
  * Ticket #23: the rock-paper-scissors screen.
@@ -21,10 +24,13 @@ const router = useRouter()
 const route = useRoute()
 const game = useGameStore()
 const rps = useRpsStore()
+const ui = useUiStore()
+const leaveOpen = ref(false)
 
 let releaseChannel: (() => void) | null = null
 let offError: (() => void) | null = null
 let offMessage: (() => void) | null = null
+let offRoomSync: (() => void) | null = null
 
 const choices = [
   { value: 'rock', label: '石头', icon: '✊' },
@@ -35,6 +41,17 @@ const choices = [
 const hasRoom = computed(() => Boolean(game.state.room_id))
 const inRound = computed(() => game.state.state === 'rock_paper_scissors')
 const canChoose = computed(() => hasRoom.value && inRound.value && !rps.waiting)
+
+/** Player-language opponent status. Never guesses "offline" without a frame. */
+const opponentStatus = computed(() => {
+  if (!game.state.opponent_name) return { state: 'waiting', text: '等待对手加入房间' }
+  if (!rps.opponentStateKnown) {
+    return { state: 'unknown', text: '对手已入座 · 重新同步后才能看到对手状态' }
+  }
+  if (!rps.opponentOnline) return { state: 'offline', text: '对手已掉线，等待重连（不会判你负）' }
+  if (rps.opponentReady) return { state: 'ready', text: '对手已摆好战舰，正在猜拳' }
+  return { state: 'thinking', text: '对手在线' }
+})
 const selfName = computed(() => game.state.player_name || '你')
 const opponentName = computed(() => game.state.opponent_name || '对手')
 const seatLabel = computed(() => game.state.player_seat || '—')
@@ -63,6 +80,7 @@ onMounted(() => {
   if (socket) {
     offError = socket.on('error', (payload) => rps.noteNotice(readText(payload, 'message')))
     offMessage = socket.on('message', (payload) => rps.noteNotice(readText(payload, 'message')))
+    offRoomSync = socket.on('room_sync', (payload) => rps.adoptOpponentState(payload))
   }
   rps.resetForEntry()
 })
@@ -70,8 +88,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   offError?.()
   offMessage?.()
+  offRoomSync?.()
   offError = null
   offMessage = null
+  offRoomSync = null
   releaseChannel?.()
   releaseChannel = null
 })
@@ -110,6 +130,42 @@ async function choose(choice: string): Promise<void> {
   }
 }
 
+/** A refused gesture still answers once; it never goes silent. */
+function pick(choice: string): void {
+  if (!canChoose.value) {
+    rps.noteNotice(rps.waiting ? '已经出过拳，等对手出拳后会显示结果' : '现在还不能出拳，等对局进入猜拳阶段')
+    return
+  }
+  void choose(choice)
+}
+
+/** Leave the waiting room through the existing surrender event (no new protocol). */
+async function leaveRoom(): Promise<void> {
+  const socket = getSettlementSocket()
+  const roomId = game.state.room_id
+  const playerId = game.state.player_id
+  if (!socket || !roomId || !playerId) {
+    leaveOpen.value = false
+    ui.notify({ code: 'leave-room-not-ready', tone: 'error', message: '连接还没就绪，稍后再试一次' })
+    return
+  }
+  try {
+    const ack = await socket.emitEvent('surrender', { room_id: roomId, player_id: playerId })
+    leaveOpen.value = false
+    if (ack?.status === 'success') {
+      rps.reset()
+      void router.push({ name: 'lobby' })
+      return
+    }
+    rps.noteNotice(
+      typeof ack?.message === 'string' && ack.message ? ack.message : '离开房间没有成功，请稍后再试',
+    )
+  } catch (error) {
+    leaveOpen.value = false
+    rps.noteNotice('离开房间没有成功：' + (error instanceof Error ? error.message : '网络不稳定'))
+  }
+}
+
 function returnHome(): void {
   void router.push({ name: 'start' })
 }
@@ -123,10 +179,13 @@ function returnHome(): void {
     aria-labelledby="screen-rps-title"
   >
     <header class="rps__head">
-      <p class="rps__eyebrow">P4 · 猜拳</p>
+      <p class="rps__eyebrow">开局 · 猜拳</p>
       <h1 id="screen-rps-title" class="rps__title" data-testid="rps-heading">猜拳决定攻击顺序</h1>
       <p class="rps__round">
         第 <b data-testid="rps-round">{{ roundText }}</b> 回合 · 选择一种手势
+      </p>
+      <p class="rps__rules" data-testid="rps-rules">
+        先手先开炮、只抽 1 张魔法卡；后手后开炮、抽 2 张。猜拳只决定这一大回合的出手顺序。
       </p>
     </header>
 
@@ -138,6 +197,16 @@ function returnHome(): void {
         对手 <b data-testid="rps-opponent">{{ opponentName }}</b>
       </span>
     </div>
+
+    <p
+      class="rps__opponent-state"
+      data-testid="rps-opponent-status"
+      :data-state="opponentStatus.state"
+      role="status"
+      aria-live="polite"
+    >
+      {{ opponentStatus.text }}
+    </p>
 
     <p v-if="!hasRoom" class="rps__empty" data-testid="rps-empty" role="status">
       还没进入房间，先创建或加入房间再猜拳。
@@ -152,8 +221,8 @@ function returnHome(): void {
         :class="{ 'is-picked': rps.pendingChoice === choice.value }"
         :data-testid="'rps-choice-' + choice.value"
         :aria-pressed="rps.pendingChoice === choice.value ? 'true' : 'false'"
-        :disabled="!canChoose"
-        @click="choose(choice.value)"
+        :aria-disabled="!canChoose"
+        @click="pick(choice.value)"
       >
         <span class="rps__icon" aria-hidden="true">{{ choice.icon }}</span>
         <span class="rps__label">{{ choice.label }}</span>
@@ -176,6 +245,16 @@ function returnHome(): void {
       {{ rps.error }}
     </p>
 
+    <p
+      v-if="!canChoose && rps.waiting"
+      class="rps__receipt"
+      data-testid="rps-receipt"
+      role="status"
+      aria-live="polite"
+    >
+      已出拳，等对手出拳后会显示结果。
+    </p>
+
     <div
       v-if="resultView"
       class="rps__result"
@@ -196,6 +275,16 @@ function returnHome(): void {
     </div>
 
     <button
+      v-if="hasRoom"
+      type="button"
+      class="button button--ghost rps__leave"
+      data-testid="rps-leave"
+      @click="leaveOpen = true"
+    >
+      离开房间
+    </button>
+
+    <button
       v-if="!hasRoom"
       type="button"
       class="button button--ghost rps__home"
@@ -204,6 +293,29 @@ function returnHome(): void {
     >
       返回首页
     </button>
+
+    <AppOverlay
+      v-if="leaveOpen"
+      id="rps-leave-overlay"
+      :priority="140"
+      label="离开房间确认"
+      @close="leaveOpen = false"
+    >
+      <section class="rps__confirm" data-testid="rps-leave-confirm">
+        <h2 class="rps__confirm-title">离开房间？</h2>
+        <p class="rps__confirm-text">
+          猜拳阶段离开会按认输处理：本局判负并结算{{ game.state.ranked ? '，排位会扣分' : '' }}。留在房间里可以继续等对手。
+        </p>
+        <div class="rps__confirm-actions">
+          <button type="button" class="button button--ghost" data-testid="rps-leave-cancel" @click="leaveOpen = false">
+            继续等待
+          </button>
+          <button type="button" class="button" data-testid="rps-leave-confirm-ok" @click="leaveRoom">
+            确认离开（判负）
+          </button>
+        </div>
+      </section>
+    </AppOverlay>
   </section>
 </template>
 
@@ -463,4 +575,66 @@ function returnHome(): void {
     font-size: 24px;
   }
 }
+.rps__rules {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.rps__opponent-state {
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.rps__opponent-state[data-state='ready'] {
+  border-color: rgba(111, 224, 160, 0.45);
+  color: var(--success);
+}
+
+.rps__opponent-state[data-state='offline'] {
+  border-color: rgba(255, 92, 108, 0.45);
+  color: #ff9c8f;
+}
+
+.rps__receipt {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 215, 106, 0.45);
+  border-radius: 8px;
+  background: var(--gold-soft);
+  color: var(--gold-strong);
+  font-size: 12px;
+}
+
+.rps__confirm {
+  display: grid;
+  gap: 10px;
+  padding: 20px 22px;
+  text-align: left;
+}
+
+.rps__confirm-title {
+  margin: 0;
+  font-size: 20px;
+}
+
+.rps__confirm-text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.rps__confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 </style>
