@@ -11,10 +11,14 @@ import { useRoute } from 'vue-router'
  */
 const route = useRoute()
 const error = ref<Error | null>(null)
+const emit = defineEmits<{ (event: 'error'): void; (event: 'recovered'): void }>()
 
 onErrorCaptured((caught) => {
   error.value = caught instanceof Error ? caught : new Error(String(caught))
   console.error('[screen-boundary]', caught)
+  // The shell uses this to leave the immersive toolbar: when the flow screen is
+  // gone the player needs a way back, not a toolbar with only "退出对局".
+  emit('error')
   // Stop propagation: the app-level error handler should not treat this as a
   // fatal shell failure.
   return false
@@ -23,6 +27,7 @@ onErrorCaptured((caught) => {
 watch(
   () => route.fullPath,
   () => {
+    if (error.value) emit('recovered')
     error.value = null
   },
 )
