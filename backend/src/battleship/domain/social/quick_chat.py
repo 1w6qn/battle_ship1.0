@@ -75,14 +75,21 @@ def _count_in_window(recent: Any, now: float) -> int:
 
 
 def check_rate(recent: Any, now: float, last_id: Any,
-               msg_id: str) -> tuple[bool, str]:
-    """Pure judgement: (ok, reason). Rejected messages must not be recorded."""
+               msg_id: str, *, noun: str = "快捷语",
+               duplicate_reason: str | None = None) -> tuple[bool, str]:
+    """Pure judgement: (ok, reason). Rejected messages must not be recorded.
+
+    The rule lives here once (trap #14). Free-text chat passes its own wording
+    so the player reads "消息" rather than "快捷语"; the thresholds are shared.
+    """
     if _count_in_window(recent, now) >= MAX_PER_WINDOW:
-        return False, f"发得太快了，{WINDOW_SECONDS} 秒内最多发 {MAX_PER_WINDOW} 条快捷语"
+        return False, f"发得太快了，{WINDOW_SECONDS} 秒内最多发 {MAX_PER_WINDOW} 条{noun}"
 
     last_msg, last_ts = _last_of(last_id)
     if last_msg is not None and last_msg == msg_id:
         if last_ts is None or now - last_ts < WINDOW_SECONDS:
-            return False, f"同一句快捷语 {WINDOW_SECONDS} 秒内不能重复发送"
+            if duplicate_reason:
+                return False, duplicate_reason
+            return False, f"同一句{noun} {WINDOW_SECONDS} 秒内不能重复发送"
 
     return True, ""

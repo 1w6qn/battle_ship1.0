@@ -141,6 +141,10 @@ class RoomService:
         # still seated on a room that is about to disappear must receive
         # spectate_ended instead of waiting on a channel that will never update.
         self.room_dropped_hook: Any = None
+        # Ticket #31 wires this to ChatService.replay_missed: a reconnecting
+        # seat receives the chat lines that were broadcast while it was offline
+        # (only those; the per-seat watermark prevents duplicates).
+        self.rejoin_hook: Any = None
 
     # ------------------------------------------------------------------ wiring
 
@@ -526,6 +530,17 @@ class RoomService:
         await self._publisher.emit(
             "room_sync", build_room_sync(room, str(player_id)), to=connection.sid
         )
+        # A failure here must never turn a successful rejoin into an error ack;
+        # the seat is already back in the room at this point.
+        if self.rejoin_hook is not None:
+            try:
+                await self.rejoin_hook(room, str(player_id), connection.sid)
+            except Exception as error:  # noqa: BLE001
+                logger.error(
+                    "chat replay on rejoin failed",
+                    extra={"room_id": room.id, "error_type": type(error).__name__},
+                    exc_info=error,
+                )
         return {"status": "success", "reconnected": was_reconnect}
 
     async def request_hand_sync(self, connection: Connection,
