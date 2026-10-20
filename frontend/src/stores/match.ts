@@ -56,6 +56,12 @@ export interface PickRequest extends PendingPickLike {
   ships: Array<{ positions: Point[] }>
 }
 
+/** 仁王之盾: server says "pick up to three of your ships" after the chain resolves. */
+export interface ShieldChoice {
+  message: string
+  caster: string
+}
+
 const LOG_LIMIT = 200
 const NOTICE_LIMIT = 12
 const QUICK_CHAT_LIMIT = 30
@@ -84,6 +90,7 @@ export const useMatchStore = defineStore('match', () => {
   const quickChat = ref<QuickChatMessage[]>([])
   const chat = ref<ChatMessage[]>([])
   const pickRequest = ref<PickRequest | null>(null)
+  const shieldChoice = ref<ShieldChoice | null>(null)
   const chainResolvedAt = ref(0)
   let noticeSeq = 0
 
@@ -178,6 +185,17 @@ export const useMatchStore = defineStore('match', () => {
     pickRequest.value = null
   }
 
+  function openShieldChoice(payload: Record<string, unknown>): void {
+    shieldChoice.value = {
+      message: String(payload.message ?? '仁王之盾：请选择要保护的战舰（至多 3 艘）'),
+      caster: String(payload.caster ?? ''),
+    }
+  }
+
+  function clearShieldChoice(): void {
+    shieldChoice.value = null
+  }
+
   function markRevealed(points: Point[]): void {
     for (const point of points) {
       if (!revealed.value.some((cell) => cell.x === point.x && cell.y === point.y)) {
@@ -212,6 +230,7 @@ export const useMatchStore = defineStore('match', () => {
     quickChat.value = []
     chat.value = []
     pickRequest.value = null
+    shieldChoice.value = null
     chainResolvedAt.value = 0
   }
 
@@ -227,6 +246,7 @@ export const useMatchStore = defineStore('match', () => {
       quickChat: quickChat.value.slice(),
       chat: chat.value.slice(),
       pickRequest: pickRequest.value ? { ...pickRequest.value } : null,
+      shieldChoice: shieldChoice.value ? { ...shieldChoice.value } : null,
     }
   }
 
@@ -241,6 +261,7 @@ export const useMatchStore = defineStore('match', () => {
     quickChat,
     chat,
     pickRequest,
+    shieldChoice,
     chainResolvedAt,
     appendLog,
     pushNotice,
@@ -251,6 +272,8 @@ export const useMatchStore = defineStore('match', () => {
     recordChatMessage,
     setPickRequest,
     clearPickRequest,
+    openShieldChoice,
+    clearShieldChoice,
     markRevealed,
     markShieldBroken,
     clearShieldMarks,

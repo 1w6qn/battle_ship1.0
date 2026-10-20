@@ -576,8 +576,8 @@ function returnHome(): void {
 
 @media (max-width: 760px) {
   .placement {
-    gap: 8px;
-    padding: 12px;
+    gap: 6px;
+    padding: 10px;
   }
 
   .placement__title {
