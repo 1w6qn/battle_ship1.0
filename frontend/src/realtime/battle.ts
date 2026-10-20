@@ -82,6 +82,7 @@ export type BattleEmitEvent =
   | 'cancel_magic_selection'
   | 'request_hand_sync'
   | 'surrender'
+  | 'get_discard_pile'
 
 export const BATTLE_EMIT_EVENTS: readonly BattleEmitEvent[] = [
   'attack',
@@ -97,6 +98,7 @@ export const BATTLE_EMIT_EVENTS: readonly BattleEmitEvent[] = [
   'cancel_magic_selection',
   'request_hand_sync',
   'surrender',
+  'get_discard_pile',
 ]
 
 const ALLOWED_EMITS: readonly string[] = BATTLE_EMIT_EVENTS satisfies readonly InboundEvent[]
@@ -140,6 +142,15 @@ function appendCell(list: unknown, point: Point, hit: boolean): Array<{ x: numbe
   const cells = Array.isArray(list) ? (list as Array<{ x: number; y: number; hit: boolean }>) : []
   if (cells.some((cell) => cell && cell.x === point.x && cell.y === point.y)) return cells.slice()
   return [...cells, { x: point.x, y: point.y, hit }]
+}
+
+/**
+ * The 90s watchdog frames say what the server did for the player ("思考超时：已
+ * 自动开火 (2,3)"). Ticket #47 shows them as a HUD banner instead of a toast
+ * that can vanish before the player looks back at the screen.
+ */
+function noteTimeoutIfAny(match: ReturnType<typeof useMatchStore>, text: string): void {
+  if (text.includes('超时')) match.setTimeoutNote(text)
 }
 
 /** Apply one battle frame to the stores. Shared by the wire and the test build. */
@@ -376,11 +387,15 @@ export function applyBattleEvent(
       break
     }
     case 'game_message': {
-      match.pushNotice(String(payload.message ?? ''), payload.type === 'warning' ? 'warning' : 'info')
+      const text = String(payload.message ?? '')
+      noteTimeoutIfAny(match, text)
+      match.pushNotice(text, payload.type === 'warning' ? 'warning' : 'info')
       break
     }
     case 'message': {
-      match.pushNotice(String(payload.text ?? payload.message ?? ''))
+      const text = String(payload.text ?? payload.message ?? '')
+      noteTimeoutIfAny(match, text)
+      match.pushNotice(text)
       break
     }
     case 'error': {
@@ -479,10 +494,20 @@ export function acquireBattleChannel(pinia?: Pinia): () => void {
       throw new Error('settlement channel did not open a socket')
     }
     const stopListeners = installBattleListeners(socket, pinia)
+    // Connection state is a HUD fact (spec §5), so it is mirrored into the game
+    // store here — the only place that owns this socket. No second flag.
+    const game = useGameStore(pinia)
+    const onConnect = (): void => game.setConnected(true)
+    const onDisconnect = (): void => game.setConnected(false)
+    socket.socket.on('connect', onConnect)
+    socket.socket.on('disconnect', onDisconnect)
+    game.setConnected(socket.socket.connected)
     active = {
       socket,
       releaseSettlement,
       stop: () => {
+        socket.socket.off('connect', onConnect)
+        socket.socket.off('disconnect', onDisconnect)
         stopListeners()
         releaseSettlement()
       },
