@@ -172,6 +172,8 @@ def frontend_ts() -> str:
         "",
         _ts_array("DEBUG_EVENTS", DEBUG_EVENTS),
         "",
+        _ts_array("SOCKET_ERROR_CODES", SOCKET_ERROR_CODES),
+
         # The reconnect snapshot is the widest server state a screen can receive;
         # the Pinia store mirrors these keys (ticket #21) and a type-level parity
         # check fails the build if a contract field is dropped or misspelled.
@@ -212,7 +214,6 @@ def frontend_ts() -> str:
         "",
         "export interface AckResponse {",
         "  status: 'success' | 'error'",
-        "  code: string | null",
         "  message: string | null",
         "  data: Record<string, unknown> | null",
         "}",

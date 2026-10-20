@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import MatchFoundOverlay from '../../components/MatchFoundOverlay.vue'
 import StateSurface from '../../components/StateSurface.vue'
 import { acquireLobbyChannel, getLobbySocket } from '../../realtime/lobby'
+import { useHomeStore } from '../../stores/home'
 import { useUiStore } from '../../stores/ui'
 import {
   lobbyPlayerName,
@@ -47,6 +48,7 @@ import {
 const router = useRouter()
 const lobby = useLobbyStore()
 const ui = useUiStore()
+const home = useHomeStore()
 
 const filter = ref<LobbyFilter>('all')
 const query = ref('')
@@ -423,7 +425,32 @@ watch(
   },
 )
 
+// The announcement column is the same data the home screen already fetches
+// (spec §4: one-line closable notice in the lobby too; no new endpoint).
+const CHANGELOG_CLOSED_KEY = 'battleship.lobby.changelogClosed'
+const changelogClosed = ref(false)
+const changelogText = computed(() => {
+  const latest = home.changelog[0]
+  if (!latest || !Array.isArray(latest.items) || !latest.items.length) return ''
+  return latest.items.join('；')
+})
+
+function closeChangelog(): void {
+  changelogClosed.value = true
+  try {
+    window.localStorage.setItem(CHANGELOG_CLOSED_KEY, '1')
+  } catch {
+    // Storage is best effort; the line still closes for this visit.
+  }
+}
+
 onMounted(() => {
+  try {
+    changelogClosed.value = window.localStorage.getItem(CHANGELOG_CLOSED_KEY) === '1'
+  } catch {
+    changelogClosed.value = false
+  }
+  if (!home.changelogLoaded) void home.loadChangelog(1)
   releaseChannel = acquireLobbyChannel()
   void loadFriends()
   maybeLeaveLobbyForMatch()
@@ -470,6 +497,11 @@ onBeforeUnmount(() => {
         <button type="button" class="button button--ghost" data-testid="lobby-refresh" @click="refresh">刷新</button>
       </div>
     </header>
+
+    <p v-if="!changelogClosed && changelogText" class="lobby__changelog" data-testid="lobby-changelog" role="status">
+      <span class="lobby__changelog-text">公告 · {{ changelogText }}</span>
+      <button type="button" class="lobby__changelog-close" data-testid="lobby-changelog-close" aria-label="关闭公告" @click="closeChangelog">关闭</button>
+    </p>
 
     <p v-if="lobby.notice" class="lobby__notice" data-testid="lobby-notice" role="status">{{ lobby.notice }}</p>
     <p v-if="lobby.error" class="lobby__error" data-testid="lobby-error" role="alert">
@@ -922,6 +954,35 @@ onBeforeUnmount(() => {
 .lobby__queue {
   color: var(--accent);
   font-size: 12px;
+}
+
+.lobby__changelog {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.lobby__changelog-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.lobby__changelog-close {
+  min-height: 32px;
+  padding: 2px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .lobby__notice,

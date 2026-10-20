@@ -296,7 +296,11 @@ def create_application(settings: Settings | None = None,
     # service (CLAUDE #17: the online table must exist exactly once).
     presence = PresenceService()
     auth = AuthService(database, settings)
-    rooms = RoomService(presence=presence, capability_gate=auth.capability_denied)
+    rooms = RoomService(
+        presence=presence,
+        capability_gate=auth.capability_denied,
+        turn_timeout_seconds=settings.turn_timeout_seconds,
+    )
     gameplay = GameplayService(
         rooms, turn_timeout_seconds=settings.turn_timeout_seconds
     )

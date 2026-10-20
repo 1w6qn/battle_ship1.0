@@ -17,7 +17,6 @@ import {
  */
 export const useGameStore = defineStore('game', () => {
   const state = ref<GameState>(defaultGameState())
-  const connected = ref(false)
   const unknownFields = ref<string[]>([])
   const revision = ref(0)
 
@@ -43,17 +42,13 @@ export const useGameStore = defineStore('game', () => {
     return unknown
   }
 
-  function setConnected(value: boolean): void {
-    connected.value = value
-  }
-
   function reset(): void {
     state.value = defaultGameState()
     unknownFields.value = []
     revision.value += 1
   }
 
-  return { state, connected, unknownFields, revision, applyServerState, setConnected, reset }
+  return { state, unknownFields, revision, applyServerState, reset }
 })
 
 export { GAME_STATE_SCHEMA }
