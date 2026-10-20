@@ -1,8 +1,18 @@
+/* Game HUD (ticket #47): one main board, a status band with the server-owned
+ * turn clock, a readable hand, one target banner, one chain overlay, and
+ * drawers for log/chat/piles. Layout moves are intentional (redesign), so this
+ * file is the new geometry contract: desktop board side >= 480px, hand cards
+ * 118x165 (desktop) / 64x92 (mobile), no page scroll on the game screen. */
+
 .game {
   position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 8px 12px 12px;
+  padding: 8px 14px 10px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .visually-hidden {
@@ -14,310 +24,422 @@
   white-space: nowrap;
 }
 
-.game__hud {
+/* ------------------------------------------------------------ status band --- */
+.game-status {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 12px;
+  gap: 6px 8px;
+  flex: 0 0 auto;
 }
 
-.game__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.game__chip {
-  padding: 4px 11px;
+.game-status__chip {
+  padding: 4px 10px;
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: rgba(21, 26, 48, 0.7);
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  color: var(--text-secondary);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-.game__chip--turn {
-  border-color: var(--accent-strong);
-  background: var(--accent-soft);
-  color: var(--text);
+.game-status__chip--turn {
+  border-color: var(--role-action);
+  background: var(--role-action-soft);
+  color: var(--text-primary);
 }
 
-.game__chip--muted {
-  color: var(--text-muted);
+.game-status__chip--num {
+  color: var(--role-self);
+  border-color: var(--border-strong);
 }
 
-.game__players {
+.game-status__chip--clock {
+  color: var(--text-primary);
+  border-color: var(--role-self);
+}
+
+.game-status__chip--clock.is-warning {
+  border-color: var(--role-warning);
+  background: var(--role-action-soft);
+  color: var(--role-warning);
+  animation: game-clock-pulse 900ms ease-in-out infinite;
+}
+
+.game-status__chip--clock.is-expired {
+  border-color: var(--role-enemy);
+  color: var(--role-enemy);
+  animation: none;
+}
+
+.game-status__chip--muted {
+  color: var(--text-tertiary);
+}
+
+.game-status__chip.is-online {
+  color: var(--role-success);
+}
+
+.game-status__chip.is-offline {
+  color: var(--role-warning);
+  border-color: var(--role-warning);
+}
+
+.game-status__names {
+  margin-left: auto;
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  margin-left: auto;
+  gap: 6px;
   font-size: 13px;
+  color: var(--text-secondary);
 }
 
-.game__vs {
-  color: var(--text-muted);
+.game-status__vs {
+  color: var(--text-tertiary);
   font-size: 11px;
 }
 
-.game__name {
-  font-weight: 600;
-}
-
-.game__ships {
-  color: var(--accent);
+.game-status__ships {
+  color: var(--role-action);
   font-variant-numeric: tabular-nums;
 }
 
-
-
-.game__effects {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  width: 100%;
+@keyframes game-clock-pulse {
+  50% {
+    opacity: 0.55;
+  }
 }
 
-.game__badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.game__badge {
-  padding: 2px 8px;
-  border: 1px solid rgba(201, 162, 76, 0.55);
-  border-radius: 999px;
-  background: var(--gold-soft);
-  color: var(--gold-strong);
-  font-size: 11px;
-}
-
-.game__badge--opponent {
-  border-color: var(--border);
-  background: rgba(21, 26, 48, 0.7);
-  color: var(--text-muted);
-}
-
-.game__empty {
-  margin: 0;
-  padding: 10px 14px;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.game__main {
-  display: flex;
+/* ------------------------------------------------------------------ body --- */
+.game-body {
   flex: 1;
+  display: flex;
   gap: 14px;
   min-height: 0;
   align-items: stretch;
 }
 
-/* C+ game layout: battle log on the left, both seas in the centre, a tall
-   dashed chain rail, then the bottom hand/action strip. */
-.game__log-side {
-  display: flex;
-  flex: 0 0 280px;
-  width: 280px;
-  min-height: 0;
-}
-
-.game__log-side .game__panel {
-  align-self: flex-start;
-  width: 100%;
-  max-height: 360px;
-}
-
-.game__boards {
-  display: flex;
+.game-board-column {
   flex: 1;
-  gap: 18px;
   min-width: 0;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  justify-content: flex-start;
-  padding-top: 82px;
-  --cell: clamp(38px, min(3.5vw, calc((100dvh - 430px) / 6)), 50px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  --cell: clamp(64px, min(9.2vh, 8.6vw), 84px);
 }
 
-.game__tabs {
+.game-tabs {
   display: flex;
   gap: 6px;
   width: 100%;
+  max-width: 480px;
 }
 
-.game__tab {
+.game-tab {
   flex: 1;
+  min-height: 40px;
   padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-sunken);
-  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-secondary);
   font: inherit;
   font-size: 13px;
 }
 
-.game__tab--active {
-  border-color: var(--accent-strong);
-  color: var(--text);
-  background: var(--accent-soft);
+.game-tab[aria-selected='true'] {
+  border-color: var(--role-action);
+  color: var(--text-primary);
+  background: var(--role-action-soft);
 }
 
-.game__side {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex: 0 0 200px;
-  width: 200px;
-  min-height: 0;
-}
-
-.game__side > .game__panel {
-  flex: 1;
-  padding: 12px;
-  border: 1px dashed rgba(230, 199, 120, 0.45);
-  background: rgba(32, 28, 16, 0.22);
-}
-
-.game__panel {
-  padding: 10px 12px;
-  border: 1px solid var(--panel-line);
-  border-radius: 10px;
-  background: var(--panel);
-  min-height: 0;
-}
-
-.game__panel--log {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+.game-latest {
+  margin: 0;
+  max-width: 560px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: center;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.game__panel-title {
-  margin: 0 0 8px;
-  padding-bottom: 7px;
-  border-bottom: 1px dashed var(--line-dash);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-}
-
-.game__panel-empty {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.game__chain {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.game__chain-item {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 4px 8px;
-  border: 1px solid rgba(124, 92, 240, 0.5);
-  border-radius: 8px;
-  background: var(--accent-soft);
-  font-size: 13px;
-}
-
-.game__chain-item--negated {
-  border-color: rgba(255, 92, 108, 0.45);
-  background: rgba(42, 20, 24, 0.8);
-  text-decoration: line-through;
-  opacity: 0.7;
-}
-
-.game__chain-negated {
-  color: var(--danger);
-  font-size: 11px;
-  text-decoration: none;
-}
-
-.game__logs {
+.game-notices {
   display: flex;
   flex-direction: column;
   gap: 3px;
   margin: 0;
   padding: 0;
   list-style: none;
-  overflow-y: auto;
-  min-height: 0;
-  font-size: 12px;
-  color: var(--text-muted);
+  max-width: 560px;
 }
 
-.game__log {
+.game-notice {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.game-notice--warning {
+  color: var(--role-warning);
+}
+
+.game-notice--error {
+  color: var(--role-enemy);
+}
+
+.game-receipt {
+  margin: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--role-warning);
+  border-radius: var(--radius-sm);
+  background: var(--role-action-soft);
+  color: var(--role-warning);
+  font-size: 12px;
   line-height: 1.4;
 }
 
-.game__bottom {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: end;
-  gap: 12px;
+.game-banner {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--role-action);
+  font-size: 12px;
 }
 
-.game__hand-wrap {
-  grid-column: 2;
-  justify-self: center;
+.game-banner--warning {
+  border-color: var(--role-warning);
+  color: var(--role-warning);
+}
+
+.game-empty {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------------ rail --- */
+.game-rail {
+  flex: 0 0 244px;
+  width: 244px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.game-map {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  min-height: 44px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.game-map:hover {
+  border-color: var(--role-self);
+}
+
+.game-map__grid {
+  display: grid;
+  grid-template-columns: repeat(6, 11px);
+  gap: 2px;
+}
+
+.game-map__cell {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  background: var(--surface-deck);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.game-map__cell.is-ship {
+  background: #7f93a3;
+}
+
+.game-map__cell.is-hit {
+  background: var(--role-enemy);
+}
+
+.game-map__cell.is-miss {
+  background: var(--role-self-soft);
+}
+
+.game-map__label {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text-tertiary);
+}
+
+.game-map__note {
+  color: #6fb7ff;
+}
+
+.game-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.game-slot {
+  padding: 3px 7px;
+  border: 1px solid var(--role-self);
+  border-radius: var(--radius-pill);
+  background: var(--role-self-soft);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.game-slot.is-lost {
+  border-color: var(--role-enemy);
+  background: var(--role-enemy-soft);
+  color: var(--role-enemy);
+  text-decoration: line-through;
+}
+
+.game-slot.is-frozen {
+  border-color: #6fb7ff;
+}
+
+.game-slot.is-shielded {
+  border-color: var(--role-action);
+  color: var(--role-action);
+}
+
+.game-rail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.game-mini-button {
+  flex: 1 1 auto;
+  min-height: 40px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.game-mini-button:hover {
+  border-color: var(--role-action);
+  color: var(--text-primary);
+}
+
+.game-chain-empty {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.game-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-height: 0;
+}
+
+.game-badge {
+  padding: 2px 8px;
+  border: 1px solid rgba(240, 182, 78, 0.55);
+  border-radius: var(--radius-pill);
+  background: var(--role-action-soft);
+  color: var(--role-action);
+  font-size: 11px;
+}
+
+.game-badge--opponent {
+  border-color: var(--border-strong);
+  background: var(--panel);
+  color: var(--text-tertiary);
+}
+
+/* ------------------------------------------------------------------ hand --- */
+.game-bottom {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  min-height: 0;
+}
+
+.game-hand-wrap {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 0;
 }
 
-.game__stats {
+.game-hand-head {
   display: flex;
+  align-items: baseline;
   gap: 12px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
-.game__hand {
+.game-hand-count {
+  color: var(--text-secondary);
+}
+
+.game-hand {
   display: flex;
   gap: 8px;
   overflow-x: auto;
-  padding-bottom: 4px;
-  min-height: 150px;
+  overflow-y: hidden;
+  padding: 2px 2px 6px;
+  min-height: 172px;
 }
 
-.game__hand-empty {
+.game-hand-empty {
   margin: 0;
   align-self: center;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 13px;
 }
 
 .card {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 96px;
-  min-width: 96px;
-  aspect-ratio: 2 / 3;
-  padding: 6px 8px;
+  flex: 0 0 118px;
+  width: 118px;
+  height: 165px;
+  padding: 0;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: linear-gradient(170deg, #232b52, #12172e);
-  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(170deg, #16333f, #0a1720 72%);
+  color: var(--text-primary);
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -327,436 +449,974 @@
   padding: 0;
 }
 
-.card--art .card__name,
-.card--art .card__gems,
-.card--art .card__type,
-.card--art .card__desc {
-  display: none;
-}
-
 .card__art {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  opacity: 0.28;
 }
 
-.card:hover {
-  border-color: var(--accent-strong);
-}
-
-.card--selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(124, 92, 240, 0.45);
-}
-
-.card--disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.card__body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: 100%;
+  padding: 6px 7px;
+  background: linear-gradient(180deg, rgba(4, 12, 18, 0.35), rgba(4, 12, 18, 0.82));
 }
 
 .card__name {
   font-size: 13px;
   font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .card__gems {
-  color: var(--accent);
+  color: var(--role-action);
   font-size: 10px;
   letter-spacing: 1px;
 }
 
-.card__type {
-  color: var(--text-muted);
+.card__speed {
+  margin-left: 3px;
   font-size: 10px;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+.card__type {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .card__desc {
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 10px;
-  line-height: 1.35;
+  line-height: 1.32;
 }
 
-.game__actions {
-  grid-column: 3;
-  justify-self: end;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  max-width: 380px;
+.card__reason {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: auto;
+  color: var(--role-warning);
+  font-size: 9px;
+  line-height: 1.25;
 }
 
-.game__hint {
-  flex-basis: 100%;
+.card:hover {
+  border-color: var(--role-action);
+}
+
+.card--selected {
+  border-color: var(--role-action);
+  box-shadow: 0 0 0 2px var(--role-action-soft);
+}
+
+.card--disabled {
+  border-color: var(--border-subtle);
+}
+
+.card--disabled .card__body {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(4, 12, 18, 0.85),
+    rgba(4, 12, 18, 0.85) 6px,
+    rgba(4, 12, 18, 0.7) 6px,
+    rgba(4, 12, 18, 0.7) 12px
+  );
+}
+
+.card--disabled .card__name,
+.card--disabled .card__gems {
+  color: var(--role-disabled);
+}
+
+.game-card-hint {
   margin: 0;
-  color: var(--text-muted);
+  color: var(--role-warning);
   font-size: 12px;
 }
 
-.game__action {
+/* --------------------------------------------------------------- actions --- */
+.game-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 320px;
+}
+
+.game-turn-hint {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: right;
+}
+
+.game-actions__row {
+  display: flex;
+  gap: 6px;
+}
+
+.game-primary {
+  min-height: 44px;
+  padding: 8px 18px;
+  border: 1px solid var(--role-action);
+  border-radius: var(--radius-sm);
+  background: var(--role-action);
+  color: #08131a;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.game-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.game-more {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.game-more-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-chamber);
+  box-shadow: var(--shadow-panel);
+}
+
+.game-more__item {
+  min-height: 40px;
   padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-secondary);
+  font: inherit;
   font-size: 12px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.game__action:disabled {
+.game-more__item:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.game__action--active {
-  border-color: var(--accent);
-  color: var(--accent);
+.game-more__item.button--danger {
+  border-color: var(--role-enemy);
+  color: var(--role-enemy);
 }
 
-.game__action--danger {
-  border-color: #6b2b26;
-  background: #2a1414;
+.game-more__item.is-armed {
+  background: var(--role-enemy-soft);
 }
 
-.game__target,
-.game__chain-window,
-.game__pick,
-.game__drawer {
+.game-more__note {
+  margin: 4px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.button--ghost {
+  background: var(--surface-deck);
+}
+
+.button--danger {
+  border-color: var(--role-enemy);
+  color: var(--role-enemy);
+}
+
+.game-close {
+  min-width: 40px;
+  min-height: 40px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-deck);
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------ card detail --- */
+.game-detail {
   position: absolute;
-  z-index: 20;
-  right: 12px;
-  bottom: 12px;
-  width: min(420px, calc(100% - 24px));
+  z-index: 26;
+  right: 14px;
+  bottom: 196px;
+  width: min(340px, calc(100% - 28px));
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 12px;
-  border: 1px solid var(--accent-strong);
+  border: 1px solid var(--role-action);
   border-radius: var(--radius);
-  background: #0b1c26;
-  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  background: var(--surface-chamber);
+  box-shadow: var(--shadow-panel);
 }
 
-.game__drawer {
-  right: 12px;
-  top: 12px;
-  bottom: auto;
-  max-height: 70%;
-  overflow-y: auto;
-}
-
-@media (max-width: 1279px) {
-  .game__log-side {
-    display: none;
-  }
-
-  .game__side {
-    flex-basis: 190px;
-    width: 190px;
-  }
-
-  .game__boards {
-    padding-top: 0;
-  }
-
-  .game__tab {
-    min-height: 40px;
-  }
-
-  .game__action {
-    min-height: 40px;
-  }
-}
-
-@media (max-width: 899px) {
-  .game {
-    padding: 3px 10px 4px;
-    gap: 4px;
-  }
-
-  .game__main {
-    gap: 6px;
-  }
-
-  .game__bottom {
-    display: flex;
-    gap: 6px;
-  }
-
-  .game__hand-wrap {
-    flex: 1;
-    justify-self: stretch;
-  }
-
-  .game__actions {
-    justify-self: auto;
-  }
-
-  .game__hand {
-    min-height: 100px;
-  }
-}
-
-.game__chain-window {
-  border-color: #ffd76a;
-  left: 12px;
-  right: auto;
-}
-
-.game__pick {
-  left: 12px;
-  right: auto;
-  bottom: 12px;
-  border-color: var(--danger);
-}
-
-.game__drawer-head {
+.game-detail__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.game__target-hint,
-.game__target-selected {
+.game-detail__name {
   margin: 0;
-  color: var(--text-muted);
+  font-size: 16px;
+}
+
+.game-detail__meta {
+  margin: 0;
+  color: var(--role-action);
   font-size: 12px;
 }
 
-.game__target-error {
+.game-detail__desc {
   margin: 0;
-  color: var(--danger);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.game-detail__reason {
+  margin: 0;
+  color: var(--role-warning);
   font-size: 12px;
 }
 
-.game__target-row {
+.game-detail__actions {
   display: flex;
-  flex-wrap: wrap;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
-.game__chain-countdown {
-  margin: 0;
-  color: #ffd76a;
+.game-detail__use,
+.game-detail__actions .button {
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-primary);
+  font: inherit;
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
+  cursor: pointer;
 }
 
-.game__chat-items {
+.game-detail__use {
+  border-color: var(--role-action);
+  background: var(--role-action);
+  color: #08131a;
+  font-weight: 700;
+}
+
+.game-detail__use:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------- target banner --- */
+.game-target {
+  position: absolute;
+  z-index: 30;
+  top: 54px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(760px, calc(100% - 28px));
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--role-action);
+  border-radius: var(--radius);
+  background: var(--surface-chamber);
+  box-shadow: var(--shadow-panel);
 }
 
-.game__chat-item {
-  padding: 4px 8px;
+.game-target__main {
+  flex: 1 1 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.game-target__title {
+  margin: 0;
+  font-size: 14px;
+  color: var(--role-action);
+}
+
+.game-target__hint,
+.game-target__selected {
+  margin: 0;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
-.game__chat-log {
+.game-target__error {
+  margin: 0;
+  color: var(--role-enemy);
+  font-size: 12px;
+}
+
+.game-target__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.game-target__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.game-target__option,
+.game-target__confirm,
+.game-target .button {
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.game-target__confirm {
+  border-color: var(--role-action);
+  background: var(--role-action);
+  color: #08131a;
+  font-weight: 700;
+}
+
+.game-target__confirm:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.game__action--active {
+  border-color: var(--role-action);
+  color: var(--role-action);
+}
+
+/* ------------------------------------------------------------ chain overlay --- */
+.game-chain-panel {
+  position: absolute;
+  z-index: 35;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 28px));
+  max-height: min(78vh, 560px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--role-action);
+  border-radius: var(--radius);
+  background: var(--surface-chamber);
+  box-shadow: var(--shadow-panel);
+}
+
+.game-chain-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.game-chain-panel__title {
+  margin: 0;
+  font-size: 14px;
+  color: var(--role-action);
+}
+
+.game-chain-stack {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 6px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
-  color: var(--text-muted);
+}
+
+.game-chain-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--role-self);
+  border-radius: var(--radius-sm);
+  background: var(--role-self-soft);
+  font-size: 13px;
+}
+
+.game-chain-item--negated {
+  border-color: var(--role-enemy);
+  background: var(--role-enemy-soft);
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+
+.game-chain-index {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.game-chain-negated {
+  color: var(--role-enemy);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.game-chain-window {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.game-chain-window__who,
+.game-chain-window__card,
+.game-chain-window__consequence {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.game-chain-window__consequence {
+  color: var(--role-warning);
+}
+
+.game-chain-countdown {
+  margin: 0;
+  color: var(--role-action);
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.game-chain-window__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.game-chain-window__actions .button {
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid var(--role-action);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ----------------------------------------------------------------- dialogs --- */
+.game-dialog {
+  position: absolute;
+  z-index: 40;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100% - 28px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-chamber);
+  box-shadow: var(--shadow-panel);
+}
+
+.game-dialog__title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.game-dialog__hint,
+.game-dialog__error {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.game-dialog__error {
+  color: var(--role-enemy);
+}
+
+.game-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.game-dialog__actions .button,
+.game-dialog .button {
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ drawers --- */
+.game-drawer {
+  position: absolute;
+  z-index: 45;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: min(360px, calc(100% - 16px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-chamber);
+  box-shadow: var(--shadow-panel);
+  overflow-y: auto;
+}
+
+.game-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.game-drawer__title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.game-drawer__subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.game-drawer__empty {
+  margin: 0;
+  color: var(--text-tertiary);
   font-size: 12px;
 }
 
-.game__chat-text {
+.game-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.game-log__entry {
+  line-height: 1.45;
+}
+
+.game-chat-text {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.game__chat-line {
+.game-chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.game-chat-line {
   overflow-wrap: anywhere;
 }
 
-.game__chat-line b {
-  color: var(--accent);
+.game-chat-line b {
+  color: var(--role-self);
 }
 
-.game__chat-line--mine b {
-  color: var(--text);
+.game-chat-line--mine b {
+  color: var(--text-primary);
 }
 
-.game__chat-form {
+.game-chat-form {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.game__chat-input {
+.game-chat-input {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 40px;
   padding: 6px 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #081824;
-  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-deck);
+  color: var(--text-primary);
   font: inherit;
   font-size: 13px;
 }
 
-.game__banner {
-  margin: 0;
-  padding: 6px 10px;
-  border: 1px solid #b8872e;
-  border-radius: 8px;
-  background: #2a2412;
-  color: #ffd76a;
-  font-size: 12px;
-}
-
-.game__notice-text {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.game__notices {
-  position: absolute;
-  z-index: 30;
-  left: 12px;
-  top: 12px;
+.game-chat-items {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
-  max-width: min(420px, calc(100% - 24px));
 }
 
-.game__notice {
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #0b1c26;
+.game-chat-item {
+  min-height: 40px;
+  padding: 4px 8px;
   font-size: 12px;
 }
 
-.game__notice--warning {
-  border-color: #b8872e;
-  color: #ffd76a;
+.game-discard-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.game__notice--error {
-  border-color: var(--danger);
-  color: var(--danger);
+.game-discard-item {
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-deck);
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
-@media (max-width: 900px) {
-  .game__side {
-    width: 200px;
+/* ------------------------------------------------------------- self zoom --- */
+.game-zoom {
+  position: absolute;
+  z-index: 50;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--scrim);
+  --cell: clamp(48px, min(8.4vh, 9vw), 72px);
+}
+
+.game-zoom__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.game-zoom__title {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+/* --------------------------------------------------------------- responsive --- */
+@media (max-width: 1100px) {
+  .game-rail {
+    flex-basis: 208px;
+    width: 208px;
+  }
+
+  .game-board-column {
+    --cell: clamp(58px, min(8.6vh, 8vw), 76px);
   }
 }
 
 @media (max-width: 719px) {
   .game {
-    padding: 6px;
+    gap: 3px;
+    padding: 3px 6px 4px;
+  }
+
+  .game-status {
+    gap: 3px 4px;
+  }
+
+  .game-status__chip {
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+
+  .game-status__names {
+    width: 100%;
+    margin-left: 0;
+    font-size: 11px;
+  }
+
+  .game-status__chip--muted {
+    display: none;
+  }
+
+  .game-body {
+    flex-direction: column;
     gap: 4px;
   }
 
-  .game__main {
-    flex-direction: column;
+  .game-board-column {
+    --cell: clamp(40px, min(11.4vw, 5.2vh), 52px);
+    gap: 2px;
   }
 
-  .game__boards {
-    display: block;
-    --cell: clamp(32px, min(12vw, calc((100dvh - 500px) / 6)), 40px);
-  }
-
-  .game__side {
-    display: none;
-  }
-
-  .game__side--open {
-    display: flex;
-    position: absolute;
-    z-index: 25;
-    inset: 6px;
-    width: auto;
-    padding: 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: #0b1c26;
-    overflow-y: auto;
-  }
-
-  .game__chain-strip {
-    margin: 0;
-    color: var(--accent);
-    font-size: 11px;
-  }
-
-  .game__panel--log {
-    max-height: none;
-    flex: 0 1 auto;
-  }
-
-  .game__hint {
-    display: none;
-  }
-
-  .game__chip {
-    font-size: 11px;
-    padding: 2px 7px;
-  }
-
-  .game__bottom {
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .game__actions {
+  .game-tabs {
     max-width: none;
-    width: 100%;
   }
 
-  .game__hand {
-    min-height: 104px;
-  }
-
-  .game__stats {
+  .game-latest {
     display: none;
   }
 
-  .card {
-    width: 70px;
-    min-width: 70px;
+  .game-rail {
+    flex: 0 0 auto;
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    overflow: visible;
+  }
+
+  .game-map {
+    flex: 0 0 auto;
+    min-height: 40px;
     padding: 4px 6px;
   }
 
-  .card--art {
-    padding: 0;
+  .game-map__grid {
+    display: none;
+  }
+
+  .game-map__label {
+    font-size: 10px;
+  }
+
+  .game-slots {
+    flex: 1 1 auto;
+    gap: 3px;
+  }
+
+  .game-slot {
+    padding: 2px 5px;
+    font-size: 10px;
+  }
+
+  .game-rail__actions {
+    display: none;
+  }
+
+  .game-chain-empty,
+  .game-badges {
+    display: none;
+  }
+
+  .game-bottom {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .game-hand {
+    min-height: 96px;
+    gap: 6px;
+    padding: 1px 2px 2px;
+  }
+
+  .card {
+    flex-basis: 64px;
+    width: 64px;
+    height: 92px;
+  }
+
+  .card__body {
+    padding: 4px 5px;
+    gap: 1px;
+  }
+
+  .card__name {
+    font-size: 10px;
+  }
+
+  .card__gems,
+  .card__speed {
+    font-size: 8px;
+    letter-spacing: 0;
+  }
+
+  .card__type {
+    font-size: 8px;
   }
 
   .card__desc {
     -webkit-line-clamp: 2;
-    font-size: 9px;
+    font-size: 8px;
+    line-height: 1.25;
   }
 
-  .game__target,
-  .game__drawer,
-  .game__pick,
-  .game__chain-window {
+  .card__reason {
+    font-size: 8px;
+    -webkit-line-clamp: 1;
+  }
+
+  .game-actions {
+    max-width: none;
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .game-turn-hint {
+    display: none;
+  }
+
+  .game-actions__row {
+    width: 100%;
+  }
+
+  .game-primary,
+  .game-more {
+    flex: 1;
+    min-height: 44px;
+  }
+
+  .game-more-menu {
+    max-height: 38vh;
+    overflow-y: auto;
+  }
+
+  .game-detail {
     left: 6px;
     right: 6px;
+    bottom: 160px;
     width: auto;
-    bottom: 6px;
   }
 
-  .game__drawer {
-    top: 6px;
-    bottom: auto;
-    max-height: 60%;
+  .game-target {
+    top: 4px;
+    width: calc(100% - 12px);
+    flex-direction: column;
+    max-height: 62vh;
+    overflow-y: auto;
+  }
+
+  .game-target__controls {
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .game-target__row {
+    width: 100%;
+  }
+
+  .game-target__option,
+  .game-target__confirm,
+  .game-target .button {
+    flex: 1;
+  }
+
+  .game-chain-panel {
+    top: 4px;
+    width: calc(100% - 12px);
+    max-height: 70vh;
+  }
+
+  .game-drawer {
+    top: 4px;
+    right: 4px;
+    bottom: 4px;
+    width: calc(100% - 8px);
+  }
+
+  .game-zoom {
+    --cell: clamp(44px, min(12vw, 7.2vh), 56px);
+  }
+
+  .game-dialog {
+    width: calc(100% - 16px);
+  }
+}
+
+@media (max-height: 780px) {
+  .game-board-column {
+    --cell: clamp(56px, 8vh, 74px);
+  }
+
+  .game-hand {
+    min-height: 156px;
+  }
+
+  .card {
+    flex-basis: 110px;
+    width: 110px;
+    height: 152px;
+  }
+
+  .card__desc {
+    -webkit-line-clamp: 3;
   }
 }
