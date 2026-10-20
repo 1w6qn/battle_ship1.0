@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProfileStore, type JsonObject } from '../../stores/profile'
+import { useUiStore } from '../../stores/ui'
 
 /**
  * Ticket #25: own / other player's profile card.
@@ -14,6 +15,7 @@ import { useProfileStore, type JsonObject } from '../../stores/profile'
 const route = useRoute()
 const router = useRouter()
 const store = useProfileStore()
+const ui = useUiStore()
 
 const targetUsername = computed(() => String(route.query.username || '').trim())
 const viewed = computed(() => store.viewed)
@@ -85,7 +87,8 @@ const losses = computed(() => readNumber(stats.value, 'losses') ?? 0)
 const totalMatches = computed(() => wins.value + losses.value)
 const winRateText = computed(() => {
   const total = totalMatches.value
-  return total ? Math.round((wins.value / total) * 100) + '%' : '—'
+  // Unknown is shown as 暂无, never as a dash row (spec story 97).
+  return total ? Math.round((wins.value / total) * 100) + '%' : '暂无'
 })
 const streak = computed(() => readNumber(stats.value, 'longest_streak') ?? 0)
 
@@ -204,8 +207,70 @@ function openSettings(): void {
   void router.push({ name: 'settings' })
 }
 
+/** Where 返回 goes: the query the caller sent, then browser history, then the board. */
+const FROM_ROUTES: Record<string, { name: string }> = {
+  start: { name: 'start' },
+  home: { name: 'start' },
+  leaderboard: { name: 'leaderboard' },
+  lobby: { name: 'lobby' },
+  'game-over': { name: 'game-over' },
+  replay: { name: 'replay' },
+  spectate: { name: 'spectate' },
+}
+
 function back(): void {
+  const from = String(route.query.from || '')
+  const target = FROM_ROUTES[from]
+  if (target) {
+    void router.push(target)
+    return
+  }
+  const historyBack = router.options.history.state.back
+  if (typeof historyBack === 'string' && historyBack && historyBack !== route.fullPath) {
+    router.back()
+    return
+  }
   void router.push({ name: 'leaderboard' })
+}
+
+// ------------------------------------------------------- recent entries ----
+// The three entries (badges / record / replay) are ordered by most recent use
+// and the order is remembered, so a returning player's habitual entry is first.
+type QuickKey = 'badges' | 'record' | 'replay'
+const QUICK_KEY = 'battleship.profile.recent'
+const QUICK_DEFAULT: QuickKey[] = ['badges', 'record', 'replay']
+const QUICK_LABELS: Record<QuickKey, string> = { badges: '徽章', record: '战绩', replay: '回放' }
+const QUICK_TARGETS: Record<QuickKey, string> = {
+  badges: 'profile-badges',
+  record: 'profile-history',
+  replay: 'profile-history',
+}
+
+function readQuickOrder(): QuickKey[] {
+  try {
+    const raw = localStorage.getItem(QUICK_KEY)
+    if (!raw) return [...QUICK_DEFAULT]
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return [...QUICK_DEFAULT]
+    const valid = parsed.filter((item): item is QuickKey => QUICK_DEFAULT.includes(item as QuickKey))
+    return [...valid, ...QUICK_DEFAULT.filter((item) => !valid.includes(item))]
+  } catch {
+    return [...QUICK_DEFAULT]
+  }
+}
+
+const quickOrder = ref<QuickKey[]>(readQuickOrder())
+
+function useQuick(key: QuickKey): void {
+  quickOrder.value = [key, ...quickOrder.value.filter((item) => item !== key)]
+  try {
+    localStorage.setItem(QUICK_KEY, JSON.stringify(quickOrder.value))
+  } catch {
+    // Best effort: the order still changes for this visit.
+  }
+  document
+    .querySelector('[data-testid="' + QUICK_TARGETS[key] + '"]')
+    ?.scrollIntoView({ block: 'start', behavior: 'smooth' })
 }
 
 async function refresh(): Promise<void> {
@@ -251,7 +316,14 @@ watch(targetUsername, () => {
     <section v-else-if="loginRequired" class="profile__login" data-testid="profile-login-required">
       <h2>需要先登录</h2>
       <p>自己的名片、徽章与隐私设置都在登录后显示。</p>
-      <a class="button" href="/login">前往登录</a>
+      <button
+        type="button"
+        class="button"
+        data-testid="profile-login-required-action"
+        @click="ui.requestLogin('login', '登录后查看完整名片')"
+      >
+        登录 / 注册
+      </button>
     </section>
 
     <p v-else-if="empty" class="profile__state" data-testid="profile-empty">
@@ -263,6 +335,20 @@ watch(targetUsername, () => {
     </p>
 
     <template v-else-if="ready">
+      <!-- Most-recently-used first (spec story 120, ticket #49). -->
+      <nav class="profile__quick" data-testid="profile-quick" aria-label="常用入口">
+        <button
+          v-for="key in quickOrder"
+          :key="key"
+          type="button"
+          class="profile__quick-item"
+          :data-testid="'profile-quick-' + key"
+          @click="useQuick(key)"
+        >
+          {{ QUICK_LABELS[key] }}
+        </button>
+      </nav>
+
       <article class="profile__card" :data-bg="cardBg">
         <header class="profile__hero">
           <div class="profile__avatar-wrap">
@@ -277,9 +363,9 @@ watch(targetUsername, () => {
               <span :class="{ 'is-rainbow': nameStyle === 'rainbow' }" data-testid="profile-name">{{ displayName }}</span>
               <span v-if="titleName" class="profile__title-chip" data-testid="profile-title">{{ titleName }}</span>
             </h2>
-            <p class="profile__status" data-testid="profile-status">{{ statusText || '这位玩家还没有写状态' }}</p>
-            <p class="profile__signature" data-testid="profile-signature">
-              {{ signature || '还没有填写个性签名' }}
+            <p v-if="statusText" class="profile__status" data-testid="profile-status">{{ statusText }}</p>
+            <p v-if="signature" class="profile__signature" data-testid="profile-signature">
+              {{ signature }}
             </p>
             <div v-if="tags.length" class="profile__tags" data-testid="profile-tags">
               <span v-for="tag in tags" :key="tag" class="profile__tag">{{ tag }}</span>
@@ -376,8 +462,8 @@ watch(targetUsername, () => {
         <p v-else class="profile__private" data-testid="profile-history-private">该玩家未公开对局历史。</p>
 
         <footer class="profile__meta" data-testid="profile-meta">
-          <span data-testid="profile-meta-joined">{{ createdAt ? '加入于 ' + createdAt : '加入时间未知' }}</span>
-          <span data-testid="profile-meta-rank">{{ winsRank ? '战绩榜第 ' + winsRank + ' 名' : '暂未上榜' }}</span>
+          <span v-if="createdAt" data-testid="profile-meta-joined">加入于 {{ createdAt }}</span>
+          <span v-if="winsRank" data-testid="profile-meta-rank">战绩榜第 {{ winsRank }} 名</span>
           <span data-testid="profile-meta-record">{{ wins }} 胜 {{ losses }} 负</span>
         </footer>
       </article>
@@ -860,6 +946,43 @@ watch(targetUsername, () => {
   border-color: var(--border-strong);
   background: rgba(13, 17, 34, 0.72);
   color: var(--text-muted);
+}
+
+.profile__quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 800px;
+  max-width: 100%;
+  padding: 0 0 10px;
+}
+
+.profile__quick-item {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-chamber);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.profile__quick-item:hover {
+  border-color: var(--role-self);
+  color: var(--text-primary);
+  background: var(--role-self-soft);
+}
+
+@media (max-width: 719px) {
+  .profile__quick-item,
+  .profile__actions .button,
+  .profile__actions button,
+  .profile__history-row button {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
 
 @media (max-width: 760px) {

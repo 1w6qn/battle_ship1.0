@@ -201,6 +201,46 @@ html[data-theme='journal'] {
   --rank-grad: linear-gradient(120deg, #b28a3a, #7d5a20);
 }
 
+/* --------------------------------------------------- font scale ----------
+ * The accessibility size switch (ticket #49). base.css maps the three levels
+ * to a body zoom so every screen scales, including components that still carry
+ * fixed px sizes from earlier tickets. */
+:root {
+  --font-scale: 1;
+}
+
+/* --------------------------------------------------- high contrast -----
+ * Orthogonal to the three themes: stronger borders and pure ink. A separate
+ * block per colour scheme keeps the light theme readable. */
+html[data-contrast='high'] {
+  --border-subtle: rgba(180, 240, 255, 0.45);
+  --border-strong: rgba(180, 240, 255, 0.75);
+  --border: var(--border-subtle);
+  --panel-line: rgba(180, 240, 255, 0.45);
+  --line-dash: rgba(180, 240, 255, 0.45);
+  --text-primary: #ffffff;
+  --text-secondary: #e4f4fb;
+  --text-tertiary: #c6dfe9;
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-dim: var(--text-tertiary);
+  --grid-line: rgba(126, 232, 255, 0.16);
+}
+
+html[data-theme='journal'][data-contrast='high'] {
+  --border-subtle: rgba(0, 52, 64, 0.55);
+  --border-strong: rgba(0, 52, 64, 0.8);
+  --border: var(--border-subtle);
+  --panel-line: rgba(0, 52, 64, 0.55);
+  --line-dash: rgba(0, 52, 64, 0.55);
+  --text-primary: #000000;
+  --text-secondary: #14242a;
+  --text-tertiary: #2b4249;
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-dim: var(--text-tertiary);
+}
+
 /* --------------------------------------------------- reduced motion -------
  * Functional transitions only: state changes keep their opacity fade, all
  * movement, scaling and looping glow is dropped. */

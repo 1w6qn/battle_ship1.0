@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import { useSettingsStore, type PrivacyKey } from '../../stores/settings'
 import { useAudioStore } from '../../stores/audio'
 import { useCollectionStore } from '../../stores/collection'
+import { useHomeStore } from '../../stores/home'
+import { THEME_LABELS, useUiStore, type FontScale, type ThemeName } from '../../stores/ui'
 import { useWallpaperStore } from '../../stores/wallpaper'
 
 /**
@@ -17,10 +19,68 @@ const router = useRouter()
 const settings = useSettingsStore()
 const audio = useAudioStore()
 const collection = useCollectionStore()
+const home = useHomeStore()
+const ui = useUiStore()
 const wallpaperLayer = useWallpaperStore()
 
 const oldPassword = ref('')
 const newPassword = ref('')
+
+// ------------------------------------------------------- intent groups ----
+// Four groups (spec section 8, ticket #49). The left rail highlights the group
+// the player is currently reading and jumps to it on click.
+type GroupKey = 'appearance' | 'sound' | 'account' | 'about'
+const groups: { key: GroupKey; label: string }[] = [
+  { key: 'appearance', label: '外观' },
+  { key: 'sound', label: '声音' },
+  { key: 'account', label: '账号与隐私' },
+  { key: 'about', label: '关于' },
+]
+const activeGroup = ref<GroupKey>('appearance')
+
+function goGroup(key: GroupKey): void {
+  activeGroup.value = key
+  document.getElementById('settings-' + key)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+}
+
+const themes: ThemeName[] = ['chart', 'journal', 'night']
+const fontScales: { key: FontScale; label: string }[] = [
+  { key: 'normal', label: '标准' },
+  { key: 'large', label: '大' },
+  { key: 'xlarge', label: '特大' },
+]
+
+function chooseTheme(theme: ThemeName): void {
+  ui.setTheme(theme)
+  ui.notify({ code: 'theme-' + theme, tone: 'success', message: '已切换到「' + THEME_LABELS[theme] + '」主题' })
+}
+
+function chooseMotion(reduced: boolean): void {
+  ui.setMotion(reduced ? 'reduced' : 'auto')
+  ui.notify({
+    code: 'motion-' + (reduced ? 'reduced' : 'auto'),
+    tone: 'success',
+    message: reduced ? '已减少动效，只保留状态变化' : '已恢复完整动效',
+  })
+}
+
+function chooseContrast(high: boolean): void {
+  ui.setContrast(high ? 'high' : 'auto')
+  ui.notify({
+    code: 'contrast-' + (high ? 'high' : 'auto'),
+    tone: 'success',
+    message: high ? '已开启高对比描边' : '已恢复标准对比',
+  })
+}
+
+function chooseFontScale(scale: FontScale): void {
+  ui.setFontScale(scale)
+  ui.notify({ code: 'font-' + scale, tone: 'success', message: '字号已调整为' + fontScales.find((item) => item.key === scale)?.label })
+}
+
+function requestLogin(): void {
+  ui.requestLogin('login', '登录后才能修改账号与隐私设置')
+}
 
 const privacyRows: { key: PrivacyKey; testid: string; label: string; hint: string }[] = [
   { key: 'show_stats', testid: 'settings-privacy-stats', label: '显示战绩亮点', hint: '最高连胜 / 胜率 / 总场次' },
@@ -141,7 +201,16 @@ async function submitPassword(): Promise<void> {
   }
 }
 
-async function toggleWallpaper(): Promise<void> {
+// The two wallpaper buttons are different actions: "check" only reports what is
+// on this machine; "open" also reveals the library rows.
+const libraryOpen = ref(false)
+
+async function checkWallpaperLibrary(): Promise<void> {
+  await settings.checkWallpapers()
+}
+
+async function openWallpaperLibrary(): Promise<void> {
+  libraryOpen.value = true
   await settings.checkWallpapers()
 }
 
@@ -153,6 +222,7 @@ onMounted(() => {
   void settings.loadOwn()
   void settings.loadToggle('replay')
   void settings.loadToggle('spectate')
+  void home.loadChangelog()
 })
 </script>
 
@@ -172,17 +242,169 @@ onMounted(() => {
 
       <div class="settings__layout">
         <nav class="settings__nav" aria-label="设置分区">
-          <a href="#settings-audio">音效与音乐</a>
-          <a href="#settings-replay">对局回放</a>
-          <a href="#settings-spectate">观战</a>
-          <a href="#settings-privacy">名片隐私</a>
-          <a href="#settings-password">修改密码</a>
-          <a href="#settings-wallpaper">动态壁纸</a>
+          <button
+            v-for="group in groups"
+            :key="group.key"
+            type="button"
+            class="settings__nav-item"
+            :class="{ 'is-active': activeGroup === group.key }"
+            :data-testid="'settings-nav-' + group.key"
+            :data-active="activeGroup === group.key ? 'true' : 'false'"
+            :aria-current="activeGroup === group.key ? 'true' : undefined"
+            @click="goGroup(group.key)"
+          >
+            {{ group.label }}
+          </button>
         </nav>
 
         <div class="settings__panes">
 
-      <section class="settings__block settings__audio" data-testid="settings-audio">
+      <section id="settings-appearance" class="settings__group" data-testid="settings-group-appearance" aria-labelledby="settings-group-appearance-title">
+        <h2 id="settings-group-appearance-title" class="settings__group-title">外观</h2>
+
+        <section class="settings__block settings__appearance" data-testid="settings-appearance">
+          <h3 class="settings__block-title">主题</h3>
+          <div class="settings__seg" role="group" aria-label="主题">
+            <button
+              v-for="theme in themes"
+              :key="theme"
+              type="button"
+              class="settings__seg-item"
+              :data-testid="'settings-theme-' + theme"
+              :aria-pressed="ui.theme === theme"
+              :class="{ 'is-active': ui.theme === theme }"
+              @click="chooseTheme(theme)"
+            >
+              {{ THEME_LABELS[theme] }}
+            </button>
+          </div>
+
+          <h3 class="settings__block-title">动效</h3>
+          <div class="settings__seg" role="group" aria-label="动效">
+            <button type="button" class="settings__seg-item" data-testid="settings-motion-auto"
+              :aria-pressed="ui.motion === 'auto'" :class="{ 'is-active': ui.motion === 'auto' }"
+              @click="chooseMotion(false)">完整动效</button>
+            <button type="button" class="settings__seg-item" data-testid="settings-motion-reduced"
+              :aria-pressed="ui.motion === 'reduced'" :class="{ 'is-active': ui.motion === 'reduced' }"
+              @click="chooseMotion(true)">减少动效</button>
+          </div>
+
+          <h3 class="settings__block-title">对比度</h3>
+          <div class="settings__seg" role="group" aria-label="对比度">
+            <button type="button" class="settings__seg-item" data-testid="settings-contrast-auto"
+              :aria-pressed="ui.contrast === 'auto'" :class="{ 'is-active': ui.contrast === 'auto' }"
+              @click="chooseContrast(false)">标准对比</button>
+            <button type="button" class="settings__seg-item" data-testid="settings-contrast-high"
+              :aria-pressed="ui.contrast === 'high'" :class="{ 'is-active': ui.contrast === 'high' }"
+              @click="chooseContrast(true)">高对比</button>
+          </div>
+
+          <h3 class="settings__block-title">字号</h3>
+          <div class="settings__seg" role="group" aria-label="字号">
+            <button
+              v-for="scale in fontScales"
+              :key="scale.key"
+              type="button"
+              class="settings__seg-item"
+              :data-testid="'settings-font-' + scale.key"
+              :aria-pressed="ui.fontScale === scale.key"
+              :class="{ 'is-active': ui.fontScale === scale.key }"
+              @click="chooseFontScale(scale.key)"
+            >
+              {{ scale.label }}
+            </button>
+          </div>
+          <p class="settings__note">主题、动效、对比度与字号立即生效，并在这台设备上记住。</p>
+        </section>
+
+        <section id="settings-wallpaper" class="settings__block" data-testid="settings-wallpaper">
+          <h3 class="settings__block-title">动态壁纸</h3>
+          <p class="settings__note">
+            扫描本机壁纸库（仅本机访问可用），选中后立即应用到背景；视频壁纸可随时暂停。
+          </p>
+          <div class="settings__wallpaper-actions">
+            <button
+              type="button"
+              class="button"
+              data-testid="settings-wallpaper-entry"
+              :disabled="settings.wallpaper.status === 'loading'"
+              @click="openWallpaperLibrary"
+            >
+              打开壁纸库
+            </button>
+            <button type="button" class="button button--ghost" data-testid="settings-wallpaper-check" @click="checkWallpaperLibrary">
+              检查本机壁纸库
+            </button>
+            <button type="button" class="button button--ghost" data-testid="settings-collection-open" @click="collection.open()">
+              打开图鉴 / 卡库
+            </button>
+          </div>
+          <p class="settings__note" data-testid="settings-wallpaper-status" role="status">{{ wallpaperStatus }}</p>
+
+          <div v-if="appliedWallpaper" class="settings__wallpaper-current" data-testid="settings-wallpaper-current">
+            <span class="settings__wallpaper-current-title" data-testid="settings-wallpaper-current-title">
+              当前壁纸：{{ appliedWallpaper.title }}
+            </span>
+            <button type="button" class="button button--ghost" data-testid="settings-wallpaper-play" @click="wallpaperLayer.togglePlay()">
+              {{ wallpaperLayer.playing ? '暂停' : '播放' }}
+            </button>
+            <button type="button" class="button button--ghost" data-testid="settings-wallpaper-clear" @click="wallpaperLayer.clear()">
+              取消壁纸
+            </button>
+          </div>
+
+          <ul v-if="libraryOpen && wallpaperReady && wallpaperItems.length" class="settings__wallpaper-list" data-testid="settings-wallpaper-list">
+            <li
+              v-for="item in wallpaperItems"
+              :key="String(item.id)"
+              class="settings__wallpaper-item"
+              data-testid="settings-wallpaper-item"
+              :data-wallpaper-id="String(item.id)"
+              :data-supported="item.supported === true ? 'true' : 'false'"
+            >
+              <div class="settings__wallpaper-preview">
+                <img
+                  v-if="wallpaperPreviewUrl(item)"
+                  :src="wallpaperPreviewUrl(item)"
+                  :alt="wallpaperTitle(item) + ' 预览'"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span v-else aria-hidden="true">{{ wallpaperKind(item) === 'video' ? '视频' : '图片' }}</span>
+              </div>
+              <div class="settings__wallpaper-meta">
+                <p class="settings__wallpaper-title">{{ wallpaperTitle(item) }}</p>
+                <p class="settings__wallpaper-kind">
+                  {{ wallpaperKind(item) === 'video' ? '视频壁纸' : '图片壁纸' }}
+                </p>
+                <p v-if="item.supported !== true" class="settings__note" data-testid="settings-wallpaper-reason">
+                  {{ wallpaperReason(item) || '这张壁纸无法在网页里播放' }}
+                </p>
+              </div>
+              <button
+                type="button"
+                class="button"
+                data-testid="settings-wallpaper-apply"
+                :disabled="item.supported !== true || !wallpaperMediaUrl(item)"
+                @click="applyWallpaper(item)"
+              >
+                应用
+              </button>
+            </li>
+          </ul>
+          <p
+            v-else-if="libraryOpen && wallpaperReady && settings.wallpaper.status === 'ready'"
+            class="settings__note"
+            data-testid="settings-wallpaper-empty"
+          >
+            没有找到可用的壁纸：{{ settings.wallpaper.reason || '本机壁纸库是空的。' }}
+          </p>
+        </section>
+      </section>
+
+      <section id="settings-sound" class="settings__group" data-testid="settings-group-sound" aria-labelledby="settings-group-sound-title">
+        <h2 id="settings-group-sound-title" class="settings__group-title">声音</h2>
+        <section class="settings__block settings__audio" data-testid="settings-audio">
         <h2 class="settings__block-title">音效与背景音乐</h2>
         <div class="settings__audio-row">
           <button
@@ -248,12 +470,18 @@ onMounted(() => {
         <p class="settings__note" data-testid="settings-bgm-status" role="status">
           {{ audio.bgmStatus }}（浏览器可能要求先点一下页面才出声）
         </p>
+        </section>
       </section>
+
+      <section id="settings-account" class="settings__group" data-testid="settings-group-account" aria-labelledby="settings-group-account-title">
+        <h2 id="settings-group-account-title" class="settings__group-title">账号与隐私</h2>
 
     <section v-if="anonymous" class="settings__login" data-testid="settings-login-required">
       <h2>需要先登录</h2>
       <p>回放开关、观战开关、隐私与密码都绑定账号。</p>
-      <a class="button" href="/login">前往登录</a>
+      <button type="button" class="button" data-testid="settings-login-required-action" @click="requestLogin">
+        登录 / 注册
+      </button>
     </section>
     <p v-else-if="profileFailed" class="settings__state settings__state--error" data-testid="settings-error" role="alert">
       无法加载设置：{{ settings.profileError }}
@@ -349,89 +577,34 @@ onMounted(() => {
           {{ settings.passwordMessage }}
         </p>
       </section>
+    </template>
+      </section>
 
-      <section id="settings-wallpaper" class="settings__block" data-testid="settings-wallpaper">
-        <h2 class="settings__block-title">动态壁纸</h2>
-        <p class="settings__note">
-          扫描本机壁纸库（仅本机访问可用），选中后立即应用到背景；视频壁纸可随时暂停。
-        </p>
-        <div class="settings__wallpaper-actions">
-          <button
-            type="button"
-            class="button"
-            data-testid="settings-wallpaper-entry"
-            :disabled="settings.wallpaper.status === 'loading'"
-            @click="toggleWallpaper"
-          >
-            打开壁纸库
-          </button>
-          <button type="button" class="button button--ghost" data-testid="settings-wallpaper-check" @click="toggleWallpaper">
-            检查本机壁纸库
-          </button>
-          <button type="button" class="button button--ghost" data-testid="settings-collection-open" @click="collection.open()">
-            打开图鉴 / 卡库
-          </button>
-        </div>
-        <p class="settings__note" data-testid="settings-wallpaper-status" role="status">{{ wallpaperStatus }}</p>
+      <section id="settings-about" class="settings__group" data-testid="settings-group-about" aria-labelledby="settings-group-about-title">
+        <h2 id="settings-group-about-title" class="settings__group-title">关于</h2>
 
-        <div v-if="appliedWallpaper" class="settings__wallpaper-current" data-testid="settings-wallpaper-current">
-          <span class="settings__wallpaper-current-title" data-testid="settings-wallpaper-current-title">
-            当前壁纸：{{ appliedWallpaper.title }}
-          </span>
-          <button type="button" class="button button--ghost" data-testid="settings-wallpaper-play" @click="wallpaperLayer.togglePlay()">
-            {{ wallpaperLayer.playing ? '暂停' : '播放' }}
-          </button>
-          <button type="button" class="button button--ghost" data-testid="settings-wallpaper-clear" @click="wallpaperLayer.clear()">
-            取消壁纸
-          </button>
-        </div>
+        <section class="settings__block" data-testid="settings-about-help">
+          <h2 class="settings__block-title">玩法与帮助</h2>
+          <p class="settings__note">
+            6×6 海域各摆 6 艘单格战舰，猜拳定先手，按准备 → 战斗 → 结束三个阶段轮流开炮；
+            先击沉对方全部战舰的一方获胜。魔法卡分普通 / 场地 / 判定三类，连锁从最后一次出牌往前结算。
+          </p>
+        </section>
 
-        <ul v-if="wallpaperReady && wallpaperItems.length" class="settings__wallpaper-list" data-testid="settings-wallpaper-list">
-          <li
-            v-for="item in wallpaperItems"
-            :key="String(item.id)"
-            class="settings__wallpaper-item"
-            data-testid="settings-wallpaper-item"
-            :data-wallpaper-id="String(item.id)"
-            :data-supported="item.supported === true ? 'true' : 'false'"
-          >
-            <div class="settings__wallpaper-preview">
-              <img
-                v-if="wallpaperPreviewUrl(item)"
-                :src="wallpaperPreviewUrl(item)"
-                :alt="wallpaperTitle(item) + ' 预览'"
-                loading="lazy"
-                decoding="async"
-              />
-              <span v-else aria-hidden="true">{{ wallpaperKind(item) === 'video' ? '视频' : '图片' }}</span>
-            </div>
-            <div class="settings__wallpaper-meta">
-              <p class="settings__wallpaper-title">{{ wallpaperTitle(item) }}</p>
-              <p class="settings__wallpaper-kind">
-                {{ wallpaperKind(item) === 'video' ? '视频壁纸' : '图片壁纸' }}
-              </p>
-              <p v-if="item.supported !== true" class="settings__note" data-testid="settings-wallpaper-reason">
-                {{ wallpaperReason(item) || '这张壁纸无法在网页里播放' }}
-              </p>
-            </div>
-            <button
-              type="button"
-              class="button"
-              data-testid="settings-wallpaper-apply"
-              :disabled="item.supported !== true || !wallpaperMediaUrl(item)"
-              @click="applyWallpaper(item)"
-            >
-              应用
-            </button>
-          </li>
-        </ul>
-        <p
-          v-else-if="wallpaperReady && settings.wallpaper.status === 'ready'"
-          class="settings__note"
-          data-testid="settings-wallpaper-empty"
-        >
-          没有找到可用的壁纸：{{ settings.wallpaper.reason || '本机壁纸库是空的。' }}
-        </p>
+        <section class="settings__block" data-testid="settings-about-changelog">
+          <h2 class="settings__block-title">最近公告</h2>
+          <p class="settings__note">{{ home.changelogLatest || (home.changelogLoaded ? '暂时没有公告。' : '公告载入中…') }}</p>
+          <ul v-if="home.changelog.length" class="settings__about-list">
+            <li v-for="entry in home.changelog" :key="entry.date">
+              <b>{{ entry.date }}</b> · {{ entry.items.join('；') }}
+            </li>
+          </ul>
+        </section>
+
+        <section class="settings__block" data-testid="settings-about-version">
+          <h2 class="settings__block-title">版本</h2>
+          <p class="settings__note">战舰棋 · 深海作战室（新前端）· 公告与玩法说明都可以在这里回看。</p>
+        </section>
       </section>
 
       <footer class="settings__actions">
@@ -439,7 +612,6 @@ onMounted(() => {
           返回首页
         </button>
       </footer>
-    </template>
         </div>
       </div>
     </div>
@@ -512,24 +684,29 @@ onMounted(() => {
   background: rgba(13, 17, 34, 0.5);
 }
 
-.settings__nav a {
+.settings__nav-item {
   padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: 8px;
+  background: transparent;
   color: var(--text-muted);
+  font: inherit;
   font-size: 13px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.settings__nav a:hover {
-  border-color: rgba(124, 92, 240, 0.5);
-  background: var(--accent-soft);
-  color: var(--text);
+.settings__nav-item:hover {
+  border-color: var(--role-self);
+  background: var(--role-self-soft);
+  color: var(--text-primary);
 }
 
-.settings__nav a:first-child {
-  border-color: rgba(124, 92, 240, 0.55);
-  background: var(--accent-soft);
-  color: var(--text);
+/* The highlight follows the group being read, not the first item forever. */
+.settings__nav-item.is-active {
+  border-color: var(--role-action);
+  background: var(--role-action-soft);
+  color: var(--text-primary);
 }
 
 .settings__panes {
@@ -798,7 +975,7 @@ onMounted(() => {
     flex-wrap: wrap;
   }
 
-  .settings__nav a {
+  .settings__nav-item {
     padding: 8px 10px;
     font-size: 12px;
   }
@@ -806,6 +983,82 @@ onMounted(() => {
   .settings__panes {
     overflow: visible;
     padding-right: 0;
+  }
+}
+
+/* ------------------------------------------------- intent groups ------- */
+.settings__group {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings__group-title {
+  margin: 2px 0 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+/* Segmented controls: theme / motion / contrast / font scale. */
+.settings__seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings__seg-item {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-chamber);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings__seg-item:hover {
+  border-color: var(--role-self);
+  color: var(--text-primary);
+}
+
+.settings__seg-item.is-active {
+  border-color: var(--role-action);
+  background: var(--role-action-soft);
+  color: var(--text-primary);
+}
+
+.settings__about-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 719px) {
+  button[data-testid],
+  a[data-testid] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .settings__switch {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .settings__seg-item,
+  .settings__nav-item,
+  .settings__actions .button,
+  .settings__actions [data-testid='settings-back'] {
+    min-height: 44px;
+    min-width: 44px;
   }
 }
 </style>
