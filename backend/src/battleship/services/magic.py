@@ -4,7 +4,8 @@ The socket layer only translates frames. This service owns the protocol-level
 order the legacy handler had:
 
 1. identity -> target sanitisation -> frozen/chain/priority/magic-blocked gates;
-2. hand membership -> can_play_magic_card -> per-card requirement checks;
+2. hand membership -> evaluate_cast (playability + per-card requirements +
+   ship-pick obligation + registry), the one gate both activation paths use;
 3. remove the card and push it on the chain stack;
 4. resolve the stack (ticket #12 replaces this direct resolution with the real
    response window), refund on a failed effect, then re-push the authoritative
@@ -23,10 +24,12 @@ import time
 from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
+from ..domain import effects
 from ..domain import replay as replay_rules
 from ..domain.ai import policies
 from ..domain.magic import deck as deck_rules
 from ..domain.magic import field as field_rules
+from ..domain.magic import hooks
 from ..domain.magic import interaction as interaction_rules
 from ..domain.magic import lifecycle as lifecycle_rules
 from ..domain.magic import registry
@@ -43,17 +46,12 @@ from ..domain.spectate.rules import AREA_TARGET_BOARDS
 from ..domain.magic.rules import (
     BINGLIANG_FAIL_BELOW,
     BINGLIANG_SKIP_PHASES,
+    UNIMPLEMENTED,
     action_wait_reason,
-    can_play_magic_card,
+    evaluate_cast,
     field_magic_name,
-    lanyu_requirement_reason,
-    last_attack_requirement_reason,
-    playability_reason,
-    wangyang_requirement_reason,
-    woxin_requirement_reason,
 )
 from ..domain.room import (
-    EffectFlags,
     Player,
     PlayerShip,
     Position,
@@ -76,7 +74,6 @@ INVALID_SEAT = {"status": "error", "message": "无效的房间或玩家"}
 FINISHED_GAME = {"status": "error", "message": "对局已结束"}
 OPPONENT_DISCONNECTED = "对手已掉线，等待重连中"
 CHAIN_BUSY = "连锁响应中，请先响应连锁"
-UNIMPLEMENTED = "【{name}】效果尚未接入（后续批次），本张卡未消耗"
 
 #: Fields a client may stage through select_magic_target (whitelist, not blacklist).
 SELECTION_TARGET_KEYS = frozenset({
@@ -143,6 +140,12 @@ class MagicService:
 
     def bind(self, publisher: EventPublisher) -> None:
         self._publisher = publisher
+
+    @property
+    def effects(self) -> Any:
+        """只读的事件总线入口（#37）：模块函数入口，不新增全局单例。"""
+
+        return effects
 
     # ----------------------------------------------------------------- helpers
 
@@ -266,6 +269,21 @@ class MagicService:
                 to=player.socket_id,
             )
 
+    async def _emit_card_discarded(self, room: Room, player_id: str | None,
+                                   card: Any, reason: str) -> None:
+        """#37：牌真正进入弃牌堆之后广播 CARD_DISCARDED（每张一次）。"""
+
+        await hooks.emit(
+            room,
+            hooks.CARD_DISCARDED,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "card": getattr(card, "name", None),
+                "reason": reason,
+            },
+        )
+
     # -------------------------------------------------------------------- draw
 
     async def draw(self, room: Room, player_id: str) -> MagicCard | None:
@@ -274,7 +292,22 @@ class MagicService:
         result = deck_rules.draw_card(room, player_id, rng=self.rng)
         player = room.players.get(player_id)
         if player is not None and result.card is not None:
+            # #37：唯一真实摸牌点（gameplay._draw 只是转调它，重复发会算两次）。
+            await hooks.emit(
+                room,
+                hooks.CARD_DRAWN,
+                {
+                    "room_id": room.id,
+                    "player_id": player_id,
+                    "card": result.card.name,
+                },
+            )
             await self._emit_hand(player)
+        elif player is not None and result.duplicate is not None:
+            # deck.draw_card 把重复的牌直接塞进弃牌堆（domain 不发事件）。
+            await self._emit_card_discarded(
+                room, player_id, result.duplicate, "duplicate"
+            )
         return result.card
 
     # ------------------------------------------------------------- ship picks
@@ -807,25 +840,23 @@ class MagicService:
             for candidate in player.magic_hand
         ):
             return {"status": "error", "message": "你没有这张魔法卡"}
-        if not can_play_magic_card(room, player_id, card):
-            return {"status": "error", "message": playability_reason(room, player_id, card)}
-        for reason in (
-            last_attack_requirement_reason(room, player_id, card),
-            wangyang_requirement_reason(room, player_id, card),
-            woxin_requirement_reason(room, player_id, card),
-            lanyu_requirement_reason(room, player_id, card),
-        ):
-            if reason:
-                return {"status": "error", "message": reason}
-        blocked = interaction_rules.ship_pick_blocked_reason(room, player_id, card.name)
-        if blocked:
-            return {"status": "error", "message": blocked}
-        if not registry.is_implemented(card):
-            return {
-                "status": "error",
-                "message": UNIMPLEMENTED.format(name=card.name),
-            }
+        # §7：唯一的 pre-cast 评估；连锁路径调用同一个函数（顺序与文案一份）。
+        refusal = evaluate_cast(room, player_id, card)
+        if refusal:
+            return {"status": "error", "message": refusal}
 
+        # #37：宣告通过全部闸门、扣牌之前发 CAST_BEFORE（filter 带可改写目标）。
+        await hooks.emit(
+            room,
+            hooks.CAST_BEFORE,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "card": card.name,
+                "speed": card.speed,
+                "targets": targets,
+            },
+        )
         # Remove the declared copy, then push it on the chain. Non-field cards
         # go to the shared discard pile immediately (legacy).
         for index, candidate in enumerate(player.magic_hand):
@@ -834,6 +865,7 @@ class MagicService:
                 break
         if card.type != "场地":
             room.magic_discard.append(card)
+            await self._emit_card_discarded(room, player_id, card, "play")
         await self._emit_hand(player)
         # Replay: the card leaves the hand at this instant, not at resolution.
         # The step also carries the stack *including* this card (note_chain),
@@ -843,6 +875,18 @@ class MagicService:
         replay_rules.note_card_played(room, player_id, card)
 
         room.chain.append(item)
+        # #37：支付完成、已入连锁之后发 CAST_PAID（此后失败只能按连锁规则退牌）。
+        await hooks.emit(
+            room,
+            hooks.CAST_PAID,
+            {
+                "room_id": room.id,
+                "player_id": player_id,
+                "card": card.name,
+                "speed": card.speed,
+                "chain_size": len(room.chain),
+            },
+        )
         await self._publisher.emit(
             "magic_chain_updated", _spectate_chain_payload(room), room=room.id
         )
@@ -1063,16 +1107,31 @@ class MagicService:
             if int(card.speed) != 3:
                 return {"status": "error", "message": "只能使用速阶3的卡牌进行连锁"}
 
-            # Same playability gate as a normal play (禁忌果实 / 绝处逢生).
-            if not can_play_magic_card(room, str(player_id), card):
+            # §7：与 use_magic_card 同一个 pre-cast 评估（禁忌果实 / 绝处逢生 /
+            # 卡专属条件 / 待选船 / 未接入）。拒绝后让过并推窗，绝不留半开窗口。
+            refusal = evaluate_cast(room, str(player_id), card)
+            if refusal:
                 await self._pass_after_refusal(room, str(player_id))
-                return {"status": "error", "message": "当前无法使用这张魔法卡"}
+                return {"status": "error", "message": refusal}
 
+            # 第二条支付路径：与 use_magic_card 发同一对事件（复审 finding 7）。
+            await hooks.emit(
+                room,
+                hooks.CAST_BEFORE,
+                {
+                    "room_id": room.id,
+                    "player_id": str(player_id),
+                    "card": card.name,
+                    "speed": card.speed,
+                    "targets": targets,
+                },
+            )
             for index, candidate in enumerate(player.magic_hand):
                 if candidate.name == card.name and candidate.speed == card.speed:
                     player.magic_hand.pop(index)
                     break
             room.magic_discard.append(card)
+            await self._emit_card_discarded(room, str(player_id), card, "chain")
             await self._emit_hand(player)
             # Replay: chained play is a play, recorded at the same moment; the
             # step carries the stack after this play (same single seam).
@@ -1081,6 +1140,17 @@ class MagicService:
             replay_rules.note_card_played(room, str(player_id), card, chained=True)
 
             room.chain.append(item)
+            await hooks.emit(
+                room,
+                hooks.CAST_PAID,
+                {
+                    "room_id": room.id,
+                    "player_id": str(player_id),
+                    "card": card.name,
+                    "speed": card.speed,
+                    "chain_size": len(room.chain),
+                },
+            )
             await self._publisher.emit(
                 "magic_chain_updated", _spectate_chain_payload(room), room=room.id
             )
@@ -1140,6 +1210,9 @@ class MagicService:
                 # never replace or tear down the field already in play.
                 if item.card.type == "场地" and room.field_magic is not item.card:
                     room.magic_discard.append(item.card)
+                    await self._emit_card_discarded(
+                        room, item.player_id, item.card, "negated"
+                    )
                 suffix = f"但被{by}无效化" if by else "但被无效化"
                 await self._add_log(
                     room,
@@ -1250,6 +1323,18 @@ class MagicService:
         # The stolen-card ledger is merged; clear it so ids cannot be reused.
         room.game_effects.pop("stolen_cards", None)
 
+        # #37：连锁闸门清空之后（且既有 wire chain_resolved 已发）才广播，
+        # 订阅者看到的是最终状态，不会撞上半重置的房间。
+        await hooks.emit(
+            room,
+            hooks.CHAIN_RESOLVED,
+            {
+                "room_id": room.id,
+                "count": len(results),
+                "results": [result.to_dict() for result in results],
+            },
+        )
+
         await self._emit_active_effects(room)
         for player in room.players.values():
             await self._emit_hand(player)
@@ -1325,7 +1410,9 @@ class MagicService:
             await self._emit_active_effects(room)
 
         async def on_ship_sunk(player_id: str, ship: Any) -> None:
-            await self.on_ship_sunk(room, player_id, ship, magic=True)
+            await self.on_ship_sunk(
+                room, player_id, ship, magic=True, attacker_id=item.player_id
+            )
 
         async def notify_treasure(times: int, exclude: str | None) -> None:
             await self.notify_treasure(room, times, exclude_player_id=exclude)
@@ -1362,7 +1449,9 @@ class MagicService:
             await self._sacrifice_ship(room, player_id, ship, reason)
 
         async def on_ship_destroyed(player_id: str, ship: Any) -> None:
-            await self.on_ship_destroyed(room, player_id, ship)
+            await self.on_ship_destroyed(
+                room, player_id, ship, attacker_id=item.player_id
+            )
 
         async def start_placement(player_id: str, kind: str, count: int) -> None:
             await self._start_placement(room, player_id, kind, count)
@@ -1475,11 +1564,17 @@ class MagicService:
         room.pending_wuyou_dreams = {}
         room.pending_bingliang = {}
         room.bingliang_skip_draw = {}
-        if self.finish_hook is None:
-            return None
-        return await self._maybe_await(
-            self.finish_hook(room, winner, loser, reason=reason)
-        )
+        try:
+            if self.finish_hook is None:
+                return None
+            return await self._maybe_await(
+                self.finish_hook(room, winner, loser, reason=reason)
+            )
+        finally:
+            # 终局收尾：订阅与租约都不许活过这一局；投影回到默认值。
+            # （跑在漏斗之后，GAME_OVER 订阅者仍能看到终局事件。）
+            effects.clear(room)
+            effects.project_effect_flags(room)
 
     # --------------------------------------------------------------- target API
 
@@ -1722,6 +1817,7 @@ class MagicService:
             index = moved
         buried = pile.pop(index)
         room.magic_discard.append(buried)
+        await self._emit_card_discarded(room, player_id, buried, "bury")
         room.magic_temp_data = {}
         deck_before = len(room.magic_deck)
         drawn = await self.draw(room, player_id)
@@ -1762,9 +1858,11 @@ class MagicService:
         for index, card in enumerate(cards):
             if index != chosen_index:
                 room.magic_discard.append(card)
+                await self._emit_card_discarded(room, player_id, card, "wangyang")
         own_card = temp.get("own_card")
         if own_card is not None:
             room.magic_discard.append(own_card)
+            await self._emit_card_discarded(room, player_id, own_card, "wangyang")
         room.magic_temp_data = {}
         await self._emit_hand(room.players[player_id])
         opponent_id = room.opponent_of(player_id)
@@ -1902,9 +2000,11 @@ class MagicService:
             for card in cards or []:
                 if isinstance(card, MagicCard):
                     room.magic_discard.append(card)
+                    await self._emit_card_discarded(room, player_id, card, "cancel")
             own = temp.get("own_card")
             if isinstance(own, MagicCard):
                 room.magic_discard.append(own)
+                await self._emit_card_discarded(room, player_id, own, "cancel")
         elif isinstance(cards, list):
             room.magic_deck.extend(card for card in cards if isinstance(card, MagicCard))
         if cancelled == "shield_choice":
@@ -1964,19 +2064,35 @@ class MagicService:
         if picked is not None:
             await self._sacrifice_ship(room, sacrifice_id, picked, "demon_contract")
 
+    @staticmethod
+    def _last_attacker(room: Room) -> str | None:
+        """炮击路径的击杀者：resolve_attack 已把这一发写进 room.last_attack。"""
+
+        last = room.last_attack or {}
+        attacker = last.get("attacker")
+        return attacker if attacker in room.players else None
+
     async def on_ship_sunk(self, room: Room, defender_id: str, ship: Any,
-                           *, magic: bool = False) -> None:
+                           *, magic: bool = False,
+                           attacker_id: str | None = None) -> None:
         defender = room.players.get(defender_id)
         if defender is None:
             return
-        flags = defender.effect_flags
-        if flags.subsidy:
-            flags.subsidy_bonus = int(getattr(flags, "subsidy_bonus", 0) or 0) + 3
-            if defender.socket_id:
-                await self._publisher.emit(
-                    "message", {"text": "百亿补贴生效，你的攻击次数 +3"},
-                    to=defender.socket_id,
-                )
+        # 单一漏斗：炮击（battle.sink_hooks）与效果（ctx.on_ship_sunk）都到这里。
+        # SHIP_SUNK 全项目只在这里发一次（battle 层不再补发第二帧）。
+        await hooks.emit(
+            room,
+            hooks.SHIP_SUNK,
+            {
+                "room_id": room.id,
+                "owner_id": defender_id,
+                "defender_id": defender_id,
+                "ship": ship,
+                "attacker_id": attacker_id or self._last_attacker(room),
+                "remaining_ships": defender.remaining_ships,
+                "magic": bool(magic),
+            },
+        )
         if "holy_heart" in room.game_effects:
             room.game_effects.pop("holy_heart", None)
             await self._publisher.emit(
@@ -1996,19 +2112,23 @@ class MagicService:
             await self.notify_treasure(room, 1, exclude_player_id=last.get("attacker"))
         await self._emit_player_ships(room, defender_id)
 
-    async def on_ship_destroyed(self, room: Room, owner_id: str, ship: Any) -> None:
+    async def on_ship_destroyed(self, room: Room, owner_id: str, ship: Any,
+                               *, attacker_id: str | None = None) -> None:
         owner = room.players.get(owner_id)
         if owner is None:
             return
-        if owner.effect_flags.subsidy:
-            owner.effect_flags.subsidy_bonus = int(
-                getattr(owner.effect_flags, "subsidy_bonus", 0) or 0
-            ) + 3
-            if owner.socket_id:
-                await self._publisher.emit(
-                    "message", {"text": "百亿补贴生效，你的攻击次数 +3"},
-                    to=owner.socket_id,
-                )
+        # 效果摧毁的唯一发射点（百亿补贴等订阅者在这里看到 owner_id）。
+        await hooks.emit(
+            room,
+            hooks.SHIP_DESTROYED,
+            {
+                "room_id": room.id,
+                "owner_id": owner_id,
+                "ship": ship,
+                "attacker_id": attacker_id or self._last_attacker(room),
+                "remaining_ships": owner.remaining_ships,
+            },
+        )
         if "holy_heart" in room.game_effects:
             room.game_effects.pop("holy_heart", None)
             await self._publisher.emit(
@@ -2062,7 +2182,8 @@ class MagicService:
             return False
         if player.damage_dealt_this_turn > 0:
             return False
-        player.effect_flags.wuxian = False
+        # #38：五险一金触发即消费租约。
+        effects.consume_flag(room, player_id, "wuxian")
         room.attacks_remaining += 3
         await self._add_log(
             room,
@@ -2150,7 +2271,10 @@ class MagicService:
         if player is None:
             return
         x = max(0, min(6, int(value)))
-        player.effect_flags.prediction = x
+        # #38：prediction 是 round 边界的整数租约（大回合结束时随投影清零）。
+        effects.grant_flag(
+            room, caster_id, "prediction", boundary=effects.BOUNDARY_ROUND, value=x
+        )
         if f"prediction_initial_{caster_id}" not in room.game_effects:
             self._snapshot_shenji_baseline(room, caster_id)
         room.magic_temp_data.pop("prediction", None)
@@ -2350,6 +2474,7 @@ class MagicService:
             if pid == ai_id:
                 discarded = player.magic_hand.pop(0)
                 room.magic_discard.append(discarded)
+                await self._emit_card_discarded(room, pid, discarded, "dice")
                 await self._emit_hand(player)
                 await self._add_log(
                     room,
@@ -2410,6 +2535,7 @@ class MagicService:
             return {"status": "error", "message": "无效的卡牌位置"}
         discarded = player.magic_hand.pop(index)
         room.magic_discard.append(discarded)
+        await self._emit_card_discarded(room, player_id, discarded, "dice")
         await self._emit_hand(player)
         await self._add_log(
             room,
@@ -2454,6 +2580,7 @@ class MagicService:
                 return {"status": "error", "message": "无效的弃卡位置"}
         discarded = player.magic_hand.pop(index)
         room.magic_discard.append(discarded)
+        await self._emit_card_discarded(room, player_id, discarded, "papal")
         room.attacks_remaining += 2
         await self._emit_hand(player)
         await self._publisher.emit(
@@ -2679,6 +2806,7 @@ class MagicService:
                             "reason": "无暇圣心笼罩大地 愿这方世界不再有战争"}
 
         for player_id, player in list(room.players.items()):
+            # 先读宣言值（round 租约还没过期），大回合边界统一 expire 掉。
             prediction = int(getattr(player.effect_flags, "prediction", 0) or 0)
             if prediction <= 0:
                 continue
@@ -2691,14 +2819,18 @@ class MagicService:
                         already_sunken_ids=saved.get("sunken_ids"),
                     )
                     room.game_effects.pop(f"prediction_initial_{player_id}", None)
-            player.effect_flags.prediction = 0
 
-        lifecycle_rules.prune_effect_flags(room, lifecycle_rules.FLAGS_KEEP_ACROSS_ROUND)
+        # #38：大回合边界清掉 round 与 turn 租约，再投影回 effect_flags。
+        effects.expire(room, effects.BOUNDARY_ROUND)
+        effects.project_effect_flags(room)
         await self._emit_active_effects(room)
         return None
 
     async def on_turn_switch(self, room: Room) -> None:
-        lifecycle_rules.prune_effect_flags(room, lifecycle_rules.FLAGS_KEEP_ACROSS_TURN)
+        """小回合边界：只过期 turn 租约（round/match 的跨回合效果保留）。"""
+
+        effects.expire(room, effects.BOUNDARY_TURN)
+        effects.project_effect_flags(room)
         await self._emit_active_effects(room)
 
     async def begin_shenji_redeploy(self, room: Room, player_id: str, count: int,
@@ -2731,6 +2863,22 @@ class MagicService:
         )
         if old is not None and getattr(old, "name", None) != card.name:
             await self._recalc_attacks(room)
+            # field.place_field_magic 把旧场地塞进弃牌堆（domain 里不发事件）：
+            # 弃牌事件统一由拥有这次调用的服务层补，且每张牌只发一次。
+            await self._emit_card_discarded(
+                room, room.field_magic_owner, old, "field_replaced"
+            )
+        # #37：场地已落位（顶替旧场地也已清掉其标记），此时才发 FIELD_ENTERED。
+        await hooks.emit(
+            room,
+            hooks.FIELD_ENTERED,
+            {
+                "room_id": room.id,
+                "player_id": room.field_magic_owner,
+                "card": card.name,
+                "previous": getattr(old, "name", None),
+            },
+        )
 
     async def tear_down_field(self, room: Room, caster_id: str) -> Any:
         torn = field_rules.tear_down_field_magic(room, caster_id)
@@ -2747,6 +2895,20 @@ class MagicService:
                      "attacks_remaining": room.attacks_remaining},
                     room=room.id,
                 )
+            # field.tear_down_field_magic 已把这张场地移入弃牌堆（domain 不发事件）。
+            await self._emit_card_discarded(
+                room, caster_id, torn, "field_teardown"
+            )
+            # #37：场地确实离场（已被移入弃牌堆、标记已清）之后发 FIELD_LEFT。
+            await hooks.emit(
+                room,
+                hooks.FIELD_LEFT,
+                {
+                    "room_id": room.id,
+                    "player_id": caster_id,
+                    "card": getattr(torn, "name", None),
+                },
+            )
         return torn
 
     async def _recalc_attacks(self, room: Room) -> None:
@@ -2851,7 +3013,6 @@ class MagicService:
         room.last_attack = None
         room.magic_temp_data = {}
         for player in room.players.values():
-            player.effect_flags = EffectFlags()
             for ship in player.ships:
                 ship.invincible = False
                 ship.shield = False
@@ -2860,6 +3021,8 @@ class MagicService:
             player.damage_dealt_this_turn = 0
             player.magic_hand = []
             await self._emit_hand(player)
+        # #38：整对象重置统一走 reset_all（match 边界清租约 + 投影）。
+        effects.reset_all(room)
         return {"status": "success", "message": "已清除所有魔法效果"}
 
     def debug_get_magic_cards_list(self) -> dict:

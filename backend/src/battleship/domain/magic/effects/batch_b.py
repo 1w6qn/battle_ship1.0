@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ... import effects
 from ... import replay as replay_rules
 from ...room import PlayerShip, alive_ships, card_payload
 from ..cards import MagicCard
@@ -69,6 +70,8 @@ async def wangyang(ctx: EffectContext) -> EffectResult:
     count = max(int(ctx.caster.remaining_ships or 0), int(ctx.opponent.remaining_ships or 0))
     if not ctx.room.magic_discard or count <= 0:
         if own_card is not None:
+            # 放回刚才为看一眼而取出的那张：这是回滚（弃牌区内容没变），不是
+            # 一次新弃牌，所以不发 CARD_DISCARDED —— 否则同一张牌会被数两次。
             ctx.room.magic_discard.append(own_card)
         return EffectResult(False, "弃牌区没有可挑选的卡牌")
     take = min(count, len(ctx.room.magic_discard))
@@ -252,8 +255,11 @@ async def last_stand(ctx: EffectContext) -> EffectResult:
     cells = [{"x": x, "y": y} for x, y in original_cells]
     await ctx.emit("last_stand_cells", {"cells": cells, "owner": ctx.caster_id}, room=ctx.room.id)
 
-    ctx.caster.effect_flags.last_stand = True
-    ctx.caster.effect_flags.last_stand_win = True
+    # #38：锁卡是 turn 边界，「击杀即胜」要活到终局（match 边界）。
+    effects.grant_flag(ctx.room, ctx.caster_id, "last_stand", boundary=effects.BOUNDARY_TURN)
+    effects.grant_flag(
+        ctx.room, ctx.caster_id, "last_stand_win", boundary=effects.BOUNDARY_MATCH
+    )
     await ctx.sync_active_effects()
     await ctx.start_placement(ctx.caster_id, "last_stand", 1)
     await ctx.refresh_replay_ships()
@@ -333,8 +339,9 @@ async def polar_reversal(ctx: EffectContext) -> EffectResult:
         player.sunken_ships = []
         if hasattr(player, "opponent_attacks"):
             player.opponent_attacks = []
-        player.effect_flags = player.effect_flags.__class__()
         player.magic_blocked = False
+    # #38：整对象重置统一走 reset_all（match 边界清租约 + 投影）。
+    effects.reset_all(ctx.room)
 
     ctx.room.field_magic = None
     ctx.room.field_magic_owner = None

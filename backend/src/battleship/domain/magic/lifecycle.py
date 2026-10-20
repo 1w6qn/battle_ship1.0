@@ -1,31 +1,14 @@
-"""Effect lifetimes (ticket #11): the single flag/board cleanup vocabulary.
+"""Effect lifetimes (ticket #11/#38): board cleanup only.
 
-Two whitelists decide which per-player flags survive a turn/big-round boundary.
-Every caller passes one of them to prune_effect_flags; there is no second
-inline list anywhere (the legacy stack hit a silent bug exactly because both
-the constant and an inline copy existed).
+Per-player EffectFlags no longer have a whitelist here: every persistent flag is
+a lease on the effect bus (ticket #36) and expires at its own turn/round/match
+boundary. This module keeps only the board-scoped cleanup vocabulary, which is
+about room.game_effects rather than flags.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from ..room import Room
-
-#: Effects whose card text is "this turn / this big round".
-FLAGS_KEEP_ACROSS_TURN: frozenset[str] = frozenset({
-    "no_draw",           # 无中生有: rest of the big round
-    "prediction",        # 神机妙算: until the opponent's end phase resolves
-    "forced_kill",       # 余音绕梁: this and the next attack phase
-    "subsidy",           # 百亿补贴: rest of the big round
-    "subsidy_bonus",     # accumulated bonus, same lifetime
-    "vampire",           # 饮血: rest of the big round
-    "treasure_hunter",   # 八方来财: rest of the big round
-    "last_stand_win",    # 绝处逢生 "kill and win" lives until the match ends
-})
-
-#: At the end of a big round only "kill and win" survives.
-FLAGS_KEEP_ACROSS_ROUND: frozenset[str] = frozenset({"last_stand_win"})
 
 #: key -> human text. The legacy stack emitted three helper-only event names
 #: (holy_heart_cleared / reinforcement_cleared / demon_contract_cleared) that are
@@ -37,20 +20,6 @@ _MULTITURN_EFFECTS: tuple[tuple[str, str], ...] = (
     ("demon_contract", "恶魔契约效果已终止"),
 )
 _MULTITURN_PREFIXES: tuple[str, ...] = ("prediction", "prediction_initial_")
-
-
-def prune_effect_flags(room: Room, keep: frozenset[str]) -> bool:
-    """Drop every per-player flag outside keep; returns whether anything changed."""
-
-    changed = False
-    for player in room.players.values():
-        flags = player.effect_flags
-        before = dict(vars(flags))
-        after = {key: value for key, value in before.items() if key in keep}
-        if after != before:
-            flags.__dict__ = after
-            changed = True
-    return changed
 
 
 def clear_board_effects(room: Room, player_ids: list[str], why: str = "") -> list[tuple[str, dict]]:
@@ -117,9 +86,6 @@ def clear_multiturn_effects(room: Room, why: str = "") -> list[tuple[str, dict]]
 
 
 __all__ = [
-    "FLAGS_KEEP_ACROSS_ROUND",
-    "FLAGS_KEEP_ACROSS_TURN",
     "clear_board_effects",
     "clear_multiturn_effects",
-    "prune_effect_flags",
 ]

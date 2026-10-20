@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
+from . import effects
 from .room import (
     BOARD_SIZE,
     Player,
@@ -242,7 +243,8 @@ def enter_battle(room: Room, player_id: str) -> str | None:
     if player.effect_flags.double_attacks:
         # 火力全开 doubles the budget that already exists (not a recount).
         room.attacks_remaining = max(0, room.attacks_remaining) * 2
-        player.effect_flags.double_attacks = False
+        # #38：翻倍即消费租约（旧实现是直接把自己置回 False）。
+        effects.consume_flag(room, player_id, "double_attacks")
     return None
 
 
@@ -255,10 +257,12 @@ def enter_end(room: Room, player_id: str) -> str | None:
         return ATTACKS_LEFT_ERROR
 
     room.current_phase = RoomPhase.END
-    flags = room.players[player_id].effect_flags
-    if getattr(flags, "forced_kill", 0) > 0:
-        flags.forced_kill -= 1
-    flags.battle_spirit = False
+    # #38：余音绕梁每个结束阶段消耗 1 层（旧实现 -=1，0 即不再有强制击杀）。
+    effects.adjust_flag(
+        room, player_id, "forced_kill", -1, boundary=effects.BOUNDARY_ROUND
+    )
+    # 越战越勇在本回合结束阶段失效（旧实现置回 False）。
+    effects.consume_flag(room, player_id, "battle_spirit")
     return None
 
 

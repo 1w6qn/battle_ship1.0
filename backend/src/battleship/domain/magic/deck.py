@@ -49,20 +49,6 @@ def init_shared_deck(
     room.magic_deck = deck
 
 
-def discard_card(room: Room, player_id: str, card: MagicCard) -> bool:
-    """Move a card to the global discard pile, removing it from hand by identity."""
-
-    hand = room.players[player_id].magic_hand
-    removed = False
-    for index, candidate in enumerate(hand):
-        if candidate is card:
-            hand.pop(index)
-            removed = True
-            break
-    room.magic_discard.append(card)
-    return removed
-
-
 def draw_card(room: Room, player_id: str, *, rng: Any | None = None) -> DrawResult:
     """Draw the top card, applying the frozen duplicate rule.
 
@@ -188,7 +174,6 @@ def _reveal(room: Room, player_id: str, positions: Iterable[Position], *, kind: 
 
 __all__ = [
     "DrawResult",
-    "discard_card",
     "draw_card",
     "draw_to_hand",
     "init_shared_deck",

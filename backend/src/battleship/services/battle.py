@@ -21,8 +21,10 @@ import time
 from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
+from ..domain import effects
 from ..domain import placement as placement_rules
 from ..domain import replay as replay_rules
+from ..domain.magic import hooks
 from ..domain.magic import interaction as interaction_rules
 from ..domain.battle import AttackOutcome
 from ..domain.room import Player, PlayerShip, Position, Room, RoomState
@@ -195,6 +197,23 @@ class BattleService:
 
         outcome = battle_rules.resolve_attack(room, player_id, x, y)
         defender_id = outcome.defender
+        # Ticket #37: 命中/未命中都在这里广播一次（状态已落定）；总线只供
+        # 卡牌与测试订阅，不产生任何出站帧，也不改变下面既有帧的顺序。
+        await hooks.emit(
+            room,
+            hooks.ATTACK_HIT,
+            {
+                "room_id": room.id,
+                "attacker_id": player_id,
+                "defender_id": defender_id,
+                "x": x,
+                "y": y,
+                "hit": outcome.hit,
+                "ship_sunk": outcome.ship_sunk,
+                "shield_blocked": outcome.shield_blocked,
+                "damage_dealt": outcome.damage_dealt,
+            },
+        )
 
         if outcome.last_chance:
             await self._finish_game(
@@ -229,6 +248,8 @@ class BattleService:
 
         if outcome.sunk_ship is not None:
             await self._emit_player_ships(room, defender_id)
+            # SHIP_SUNK 只在 MagicService.on_ship_sunk 里发一次：炮击经这里、
+            # 卡牌效果经 ctx.on_ship_sunk，两路汇进同一个漏斗。这里再发就成双帧。
             for hook in self.sink_hooks:
                 await self._maybe_await(hook(room, defender_id, outcome.sunk_ship))
 
@@ -236,6 +257,22 @@ class BattleService:
             await self._emit_ships_updated(room)
             for hook in self.damage_hooks:
                 await self._maybe_await(hook(room, player_id, outcome))
+            # #37：伤害真正落到棋盘之后才发（护盾/免疫已经处理完）。
+            await hooks.emit(
+                room,
+                hooks.DAMAGE_APPLIED,
+                {
+                    "room_id": room.id,
+                    "attacker_id": player_id,
+                    "defender_id": defender_id,
+                    "x": x,
+                    "y": y,
+                    "hit": outcome.hit,
+                    "damage_dealt": outcome.damage_dealt,
+                    "ship_sunk": outcome.ship_sunk,
+                    "remaining_ships": room.players[defender_id].remaining_ships,
+                },
+            )
             if outcome.last_stand_win:
                 await self._finish_game(
                     room,
@@ -327,11 +364,17 @@ class BattleService:
         log_text: str | None = None,
         log_detail: dict | None = None,
         reason: str | None = None,
+        pre_marked: bool = False,
     ) -> SettlementResult:
         # Idempotent like legacy _finish_game_win: an already-ended room never
-        # records a second match. (The disconnect path sets game_over_reason
-        # itself in RoomService and uses settle_forfeit.)
-        if room.state == RoomState.GAME_OVER:
+        # records a second match. The disconnect path marks the room itself in
+        # RoomService and enters through settle_forfeit(pre_marked=True), so it
+        # still runs this single funnel (GAME_OVER + settlement + effect reset)
+        # instead of keeping a second, drifting copy of the ending sequence.
+        if pre_marked:
+            if room.settled:
+                return room.settlement_result or SettlementResult(ok=True, skipped=True)
+        elif room.state == RoomState.GAME_OVER:
             return room.settlement_result or SettlementResult(ok=True, skipped=True)
 
         room.state = RoomState.GAME_OVER
@@ -344,6 +387,17 @@ class BattleService:
         room.pending_bingliang = {}
         room.bingliang_skip_draw = {}
         room.magic_temp_data = {}
+        # #37：终局已落定、结算之前广播一次（订阅者看到 winner 与 GAME_OVER 状态）。
+        await hooks.emit(
+            room,
+            hooks.GAME_OVER,
+            {
+                "room_id": room.id,
+                "winner_id": winner_id,
+                "loser_id": loser_id,
+                "reason": reason,
+            },
+        )
         if log_text:
             await self._add_log(
                 room,
@@ -360,6 +414,9 @@ class BattleService:
         await self._emit_settlement_events(room, result, "before")
         await self._emit_game_over(room, winner_id, reason, result)
         await self._emit_settlement_events(room, result, "after")
+        # 终局收尾：订阅与租约都不许活过这一局；投影回到默认值。
+        effects.clear(room)
+        effects.project_effect_flags(room)
         return result
 
     async def _emit_settlement_events(self, room: Room, result: SettlementResult,
@@ -396,16 +453,15 @@ class BattleService:
 
     async def settle_forfeit(self, room: Room, winner_id: str, loser_id: str,
                              reason: str) -> SettlementResult:
-        """Disconnect-timeout hook: room state is already set by RoomService."""
+        """Disconnect-timeout hook: room state is already set by RoomService.
 
-        result = await asyncio.to_thread(
-            self.settlement.settle, room, winner_id, loser_id
+        Routed through the single ending funnel so a disconnect forfeit also
+        broadcasts GAME_OVER (exactly once) and clears leases/subscriptions.
+        """
+
+        return await self._finish_game(
+            room, winner_id, loser_id, reason=reason, pre_marked=True
         )
-        self.rooms.release_presence(room)
-        await self._emit_settlement_events(room, result, "before")
-        await self._emit_game_over(room, winner_id, reason, result)
-        await self._emit_settlement_events(room, result, "after")
-        return result
 
     async def surrender(self, connection: Connection,
                         data: dict[str, Any] | None = None) -> dict:
