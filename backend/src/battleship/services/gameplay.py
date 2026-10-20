@@ -448,7 +448,7 @@ class GameplayService:
             if self.turn_start_hook is not None:
                 await self._maybe_await(self.turn_start_hook(room, winner))
             # #37：猜拳定先手后的小回合开始；与旧 hook 同位，状态已落定。
-            await effects.emit(
+            await hooks.emit(
                 room,
                 hooks.TURN_START,
                 {
@@ -540,7 +540,7 @@ class GameplayService:
         if error:
             return {"status": "error", "message": error}
         # #37：阶段已落定后才发（enter_battle 内部改了 phase 与攻击次数）。
-        await effects.emit(
+        await hooks.emit(
             room,
             hooks.PHASE_ENTER,
             {
@@ -579,7 +579,7 @@ class GameplayService:
         if error:
             return {"status": "error", "message": error}
         # #37：结束阶段同样在 phase 变更之后发。
-        await effects.emit(
+        await hooks.emit(
             room,
             hooks.PHASE_ENTER,
             {
@@ -601,8 +601,8 @@ class GameplayService:
         # Same single recording point as legacy's try/finally: all success
         # branches (new round / next player / skipped) record exactly once.
         self._note_end_turn(room, player_id)
-        # #37：换人之前先发 TURN_END（turn 边界租约在这里过期）。
-        await effects.emit(
+        # #37：换人之前先发 TURN_END；turn 租约不在此时过期（见 on_turn_switch）。
+        await hooks.emit(
             room,
             hooks.TURN_END,
             {
@@ -631,8 +631,9 @@ class GameplayService:
             return {"status": "success", "message": "神之宣告：对方本回合被跳过"}
 
         if result.kind == "new_round":
-            # #37：ROUND_END 在旧 round_end_hook 之前，ROUND_START 在其之后。
-            await effects.emit(
+            # #37：ROUND_END 在旧 round_end_hook 之前；round 租约在 hook 里过期，
+            # ROUND_START 在 hook 之后、重新猜拳的 game_state 帧之前。
+            await hooks.emit(
                 room,
                 hooks.ROUND_END,
                 {"room_id": room.id, "round": room.round},
@@ -645,7 +646,7 @@ class GameplayService:
                         "game_over": True,
                         "winner": outcome.get("winner"),
                     }
-            await effects.emit(
+            await hooks.emit(
                 room,
                 hooks.ROUND_START,
                 {"room_id": room.id, "round": room.round},
@@ -664,8 +665,13 @@ class GameplayService:
 
         if self.turn_start_hook is not None:
             await self._maybe_await(self.turn_start_hook(room, room.current_attacker))
-        # #37：换人后的小回合开始（flag 清理仍在其后，见 magic.on_turn_switch）。
-        await effects.emit(
+        if self.after_draw_hook is not None:
+            await self._maybe_await(self.after_draw_hook(room, room.current_attacker))
+        if self.magic is not None:
+            await self.magic.on_turn_switch(room)
+        # #37：换人后的小回合开始。turn 租约已先在 on_turn_switch 过期并投影，
+        # 订阅者看到的是清理后的状态（放在过期之前会让他们读到旧角标）。
+        await hooks.emit(
             room,
             hooks.TURN_START,
             {
@@ -674,10 +680,6 @@ class GameplayService:
                 "round": room.round,
             },
         )
-        if self.after_draw_hook is not None:
-            await self._maybe_await(self.after_draw_hook(room, room.current_attacker))
-        if self.magic is not None:
-            await self.magic.on_turn_switch(room)
         await self._emit_phase(room)
         await self._publisher.emit(
             "turn_change",
@@ -786,9 +788,8 @@ class GameplayService:
             player.sunken_ships = []
             player.revealed_positions = []
             player.needs_reset = True
-        # #38：整对象重置改成 match 边界清租约 + 投影（旧实现直接换空 flags）。
-        effects.expire(room, effects.BOUNDARY_MATCH)
-        effects.project_effect_flags(room)
+        # #38：整对象重置统一走 reset_all（match 边界清租约 + 投影）。
+        effects.reset_all(room)
         return {"status": "success", "message": "游戏状态已重置"}
 
     # --------------------------------------------------------------- timeout
