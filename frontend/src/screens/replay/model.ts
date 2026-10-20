@@ -26,6 +26,8 @@ export interface ReplayShipCell {
 export interface ReplayMark {
   hit: boolean
   sunk: boolean
+  /** Struck by an area card (轰炸 / 硫磺火焰) rather than by a single shot. */
+  area: boolean
 }
 
 export interface ReplayHole {
@@ -115,8 +117,25 @@ export interface ReplayCell {
   sunk: boolean
   hit: boolean
   miss: boolean
+  /** Area strike (轰炸 / 硫磺火焰): one card that hit several cells at once. */
+  area: boolean
   effect: CellEffect
   label: string
+}
+
+/**
+ * Cards that strike a whole row/column (轰炸) or six linked cells (硫磺火焰).
+ *
+ * The payload has no per-cell "this was area damage" field and the recorder
+ * cannot add one without a protocol change, so the same-step rule is used: an
+ * attack row stamped with the step of one of these cards *is* that strike. The
+ * step's detail carries the played card (note_card_played) on every path,
+ * chained plays included.
+ */
+export const AREA_STRIKE_CARDS = ['轰炸', '硫磺火焰'] as const
+
+export function isAreaStrikeCard(name: string): boolean {
+  return (AREA_STRIKE_CARDS as readonly string[]).includes(name)
 }
 
 export function isObject(value: unknown): value is JsonObject {
@@ -370,6 +389,12 @@ export function computeFrame(payload: ReplayPayload | null, k: number): ReplayFr
     }
   }
 
+  // Steps that played an area card, so their attack row can be drawn as such.
+  const areaSteps = new Set<number>()
+  for (const step of payload.steps) {
+    if (isAreaStrikeCard(asString(step.detail.card))) areaSteps.add(step.i)
+  }
+
   const hits: Record<Side, Array<{ step: number; cell: JsonObject }>> = { p1: [], p2: [] }
   for (const row of payload.attacks) {
     const step = asInt(row.step, -1)
@@ -394,6 +419,7 @@ export function computeFrame(payload: ReplayPayload | null, k: number): ReplayFr
       frame.marks[side][x + ',' + y] = {
         hit: hit.cell.hit === true,
         sunk: hit.cell.sunk === true,
+        area: areaSteps.has(hit.step),
       }
     }
   }
@@ -482,6 +508,7 @@ export function cellOf(frame: ReplayFrame, side: Side, x: number, y: number): Re
     sunk,
     hit: Boolean(mark && mark.hit),
     miss: Boolean(mark && !mark.hit),
+    area: Boolean(mark && mark.area),
     effect: effect ? effect.kind : null,
     label: '',
   }
@@ -495,6 +522,7 @@ export function cellOf(frame: ReplayFrame, side: Side, x: number, y: number): Re
   if (cell.sunk && effect && effect.kind === 'hole') {
     base += '（神威把这一格从棋盘上扣掉了，这一格的战舰不会再回来）'
   }
+  if (cell.area) base = '轰炸/硫磺火焰：这一格是被范围魔法打掉的。' + base
   cell.label = effect ? effect.label + '（' + base + '）' : base
   return cell
 }
@@ -515,6 +543,7 @@ export function cellClass(cell: ReplayCell): string {
   else if (cell.hit) classes += ' hit'
   else if (cell.miss) classes += ' miss'
   else classes += ' replay-water'
+  if (cell.area) classes += ' area-strike'
   if (!cell.sunk) {
     if (cell.effect === 'shield') classes += ' shielded'
     else if (cell.effect === 'hole') classes += ' shenwei-hole'
