@@ -26,7 +26,9 @@ import {
   queueModeText,
   rankText,
   roomJoinable,
+  roomModeText,
   roomSeatsText,
+  roomVisibilityText,
   roomsEmptyText,
   showsMatches,
   showsRooms,
@@ -55,6 +57,10 @@ const invitingUsername = ref('')
 const acceptingInvite = ref(false)
 const friendsBusy = ref(false)
 const chatEl = ref<HTMLElement | null>(null)
+/** Destructive room action asks once before it fires (issue #45 point 5). */
+const confirmingClose = ref(false)
+/** Fold state for the secondary live panels; all start open (point 5). */
+const openFold = ref({ players: true, chat: true, matches: true })
 
 let releaseChannel: (() => void) | null = null
 
@@ -222,8 +228,27 @@ function closeRoom(roomId: string): void {
     })
 }
 
-function closeOwnRoom(): void {
+function requestCloseOwnRoom(): void {
+  if (!lobby.ownRoomId) return
+  confirmingClose.value = true
+}
+
+function confirmCloseOwnRoom(): void {
+  confirmingClose.value = false
   closeRoom(lobby.ownRoomId)
+}
+
+function cancelCloseOwnRoom(): void {
+  confirmingClose.value = false
+}
+
+/** Empty-state CTA: creating a room is the one action that fills the list. */
+function createRoomFromEmpty(): void {
+  createRoom()
+}
+
+function toggleFold(panel: 'players' | 'chat' | 'matches'): void {
+  openFold.value[panel] = !openFold.value[panel]
 }
 
 function startMatch(mode: 'casual' | 'ranked'): void {
@@ -452,6 +477,69 @@ onBeforeUnmount(() => {
       <button type="button" class="lobby__dismiss" data-testid="lobby-error-dismiss" @click="lobby.clearError">知道了</button>
     </p>
 
+    <section class="lobby__primary" aria-label="大厅主行动">
+      <button
+        type="button"
+        class="lobby__primary-action"
+        data-testid="lobby-match-casual"
+        data-primary-action
+        :disabled="lobby.queueMode === 'casual'"
+        @click="startMatch('casual')"
+      >
+        <b>快速匹配</b>
+        <span>随机找一位在线玩家，马上开局</span>
+      </button>
+      <button
+        type="button"
+        class="lobby__primary-action lobby__primary-action--room"
+        data-testid="lobby-create-room"
+        @click="createRoom"
+      >
+        <b>创建房间</b>
+        <span>开一桌，等好友或大厅玩家加入</span>
+      </button>
+      <div class="lobby__primary-side">
+        <button
+          type="button"
+          class="button button--ghost"
+          data-testid="lobby-match-ranked"
+          :disabled="lobby.queueMode === 'ranked'"
+          @click="startMatch('ranked')"
+        >
+          排位匹配
+        </button>
+        <button
+          v-if="lobby.queueMode"
+          type="button"
+          class="button button--danger"
+          data-testid="lobby-match-cancel"
+          @click="cancelMatch"
+        >
+          取消匹配
+        </button>
+        <button type="button" class="button button--ghost" data-testid="lobby-back-home" @click="backHome">
+          返回首页
+        </button>
+      </div>
+    </section>
+
+    <div class="lobby__create">
+      <input
+        v-model="roomName"
+        type="text"
+        class="lobby__input"
+        data-testid="lobby-room-name"
+        maxlength="20"
+        placeholder="房间名（可留空）"
+        aria-label="房间名"
+      />
+      <label class="lobby__checkbox" title="取消勾选 = 私密房，只能凭房号加入">
+        <input v-model="roomPublic" type="checkbox" data-testid="lobby-room-public" />
+        公开
+      </label>
+      <p class="lobby__create-hint">取消勾选「公开」= 私密房，只有拿到房号的人能加入。</p>
+    </div>
+
     <div class="lobby__filterbar">
       <input
         v-model="query"
@@ -492,7 +580,36 @@ onBeforeUnmount(() => {
             <code data-testid="lobby-own-room-id">{{ lobby.ownRoomId }}</code>
             <span>{{ lobby.ownRoomPublic ? '公开' : '私密' }} · 等待玩家加入</span>
           </div>
-          <button type="button" class="button button--danger" data-testid="lobby-own-room-close" @click="closeOwnRoom">
+          <template v-if="confirmingClose">
+            <p class="lobby__own-confirm" data-testid="lobby-own-room-confirm-text" role="alert">
+              解散后房间立刻从大厅消失，其他人不能再加入。确定解散？
+            </p>
+            <div class="lobby__own-actions">
+              <button
+                type="button"
+                class="button button--danger"
+                data-testid="lobby-own-room-close-confirm"
+                @click="confirmCloseOwnRoom"
+              >
+                确认解散
+              </button>
+              <button
+                type="button"
+                class="button button--ghost"
+                data-testid="lobby-own-room-close-cancel"
+                @click="cancelCloseOwnRoom"
+              >
+                保留房间
+              </button>
+            </div>
+          </template>
+          <button
+            v-else
+            type="button"
+            class="button button--danger"
+            data-testid="lobby-own-room-close"
+            @click="requestCloseOwnRoom"
+          >
             解散房间
           </button>
         </div>
@@ -509,7 +626,13 @@ onBeforeUnmount(() => {
             <span class="lobby__room-main">
               <span class="lobby__room-state">{{ roomJoinable(room) ? '等待加入' : '已满' }}</span>
               <b class="lobby__room-name">{{ room.name }}</b>
-              <span class="lobby__muted">房主 {{ room.host || '—' }}</span>
+              <span class="lobby__room-tags">
+                <span class="lobby__tag" data-testid="lobby-room-mode">{{ roomModeText(room) }}</span>
+                <span class="lobby__tag lobby__tag--muted" data-testid="lobby-room-visibility">
+                  {{ roomVisibilityText(room) }}
+                </span>
+              </span>
+              <span class="lobby__muted">房主 {{ room.host || '玩家' }}</span>
               <span class="lobby__muted">房号 {{ room.roomId }}</span>
             </span>
             <span class="lobby__room-seats">{{ roomSeatsText(room) }}</span>
@@ -536,35 +659,32 @@ onBeforeUnmount(() => {
         </ul>
         <template #empty>
           <p class="lobby__empty" data-testid="lobby-rooms-empty">{{ roomsEmpty }}</p>
+          <button type="button" class="button lobby__empty-cta" data-testid="lobby-rooms-empty-cta" @click="createRoomFromEmpty">
+            开一桌
+          </button>
         </template>
         <template #error>
           <p class="lobby__empty" data-testid="lobby-rooms-empty">{{ roomsEmpty }}</p>
         </template>
         </StateSurface>
 
-        <div class="lobby__create">
-          <input
-            v-model="roomName"
-            type="text"
-            class="lobby__input"
-            data-testid="lobby-room-name"
-            maxlength="20"
-            placeholder="房间名（可留空）"
-            aria-label="房间名"
-          />
-          <label class="lobby__checkbox" title="取消勾选 = 私密房，只能凭房号加入">
-            <input v-model="roomPublic" type="checkbox" data-testid="lobby-room-public" />
-            公开
-          </label>
-          <button type="button" class="button" data-testid="lobby-create-room" @click="createRoom">创建房间</button>
-        </div>
       </section>
 
       <section v-if="matchesVisible" class="lobby__panel lobby__panel--matches" aria-label="进行中的对局">
         <div class="lobby__panel-head">
           <h2 class="lobby__panel-title">进行中的对局</h2>
           <span class="lobby__panel-meta">{{ lobby.matches.length }} 局</span>
+          <button
+            type="button"
+            class="lobby__fold"
+            data-testid="lobby-fold-matches"
+            :aria-expanded="openFold.matches"
+            @click="toggleFold('matches')"
+          >
+            {{ openFold.matches ? '收起' : '展开' }}
+          </button>
         </div>
+        <div v-show="openFold.matches" class="lobby__panel-body">
         <ul class="lobby__list" data-testid="lobby-matches">
           <li
             v-for="match in filteredMatches"
@@ -588,13 +708,24 @@ onBeforeUnmount(() => {
           </li>
         </ul>
         <p v-if="!filteredMatches.length" class="lobby__empty" data-testid="lobby-matches-empty">{{ matchesEmpty }}</p>
+        </div>
       </section>
 
       <section class="lobby__panel lobby__panel--players" aria-label="在线玩家">
         <div class="lobby__panel-head">
           <h2 class="lobby__panel-title">在线玩家</h2>
           <span class="lobby__panel-meta">{{ lobby.players.length }} 人</span>
+          <button
+            type="button"
+            class="lobby__fold"
+            data-testid="lobby-fold-players"
+            :aria-expanded="openFold.players"
+            @click="toggleFold('players')"
+          >
+            {{ openFold.players ? '收起' : '展开' }}
+          </button>
         </div>
+        <div v-show="openFold.players" class="lobby__panel-body">
         <ul class="lobby__list" data-testid="lobby-players">
           <li
             v-for="player in lobby.players"
@@ -620,6 +751,7 @@ onBeforeUnmount(() => {
           </li>
         </ul>
         <p v-if="!lobby.players.length" class="lobby__empty" data-testid="lobby-players-empty">当前没有在线玩家</p>
+        </div>
       </section>
 
       <section class="lobby__panel lobby__panel--friends" data-testid="lobby-friends" aria-label="好友邀战">
@@ -665,7 +797,17 @@ onBeforeUnmount(() => {
         <div class="lobby__panel-head">
           <h2 class="lobby__panel-title">大厅公屏</h2>
           <span class="lobby__panel-meta">{{ lobby.chat.length }} 条</span>
+          <button
+            type="button"
+            class="lobby__fold"
+            data-testid="lobby-fold-chat"
+            :aria-expanded="openFold.chat"
+            @click="toggleFold('chat')"
+          >
+            {{ openFold.chat ? '收起' : '展开' }}
+          </button>
         </div>
+        <div v-show="openFold.chat" class="lobby__panel-body">
         <div ref="chatEl" class="lobby__chat" data-testid="lobby-chat" role="log" aria-live="polite">
           <div
             v-for="item in lobby.chat"
@@ -693,6 +835,7 @@ onBeforeUnmount(() => {
           />
           <button type="button" class="button" data-testid="lobby-chat-send" @click="sendChat">发送</button>
         </div>
+        </div>
       </section>
     </div>
 
@@ -709,30 +852,6 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <footer class="lobby__actions">
-      <button
-        type="button"
-        class="button"
-        data-testid="lobby-match-casual"
-        :disabled="lobby.queueMode === 'casual'"
-        @click="startMatch('casual')"
-      >
-        快速匹配
-      </button>
-      <button
-        type="button"
-        class="button button--ghost"
-        data-testid="lobby-match-ranked"
-        :disabled="lobby.queueMode === 'ranked'"
-        @click="startMatch('ranked')"
-      >
-        排位匹配
-      </button>
-      <button v-if="lobby.queueMode" type="button" class="button button--ghost" data-testid="lobby-match-cancel" @click="cancelMatch">
-        取消匹配
-      </button>
-      <button type="button" class="button button--ghost" data-testid="lobby-back-home" @click="backHome">返回首页</button>
-    </footer>
   </section>
 </template>
 
@@ -1195,6 +1314,141 @@ onBeforeUnmount(() => {
 
 .lobby__create .lobby__input {
   flex: 1 1 150px;
+}
+
+.lobby__create-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+/* Two first-class actions, side by side: quick match and create-a-room. */
+.lobby__primary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.lobby__primary-action {
+  display: grid;
+  gap: 3px;
+  min-height: 74px;
+  padding: 13px 18px;
+  border: 1px solid var(--role-action);
+  border-radius: var(--radius);
+  background: var(--role-action-soft);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+}
+
+.lobby__primary-action b {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.lobby__primary-action span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.lobby__primary-action:hover:not(:disabled) {
+  background: var(--surface-chamber);
+}
+
+.lobby__primary-action--room {
+  border-color: var(--role-self);
+  background: var(--role-self-soft);
+}
+
+.lobby__primary-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.lobby__primary-side {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+
+.lobby__primary-side .button {
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+.lobby__own-confirm {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--role-warning);
+  font-size: 12px;
+}
+
+.lobby__own-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.lobby__room-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.lobby__fold {
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lobby__fold:hover {
+  border-color: var(--role-self);
+  color: var(--text-primary);
+}
+
+.lobby__panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.lobby__empty-cta {
+  align-self: flex-start;
+  margin-top: 8px;
+}
+
+@media (max-width: 900px) {
+  .lobby__primary {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .lobby__primary-side {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 560px) {
+  .lobby__primary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lobby__primary-action {
+    min-height: 64px;
+  }
 }
 
 .lobby__checkbox {
