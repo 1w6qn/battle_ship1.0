@@ -92,6 +92,8 @@ export const useMatchStore = defineStore('match', () => {
   const pickRequest = ref<PickRequest | null>(null)
   const shieldChoice = ref<ShieldChoice | null>(null)
   const chainResolvedAt = ref(0)
+  /** "超时，已自动…" banner: the server's fallback action is player-visible (#47). */
+  const timeoutNote = ref('')
   let noticeSeq = 0
 
   function appendLog(entry: LogEntry): void {
@@ -106,6 +108,15 @@ export const useMatchStore = defineStore('match', () => {
     noticeSeq += 1
     notices.value.push({ id: noticeSeq, text: trimmed, kind })
     if (notices.value.length > NOTICE_LIMIT) notices.value.splice(0, notices.value.length - NOTICE_LIMIT)
+  }
+
+  /** Record the server's timeout fallback so the HUD can show what happened. */
+  function setTimeoutNote(text: string): void {
+    timeoutNote.value = String(text ?? '').trim()
+  }
+
+  function clearTimeoutNote(): void {
+    timeoutNote.value = ''
   }
 
   function dismissNotice(id: number): void {
@@ -232,6 +243,7 @@ export const useMatchStore = defineStore('match', () => {
     pickRequest.value = null
     shieldChoice.value = null
     chainResolvedAt.value = 0
+    timeoutNote.value = ''
   }
 
   function snapshot() {
@@ -239,6 +251,7 @@ export const useMatchStore = defineStore('match', () => {
       logs: logs.value.slice(),
       notices: notices.value.slice(),
       chainWindow: chainWindow.value ? { ...chainWindow.value } : null,
+      timeoutNote: timeoutNote.value,
       lastAttack: lastAttack.value ? { ...lastAttack.value } : null,
       revealed: revealed.value.slice(),
       shieldBrokenSelf: shieldBrokenSelf.value.slice(),
@@ -263,6 +276,9 @@ export const useMatchStore = defineStore('match', () => {
     pickRequest,
     shieldChoice,
     chainResolvedAt,
+    timeoutNote,
+    setTimeoutNote,
+    clearTimeoutNote,
     appendLog,
     pushNotice,
     dismissNotice,
