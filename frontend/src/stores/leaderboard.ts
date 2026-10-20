@@ -18,6 +18,8 @@ export interface BoardState {
   rows: JsonObject[]
   error: string
   total: number
+  /** Server-order position of the viewer on this board; null = not ranked. */
+  myRank: number | null
 }
 
 function asObject(value: unknown): JsonObject | null {
@@ -39,7 +41,7 @@ async function getJson(url: string): Promise<unknown> {
 }
 
 function emptyBoard(): BoardState {
-  return { status: 'idle', rows: [], error: '', total: 0 }
+  return { status: 'idle', rows: [], error: '', total: 0, myRank: null }
 }
 
 export const useLeaderboardStore = defineStore('leaderboard', () => {
@@ -52,12 +54,12 @@ export const useLeaderboardStore = defineStore('leaderboard', () => {
 
   async function loadRecord(): Promise<void> {
     const token = ++recordToken
-    record.value = { status: 'loading', rows: record.value.rows, error: '', total: 0 }
+    record.value = { status: 'loading', rows: record.value.rows, error: '', total: 0, myRank: null }
     try {
       const data = await getJson('/api/leaderboard')
       if (token !== recordToken) return
       if (!Array.isArray(data)) throw new Error('战绩榜数据异常')
-      record.value = { status: 'ready', rows: asObjects(data), error: '', total: data.length }
+      record.value = { status: 'ready', rows: asObjects(data), error: '', total: data.length, myRank: null }
     } catch (error) {
       if (token !== recordToken) return
       record.value = {
@@ -65,24 +67,28 @@ export const useLeaderboardStore = defineStore('leaderboard', () => {
         rows: record.value.rows,
         error: error instanceof Error ? error.message : String(error),
         total: 0,
+        myRank: null,
       }
     }
   }
 
   async function loadRanked(): Promise<void> {
     const token = ++rankedToken
-    ranked.value = { status: 'loading', rows: ranked.value.rows, error: '', total: ranked.value.total }
+    ranked.value = { status: 'loading', rows: ranked.value.rows, error: '', total: ranked.value.total, myRank: null }
     try {
       const data = await getJson('/api/ranked_leaderboard?limit=100&offset=0')
       if (token !== rankedToken) return
       const body = asObject(data)
       const rows = body ? body.leaderboard : null
       if (!Array.isArray(rows)) throw new Error('段位榜数据异常')
+      const myRank = Number(body ? body.my_rank : NaN)
       ranked.value = {
         status: 'ready',
         rows: asObjects(rows),
         error: '',
         total: typeof body?.total === 'number' ? body.total : rows.length,
+        // Ticket #43 exposes the viewer's full-server position; null = unranked.
+        myRank: Number.isFinite(myRank) && myRank > 0 ? myRank : null,
       }
     } catch (error) {
       if (token !== rankedToken) return
@@ -91,6 +97,7 @@ export const useLeaderboardStore = defineStore('leaderboard', () => {
         rows: ranked.value.rows,
         error: error instanceof Error ? error.message : String(error),
         total: 0,
+        myRank: null,
       }
     }
   }

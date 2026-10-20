@@ -13,9 +13,20 @@ import { defineStore } from 'pinia'
 
 export type ThemeName = 'chart' | 'journal' | 'night'
 export type MotionPreference = 'auto' | 'reduced'
+export type ContrastPreference = 'auto' | 'high'
+export type FontScale = 'normal' | 'large' | 'xlarge'
+export type AuthRequestMode = 'login' | 'register'
 
 const THEME_KEY = 'battleship.ui.theme'
 const MOTION_KEY = 'battleship.ui.motion'
+const CONTRAST_KEY = 'battleship.ui.contrast'
+const FONT_SCALE_KEY = 'battleship.ui.fontScale'
+
+export const FONT_SCALE_LABELS: Record<FontScale, string> = {
+  normal: '标准',
+  large: '大',
+  xlarge: '特大',
+}
 
 const THEMES: ThemeName[] = ['chart', 'journal', 'night']
 
@@ -59,13 +70,36 @@ function readMotion(): MotionPreference {
   }
 }
 
-/** Apply the persisted theme before the app mounts (main.ts); no flash. */
+function readContrast(): ContrastPreference {
+  try {
+    return storage()?.getItem(CONTRAST_KEY) === 'high' ? 'high' : 'auto'
+  } catch {
+    return 'auto'
+  }
+}
+
+function readFontScale(): FontScale {
+  try {
+    const raw = storage()?.getItem(FONT_SCALE_KEY)
+    if (raw === 'large' || raw === 'xlarge') return raw
+  } catch {
+    // Private mode: fall through to the default.
+  }
+  return 'normal'
+}
+
+/** Apply every persisted appearance preference before the app mounts (main.ts). */
 export function applyStoredTheme(): void {
   if (typeof document === 'undefined') return
   const root = document.documentElement
   root.dataset.theme = readTheme()
   if (readMotion() === 'reduced') root.dataset.motion = 'reduced'
   else delete root.dataset.motion
+  if (readContrast() === 'high') root.dataset.contrast = 'high'
+  else delete root.dataset.contrast
+  const scale = readFontScale()
+  if (scale !== 'normal') root.dataset.fontScale = scale
+  else delete root.dataset.fontScale
 }
 
 export interface NoticeInput {
@@ -118,6 +152,8 @@ export const useUiStore = defineStore('ui', () => {
   // ------------------------------------------------------------- theme ----
   const theme = ref<ThemeName>(readTheme())
   const motion = ref<MotionPreference>(readMotion())
+  const contrast = ref<ContrastPreference>(readContrast())
+  const fontScale = ref<FontScale>(readFontScale())
 
   function setTheme(next: ThemeName): void {
     theme.value = THEMES.includes(next) ? next : 'chart'
@@ -140,6 +176,41 @@ export const useUiStore = defineStore('ui', () => {
     } catch {
       // Best effort, same as the theme.
     }
+  }
+
+  function setContrast(next: ContrastPreference): void {
+    contrast.value = next === 'high' ? 'high' : 'auto'
+    if (typeof document !== 'undefined') {
+      if (contrast.value === 'high') document.documentElement.dataset.contrast = 'high'
+      else delete document.documentElement.dataset.contrast
+    }
+    try {
+      storage()?.setItem(CONTRAST_KEY, contrast.value)
+    } catch {
+      // Best effort, same as the theme.
+    }
+  }
+
+  function setFontScale(next: FontScale): void {
+    fontScale.value = next === 'large' || next === 'xlarge' ? next : 'normal'
+    if (typeof document !== 'undefined') {
+      if (fontScale.value !== 'normal') document.documentElement.dataset.fontScale = fontScale.value
+      else delete document.documentElement.dataset.fontScale
+    }
+    try {
+      storage()?.setItem(FONT_SCALE_KEY, fontScale.value)
+    } catch {
+      // Best effort, same as the theme.
+    }
+  }
+
+  /**
+   * Ask for the app-level login overlay (ticket #44 listens for the window
+   * event). Screens use this instead of linking to the dead /login route.
+   */
+  function requestLogin(mode: AuthRequestMode = 'login', reason = ''): void {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new CustomEvent('bs:auth-required', { detail: { mode, reason } }))
   }
 
   // ----------------------------------------------------------- overlays ----
@@ -244,8 +315,13 @@ export const useUiStore = defineStore('ui', () => {
   return {
     theme,
     motion,
+    contrast,
+    fontScale,
     setTheme,
     setMotion,
+    setContrast,
+    setFontScale,
+    requestLogin,
     activeDialog,
     claimDialog,
     releaseDialog,
