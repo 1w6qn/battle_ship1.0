@@ -1,170 +1,157 @@
-# ops/
+# ops/ — build, migrate, deploy, roll back
 
-Deployment helpers for the new backend and the migration window.
+Phase 5 has a single stack: **FastAPI + python-socketio + SQLAlchemy/Alembic**,
+serving the **Vue 3 build** from `frontend/dist` on the same ASGI app. There is
+no legacy stack, no `/legacy` and no `BACKEND_STACK` switch; a leftover value
+fails fast instead of silently running the wrong thing.
 
-## Run (one command)
-
-```powershell
-$env:PYTHONPATH="backend/src"; $env:SECRET_KEY="dev-secret"; & <shared-python> -m battleship
-```
-
-Or through the stack launcher (this is what systemd runs):
+## Local: one command for the full stack
 
 ```powershell
-python ops/run_stack.py --stack rewrite --port 5000 --db ./battleship.db
-python ops/run_stack.py --stack legacy  --port 5000 --db ./battleship.db `
-    --legacy-worktree D:/develop/battle_ship1.0/.agents/worktrees/refactor
+# builds nothing if dist/ exists; migrates a dev database; serves on 5450
+python ops/build.py --frontend-only      # once, or when the frontend changes
+python ops/run_stack.py --port 5450 --db .tmp/dev.db
 ```
 
-Missing/blank SECRET_KEY exits before binding the port and prints the variable name.
+`ops/run_stack.py` fails closed when:
 
-## Endpoints
+* `BACKEND_STACK` is set to anything except `rewrite` (the variable is gone);
+* `frontend/dist/index.html` is missing (`--build` builds it first);
+* the migration fails.
 
-| Path | Purpose |
+`FRONTEND_MODE=legacy` is rejected by the backend settings at startup, naming
+the variable, because the legacy frontend no longer exists.
+
+## Deploy order (production)
+
+```
+ops/build.py        # 1. pip install -e backend; pnpm install/build; verify dist
+ops/migrate.py      # 2. Alembic upgrade + pre-migration backup + verification
+systemctl restart battleship
+ops/healthcheck.py  # 3. require {"status":"ok"}
+```
+
+`systemctl` runs the unit in [systemd/battleship.service](systemd/battleship.service):
+`ExecStartPre` is the migration, `ExecStart` is uvicorn, and every value comes
+from `/etc/battleship/battleship.env` (template: [deploy.env.example](deploy.env.example)).
+`SECRET_KEY` is required: a missing/blank value aborts before the port binds.
+
+### ops/build.py
+
+```powershell
+python ops/build.py --dry-run          # print the plan, change nothing
+python ops/build.py                    # install backend deps + build the frontend
+python ops/build.py --frontend-only    # skip the pip step
+python ops/build.py --skip-install     # reuse frontend/node_modules
+```
+
+Verifies `frontend/dist/index.html`, `.vite/manifest.json` and all 48 card
+faces (bundled from `frontend/public/card_faces` by Vite).
+
+### ops/migrate.py
+
+```powershell
+python ops/migrate.py --dry-run --database <db>   # revision plan, no writes
+python ops/migrate.py --database <db>             # backup -> upgrade -> verify
+python ops/migrate.py --verify-only --database <db>
+```
+
+Backup is a SQLite online copy next to the database
+(`<db>.backup-<UTC stamp>-<pid>-<ns>.db`); a failed upgrade restores it and
+exits 2. A first-time migration on a missing file creates the schema (and removes
+a half-built file on failure).
+
+### Health
+
+```powershell
+python ops/healthcheck.py --url http://127.0.0.1:5000/health --timeout 30
+```
+
+Exit 0 only when the body says `{"status":"ok", ...}`; it prints the individual
+checks (config / database / contracts / socketio). Endpoints: `/health`,
+`/healthz`, `/api/health`, plus `/metrics` (counters, gauges, latency, error
+rate).
+
+## 5 分钟回滚 runbook
+
+Rollback = previous release/commit + the database backup taken before the bad
+migration. `ops/rollback.py` performs the whole sequence and refuses to touch the
+service until both the backup (integrity checked) and the target exist.
+
+```powershell
+# dry-run: validates backup + target, prints the plan (stop -> restore -> checkout -> build -> health)
+python ops/rollback.py --dry-run `
+    --database /var/lib/battleship/battleship.db `
+    --backup   /var/lib/battleship/battleship.db.backup-20261020T031500Z-....db `
+    --to       <previous commit or tag>
+
+# real: systemd deployment (defaults: systemctl stop/restart battleship)
+sudo -u battleship /opt/battleship/.venv/bin/python /opt/battleship/ops/rollback.py `
+    --database /var/lib/battleship/battleship.db --backup <backup> --to <commit>
+```
+
+| 分钟 | 动作 |
 | --- | --- |
-| GET /health / GET /healthz / GET /api/health | config / database / contracts / Socket.IO checks; 503 when degraded |
-| GET /metrics / GET /api/metrics | counters, gauges (connections/rooms/online), latency p50/p95/max, error rate |
-| GET /api/contracts/schema | {hash, bundle}; ETag is the canonical schema hash |
-| GET / / GET /legacy | old SPA during the migration window |
-| GET /static/* | old static assets from the repo root |
+| 0:00 | 运行 `ops/rollback.py`（它会先校验备份与目标，再停服务） |
+| 0:30 | 停服 + 当前库安全副本 + 恢复备份（典型 < 10 s） |
+| 1:00 | `git checkout --detach <commit>`（或 `--release-dir` 切软链）+ 前端重建 |
+| 2:00 | `systemctl restart battleship`；`ops/healthcheck.py` 轮询直到 ok |
+| 3:00 | 冒烟：登录一次、开一局布船、打开一局回放 |
+| 4:00 | 在频道公告回滚原因，把备份路径写进票 |
+| 5:00 | 交接：当前 commit / release、备份路径、原因 |
+
+失败时脚本以 3 退出并打印手动恢复命令（安全副本 + 上一个 commit）。超过
+300 秒会打印 WARNING 并以 4 退出。跨 Phase 5 回滚（回到旧栈）请保留一个旧
+release 目录并用 `--release-dir`：旧提交里没有 `ops/build.py`。
+
+## Environment
+
+All variables keep the names the old stack used. `SECRET_KEY` is the only
+required one; see [deploy.env.example](deploy.env.example).
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `SECRET_KEY` | — | required; session signing |
+| `HOST` / `PORT` | `0.0.0.0` / `5000` | bind address |
+| `BATTLESHIP_DB_PATH` | `./battleship.db` | SQLite (WAL) |
+| `CORS_ORIGINS` | localhost:5000 | comma separated |
+| `TURN_TIMEOUT_SECONDS` | `90` | 0 disables the watchdog |
+| `CHAIN_DISPLAY_DELAY_SECONDS` | `1.2` | 0 in tests/replays |
+| `ENABLE_TEST_EVENTS` | `0` | debug socket events, never in production |
+| `FRONTEND_DIST` | `frontend/dist` | optional build location |
+| `LOG_LEVEL` / `LOG_JSON` | `INFO` / `1` | structured logs |
+
+`BACKEND_STACK`, `LEGACY_WORKTREE`, `FRONTEND_MODE=legacy`, `ARENA_SCREENS_MODE`
+and `ARENA_SCREEN_LIST` belonged to the migration window and are rejected.
 
 ## Contract artifact
 
 ```powershell
-$env:PYTHONPATH="backend/src"; & <shared-python> -m battleship.contracts.export_schema --out ..\contracts.schema.json
-$env:PYTHONPATH="backend/src"; & <shared-python> -m battleship.contracts.export_schema --check ..\contracts.schema.json
-$env:PYTHONPATH="backend/src"; & <shared-python> -m battleship.contracts.export_schema --format ts --out frontend\src\socket\events.gen.ts
+$env:PYTHONPATH="backend/src"
+python -m battleship.contracts.export_schema --out ..\contracts.schema.json
+python -m battleship.contracts.export_schema --check ..\contracts.schema.json
+python -m battleship.contracts.export_schema --format ts --out frontend\src\socket\events.gen.ts
 ```
 
-The TS artifact embeds CONTRACT_SCHEMA_HASH; rebuild/compare it whenever contracts change.
+The TS artifact embeds `CONTRACT_SCHEMA_HASH`; regenerate it whenever contracts
+change (`frontend/scripts/check-contract.mjs` fails the build otherwise).
 
-## Backend switch (configuration item)
+## Gate pointers (out of repository, DECISIONS D4/D7)
 
-The selected stack is the single variable **BACKEND_STACK** (`legacy` | `rewrite`).
-Put it in `/etc/battleship/stack.env` (template: [stack.env.example](stack.env.example))
-and have systemd load it with `EnvironmentFile`. `ops/run_stack.py` reads it when
-`--stack` is omitted; `ops/stack_switch.py` is the supported way to change it.
+Behaviour gates never live in this repository:
+
+* `D:/develop/battleship-verify/cases/30-cleanup` — this ticket: deletion,
+  single-stack cold start, route table, build, ops, docs, announcement;
+* `cases/4`–`19` — backend HTTP/domain/contract suites;
+* `cases/21`–`33` — per-screen SPA suites and the recalibrated browser tools;
+* `tools/web/run_all.py` — 22 `data-testid` browser gates (default worktree:
+  the integration checkout).
+
+Run them with the shared interpreter and an isolated database per run:
 
 ```powershell
-# Plan only (no backup, no restart)
-python ops/stack_switch.py switch --to rewrite --port 5000 --db <db> `
-    --restart-command "systemctl restart battleship@{stack}" --dry-run
-
-# Real switch: backup -> migrate -> restart -> health check
-python ops/stack_switch.py switch --to rewrite --port 5000 --db <db> `
-    --restart-command "systemctl restart battleship@{stack}"
-
-# Rollback: restore the pre-switch DB copy, restart legacy, health check
-python ops/stack_switch.py rollback --port 5000 --db <db> `
-    --restart-command "systemctl restart battleship@{stack}"
+cd D:/develop/battleship-verify
+$env:PYTHONIOENCODING = 'utf-8'
+.venv/Scripts/python.exe -m pytest cases/30-cleanup -q
+.venv/Scripts/python.exe tools/web/run_all.py --worktree <worktree>
 ```
-
-What the script guarantees, in order:
-
-1. SQLite **online backup** to `<db>.backup-<UTC stamp>` before any write
-   (WAL-safe; no file is touched if the backup fails);
-2. rewrite only: `python -m battleship.repositories.migrations --database <db>`
-   (itself backed up + row-count verified; failure keeps the old stack);
-3. restart via the supplied command, then poll `/api/health` until
-   `status == "ok"` (legacy: `/api/online_count` 200), default 180 s;
-4. failure => restore the backup, restart the previous stack, re-check health,
-   exit code 3;
-5. success is written to the state file (`.tmp/stack-state.json` by default,
-   override with `--state-file`) so `rollback` knows the previous stack;
-6. rollback prints its elapsed time and warns when it exceeds 300 s.
-
-Local drill (managed process, no systemd):
-
-```powershell
-python ops/stack_switch.py switch --to rewrite --serve --port 5328 `
-    --db .tmp/switch.db --legacy-worktree <legacy worktree> --legacy-python <flask python>
-python ops/stack_switch.py status --state-file .tmp/stack-state.json --port 5328
-python ops/stack_switch.py rollback --serve --port 5328 `
-    --db .tmp/switch.db --legacy-worktree <legacy worktree> --legacy-python <flask python>
-```
-
-### 5-minute rollback runbook
-
-| Minute | Action |
-| --- | --- |
-| 0:00 | `stack_switch.py rollback ...` (it takes its own safety backup first) |
-| 0:30 | DB backup restored + legacy process restarted (typical local drill: < 10 s) |
-| 1:00 | `GET /api/online_count` 200; `status` shows `stack=legacy, healthy=true` |
-| 2:00 | Log in once, open `/` and `/legacy`, finish a placement smoke |
-| 3:00 | Announce the rollback in the channel; keep the backup path in the ticket |
-| 4:00 | Spot-check online count / one match / replay entry |
-| 5:00 | Handover note: current stack, backup path, reason |
-
-If health does not recover, the script itself already restored the backup and
-restarted the previous stack; the remaining manual step is only the announcement.
-
-## Dual-stack comparison (different ports + database copies)
-
-```powershell
-# legacy on 5330, rewrite on 5331, two independent DB files
-python ops/run_stack.py --stack legacy  --port 5330 --db .tmp/dual-legacy.db --legacy-worktree <legacy worktree>
-python ops/run_stack.py --stack rewrite --port 5331 --db .tmp/dual-rewrite.db
-```
-
-The ticket gate is out of repo: `D:\develop\battleship-verify\cases\20-gate`
-(`python gate.py`, `python dual_stack.py`, `python -m pytest -q`). It replays the
-frozen eight-session contract against this tree and compares the two stacks'
-smoke traces field by field.
-
-## P4 browser gates after the selector recalibration (ticket #29, out-of-repo)
-
-The 22 recalibrated `data-testid` gates and their D33 screenshot baselines live in
-`D:\develop\battleship-verify\tools\web`; one command starts the SPA backend and
-runs them (default worktree: `integration`, port 5420):
-
-```powershell
-cd D:\develop\battleship-verify
-& .venv/Scripts/python.exe tools/web/run_all.py --worktree D:/develop/battleship-worktrees/integration
-```
-
-Tool inventory, per-screen testids, baseline manifest and the C+ visual-difference
-list: `cases/29-tools/README.md`. SKIP entries (help/sfx/bgm/renwang, room/collection)
-are attributed, not green.
-
-## P0 behavior baseline and contract gate (out-of-repo)
-
-Behavior gates are not stored in this repository (spec testing-asset policy).
-They live outside the repo and drive the legacy (later: new) stack only through
-HTTP + Socket.IO:
-
-```powershell
-cd D:\develop\battleship-verify\cases\3-baseline
-$env:PYTHONIOENCODING='utf-8'
-D:\develop\battleship-verify\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
-```
-
-Baseline numbers, the source-assertion mapping and reproducible commands:
-
-- D:\develop\battleship-verify\notes\baseline.md
-- D:\develop\battleship-verify\cases\3-baseline\BEHAVIOR_MAPPING.md
-- D:\develop\battleship-verify\cases\3-baseline\runner.py
-
-Ports 5303 (test-event server) / 5304 (production-mode server), isolated databases
-under D:\develop\battleship-verify\.tmp\3-baseline. No test file is added to the repo.
-
-## P0 contract recorder / replay gate (ticket #2)
-
-The recorder, replay comparator, samples and normalization rules live in
-`D:\develop\battleship-verify` (spec testing-asset policy: no tests/fixtures in
-this repository). Only this pointer is committed.
-
-```powershell
-# One command: fresh isolated legacy stack per session (fixed RNG seed + DB),
-# record, replay, then replay a second time and compare the two runs.
-D:/develop/battleship-verify/.venv/Scripts/python.exe `
-  D:/develop/battleship-verify/tools/run_gate.py `
-  --legacy-worktree D:/develop/battle_ship1.0/.agents/worktrees/refactor `
-  --repeat 2
-
-# Replay against any candidate backend; exit code is the gate.
-D:/develop/battleship-verify/.venv/Scripts/python.exe `
-  D:/develop/battleship-verify/tools/verify.py replay --target http://127.0.0.1:5401
-```
-
-Session matrix, normalization rules and known limits:
-`D:/develop/battleship-verify/notes/CONTRACT_NORMALIZATION.md`.

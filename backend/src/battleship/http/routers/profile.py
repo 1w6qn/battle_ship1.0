@@ -125,7 +125,7 @@ async def upload_avatar(request: Request):
     if len(data) > MAX_AVATAR_SIZE:
         return JSONResponse({"error": "图片不能超过 2MB"}, status_code=400)
 
-    folder = request.app.state.assets.static_dir / "avatars"
+    folder = request.app.state.assets.avatars_dir
     folder.mkdir(parents=True, exist_ok=True)
     stored_name = f"{user_id}_avatar.{extension}"
     (folder / stored_name).write_bytes(data)
