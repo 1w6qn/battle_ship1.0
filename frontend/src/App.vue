@@ -8,6 +8,10 @@ import { routeLoading } from './router'
  * per-screen boundary. The `screen-extra` slot is inert in production; the
  * test root injects the crash probe there (see test-hooks.ts), so no test code
  * is imported by the production entry.
+ *
+ * Ticket #32: the chrome wears the C+ arena brand bar (mark + two-line wordmark,
+ * inline route links, and a short meta cluster). Only existing routes are
+ * linked; no route name or event name is added.
  */
 const nav = [
   { name: 'start', path: '/', label: '首页' },
@@ -29,15 +33,31 @@ const loading = computed(() => routeLoading.value)
 <template>
   <div class="app-shell" data-testid="app-shell" :data-route-loading="loading ? 'true' : 'false'">
     <nav class="app-nav" data-testid="app-nav" aria-label="主屏导航">
-      <router-link
-        v-for="item in nav"
-        :key="item.name"
-        :to="item.path"
-        class="app-nav__link"
-        :data-testid="'nav-' + item.name"
-      >
-        {{ item.label }}
+      <router-link class="app-brand" to="/" aria-label="回到首页">
+        <span class="app-brand__mark" aria-hidden="true">⚓</span>
+        <span class="app-brand__text">
+          <b class="app-brand__title">战舰棋 · 竞技场</b>
+          <small class="app-brand__sub">BATTLESHIP ARENA</small>
+        </span>
       </router-link>
+
+      <div class="app-nav__links">
+        <router-link
+          v-for="item in nav"
+          :key="item.name"
+          :to="item.path"
+          class="app-nav__link"
+          :data-testid="'nav-' + item.name"
+        >
+          {{ item.label }}
+        </router-link>
+      </div>
+
+      <div class="app-nav__meta" aria-hidden="true">
+        <span class="app-nav__pill">竞技场 <b>C+</b></span>
+        <router-link class="app-nav__icon" :to="{ name: 'settings' }" title="设置" tabindex="-1">⚙</router-link>
+        <router-link class="app-nav__icon" :to="{ name: 'replay' }" title="回放" tabindex="-1">▤</router-link>
+      </div>
     </nav>
 
     <p v-if="loading" class="route-loading" data-testid="route-loading" role="status" aria-live="polite">

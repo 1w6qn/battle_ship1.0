@@ -150,16 +150,6 @@ function openReplay(): void {
       <h1 id="screen-game-over-title" class="game-over__title" data-testid="game-over-heading">结算</h1>
       <p v-if="hasResult" class="game-over__verdict" data-testid="game-over-verdict">{{ verdict }}</p>
       <p v-if="hasResult" class="game-over__summary" data-testid="game-over-reason">{{ summary }}</p>
-    </header>
-
-    <section v-if="!hasResult" class="game-over__empty" data-testid="game-over-empty">
-      <p class="game-over__empty-title">还没有收到本局结算数据</p>
-      <p class="game-over__empty-hint">
-        从对局结束进入时，这里会显示胜负、双方信息与本局数据；刷新后请返回首页重新进入。
-      </p>
-    </section>
-
-    <template v-else>
       <section class="game-over__players" data-testid="game-over-players" aria-label="双方信息">
         <div class="game-over__player">
           <span class="game-over__player-role">你</span>
@@ -173,7 +163,16 @@ function openReplay(): void {
         </div>
         <span class="game-over__mode" data-testid="game-over-mode">{{ mode }}</span>
       </section>
+    </header>
 
+    <section v-if="!hasResult" class="game-over__empty" data-testid="game-over-empty">
+      <p class="game-over__empty-title">还没有收到本局结算数据</p>
+      <p class="game-over__empty-hint">
+        从对局结束进入时，这里会显示胜负、双方信息与本局数据；刷新后请返回首页重新进入。
+      </p>
+    </section>
+
+    <template v-else>
       <section class="game-over__stats" data-testid="game-over-stats" aria-label="本局数据">
         <h2 class="game-over__section-title">本 局 数 据</h2>
         <dl class="game-over__stat-grid">
@@ -267,32 +266,72 @@ function openReplay(): void {
 
 <style scoped>
 .game-over {
-  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding-top: 8px;
+}
+
+/* The hero panel: C+ draws one wide, gold-edged banner with the verdict
+   centred under an anchor sigil, then a single "本局数据" panel below it. */
+.game-over__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  max-width: 1120px;
+  padding: 20px 30px 22px;
+  border: 1px solid rgba(201, 162, 76, 0.55);
+  border-radius: var(--radius);
+  background:
+    radial-gradient(420px 140px at 50% 0%, rgba(201, 162, 76, 0.12), transparent 72%),
+    linear-gradient(160deg, rgba(32, 29, 40, 0.88), rgba(18, 20, 36, 0.92));
+  box-shadow: 0 0 34px rgba(201, 162, 76, 0.1), var(--shadow-panel);
+  text-align: center;
+}
+
+.game-over__head::before {
+  content: '⚓';
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 6px;
+  border: 1px solid rgba(201, 162, 76, 0.6);
+  border-radius: 11px;
+  background: rgba(11, 13, 24, 0.6);
+  color: var(--accent-cyan);
+  font-size: 22px;
 }
 
 .game-over__eyebrow {
-  margin: 0 0 4px;
-  color: var(--accent);
-  font-size: 12px;
-  letter-spacing: 0.12em;
+  margin: 0;
+  color: #8f9bc4;
+  font-size: 10px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
 .game-over__title {
   margin: 0;
-  font-size: 28px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.26em;
 }
 
 .game-over__verdict {
-  margin: 4px 0 0;
-  font-size: clamp(28px, 5vw, 42px);
+  margin: 2px 0 0;
+  font-size: 42px;
   font-weight: 800;
   letter-spacing: 0.14em;
   line-height: 1.1;
 }
 
 .game-over[data-outcome='win'] .game-over__verdict {
-  color: #ffd76a;
+  color: var(--gold-strong);
+  text-shadow: 0 0 26px rgba(201, 162, 76, 0.35);
 }
 
 .game-over[data-outcome='lose'] .game-over__verdict {
@@ -300,18 +339,20 @@ function openReplay(): void {
 }
 
 .game-over__summary {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .game-over__empty {
   display: grid;
   gap: 8px;
+  width: 100%;
+  max-width: 1120px;
   padding: 20px;
   border: 1px dashed var(--border);
   border-radius: var(--radius);
-  background: rgb(13 27 38 / 60%);
+  background: var(--panel);
 }
 
 .game-over__empty-title {
@@ -330,16 +371,17 @@ function openReplay(): void {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 18px;
-  padding: 10px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
+  justify-content: center;
+  gap: 8px 16px;
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .game-over__player {
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 
 .game-over__player--opponent {
@@ -347,77 +389,90 @@ function openReplay(): void {
 }
 
 .game-over__player-role {
-  color: var(--text-muted);
-  font-size: 11px;
+  color: var(--text-dim);
+  font-size: 10px;
   letter-spacing: 0.16em;
 }
 
 .game-over__player-name {
-  font-size: 18px;
+  font-size: 14px;
 }
 
 .game-over__player-seat {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .game-over__vs {
-  color: var(--text-muted);
-  font-size: 12px;
+  color: var(--text-dim);
+  font-size: 11px;
   letter-spacing: 0.12em;
 }
 
 .game-over__mode {
-  margin-left: auto;
-  padding: 3px 9px;
-  border: 1px solid var(--border);
+  margin-left: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  color: var(--accent);
-  font-size: 12px;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .game-over__stats {
-  padding: 12px 16px;
-  border: 1px solid var(--border);
+  width: 100%;
+  max-width: 1120px;
+  padding: 14px 24px 8px;
+  border: 1px solid var(--panel-line);
   border-radius: var(--radius);
-  background: var(--bg-elevated);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
 }
 
 .game-over__section-title {
-  margin: 0 0 8px;
-  color: var(--text-muted);
+  margin: 0 0 2px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--line-dash);
+  color: var(--text);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.26em;
 }
 
 .game-over__stat-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  display: block;
   margin: 0;
 }
 
 .game-over__stat {
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: #0b1a24;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 2px;
+  border-bottom: 1px dashed rgba(42, 51, 88, 0.8);
+  background: none;
+}
+
+.game-over__stat:last-child {
+  border-bottom: 0;
 }
 
 .game-over__stat dt {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .game-over__stat dd {
-  margin: 2px 0 0;
-  font-size: 20px;
+  margin: 0;
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
 
 .game-over__cards {
   display: grid;
-  gap: 12px;
+  gap: 14px;
+  width: 100%;
+  max-width: 1120px;
 }
 
 @media (min-width: 900px) {
@@ -431,10 +486,11 @@ function openReplay(): void {
 }
 
 .game-over__rank {
-  padding: 12px 16px;
-  border: 1px solid var(--border);
+  padding: 16px 20px;
+  border: 1px solid var(--panel-line);
   border-radius: var(--radius);
-  background: var(--bg-elevated);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
 }
 
 .game-over__rank-head {
@@ -445,7 +501,7 @@ function openReplay(): void {
 }
 
 .game-over__rank-delta {
-  color: #ffd76a;
+  color: var(--gold-strong);
   font-size: 24px;
   font-variant-numeric: tabular-nums;
 }
@@ -469,20 +525,20 @@ function openReplay(): void {
 }
 
 .game-over__rank-label--after {
-  color: #ffd76a;
+  color: var(--gold-strong);
 }
 
 .game-over__bar {
   height: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: #0b1a24;
+  background: var(--bg-sunken);
 }
 
 .game-over__bar-fill {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #b8872e, #ffd76a);
+  background: linear-gradient(90deg, #b8873a, var(--gold-strong));
 }
 
 .game-over__rank-note {
@@ -493,10 +549,11 @@ function openReplay(): void {
 
 .game-over__xp,
 .game-over__badges {
-  padding: 12px 16px;
-  border: 1px solid var(--border);
+  padding: 16px 20px;
+  border: 1px solid var(--panel-line);
   border-radius: var(--radius);
-  background: var(--bg-elevated);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
 }
 
 .game-over__xp-head {
@@ -507,7 +564,7 @@ function openReplay(): void {
 }
 
 .game-over__xp-delta {
-  color: #6fe0a0;
+  color: var(--success);
   font-size: 24px;
   font-variant-numeric: tabular-nums;
 }
@@ -518,7 +575,7 @@ function openReplay(): void {
 }
 
 .game-over__bar-fill--xp {
-  background: linear-gradient(90deg, #2a8f68, #6fe0a0);
+  background: linear-gradient(90deg, #2a8f68, var(--success));
 }
 
 .game-over__xp-progress,
@@ -529,11 +586,10 @@ function openReplay(): void {
 }
 
 .game-over__xp-levelup {
-  color: #6fe0a0;
+  color: var(--success);
 }
 
-.game-over__breakdown,
-.game-over__badge-list {
+.game-over__breakdown {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
@@ -544,67 +600,101 @@ function openReplay(): void {
   font-size: 12px;
 }
 
-.game-over__breakdown li {
-  display: flex;
-  gap: 5px;
+.game-over__breakdown b {
+  color: var(--success);
 }
 
-.game-over__breakdown b {
-  color: var(--text);
+.game-over__badges {
+  width: 100%;
+}
+
+.game-over__badge-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .game-over__badge {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 2px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #0b1a24;
+  background: var(--accent-soft);
 }
 
 .game-over__badge b {
-  color: #ffd76a;
-  font-size: 13px;
+  font-size: 12px;
+}
+
+.game-over__badge span {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .game-over__actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 10px;
-  margin-top: auto;
-  padding-top: 8px;
+  padding-top: 4px;
+}
+
+.game-over__actions .button {
+  min-height: 40px;
+  padding: 8px 22px;
+}
+
+.game-over__actions [data-testid='game-over-play-again'] {
+  border-color: var(--accent-strong);
+  background: var(--hero-grad);
+  box-shadow: var(--shadow-accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.button--ghost {
+  border-color: var(--border-strong);
+  background: rgba(13, 17, 34, 0.72);
+  color: var(--text-muted);
 }
 
 .game-over__replay-note {
   flex-basis: 100%;
   margin: 0;
-  color: var(--text-muted);
+  color: var(--text-dim);
   font-size: 12px;
+  text-align: center;
 }
 
-.button--ghost {
-  border-color: var(--border);
-  background: transparent;
-  color: var(--text-muted);
+@media (max-width: 899px) {
+  .game-over {
+    justify-content: flex-start;
+  }
 }
 
-.button--ghost:hover {
-  background: #14303f;
-  color: var(--text);
-}
-
-@media (max-width: 520px) {
-  .game-over__stat-grid {
-    grid-template-columns: 1fr;
+@media (max-width: 760px) {
+  .game-over {
+    gap: 10px;
   }
 
-  .game-over__player--opponent {
-    text-align: left;
+  .game-over__head {
+    padding: 16px 16px 18px;
   }
 
-  .game-over__mode {
-    margin-left: 0;
+  .game-over__verdict {
+    font-size: 32px;
+  }
+
+  .game-over__stats {
+    padding: 12px 14px 6px;
+  }
+
+  .game-over__players {
+    gap: 6px 10px;
   }
 }
 </style>
