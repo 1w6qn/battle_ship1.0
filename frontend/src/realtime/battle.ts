@@ -52,6 +52,7 @@ export const BATTLE_EVENTS = [
   'message',
   'error',
   'quick_chat',
+  'chat_message',
   'sacrifice_request',
   'sacrifice_cancelled',
   'placement_request',
@@ -74,6 +75,7 @@ export type BattleEmitEvent =
   | 'use_magic_card'
   | 'chain_response'
   | 'quick_chat'
+  | 'chat_message'
   | 'confirm_sacrifice'
   | 'request_hand_sync'
   | 'surrender'
@@ -86,6 +88,7 @@ export const BATTLE_EMIT_EVENTS: readonly BattleEmitEvent[] = [
   'use_magic_card',
   'chain_response',
   'quick_chat',
+  'chat_message',
   'confirm_sacrifice',
   'request_hand_sync',
   'surrender',
@@ -365,6 +368,10 @@ export function applyBattleEvent(
     }
     case 'quick_chat': {
       match.recordQuickChat(payload)
+      break
+    }
+    case 'chat_message': {
+      match.recordChatMessage(payload)
       break
     }
     case 'sacrifice_request': {

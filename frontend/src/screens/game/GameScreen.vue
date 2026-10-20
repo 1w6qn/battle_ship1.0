@@ -231,9 +231,13 @@ const chainRemaining = computed(() => {
 const logs = computed(() => match.logs.slice().reverse())
 const notices = computed(() => match.notices.slice(-4))
 const quickChatMessages = computed(() => match.quickChat.slice(-8).reverse())
+const chatMessages = computed(() => match.chat.slice(-30))
 
 const quickChatOpen = ref(false)
 const quickChatCatalog = ref<Array<{ id: string; text: string }>>([])
+const chatDraft = ref('')
+const chatError = ref('')
+const CHAT_MAX_LENGTH = 100
 const surrenderArmed = ref(false)
 const busy = ref(false)
 const sideOpen = ref(false)
@@ -650,6 +654,34 @@ async function sendQuickChat(item: QuickChatItem): Promise<void> {
   else match.pushNotice(ack.message || '快捷语发送失败', 'error')
 }
 
+async function sendChat(): Promise<void> {
+  const message = chatDraft.value.trim()
+  if (!message) {
+    chatError.value = '说点什么再发送吧'
+    return
+  }
+  if (Array.from(message).length > CHAT_MAX_LENGTH) {
+    chatError.value = '消息太长了，最多 ' + CHAT_MAX_LENGTH + ' 个字'
+    return
+  }
+  try {
+    const ack = await sendBattleEvent('chat_message', {
+      room_id: state.value.room_id,
+      message,
+    })
+    if (ack?.status === 'success') {
+      chatDraft.value = ''
+      chatError.value = ''
+    } else {
+      chatError.value = ack?.message || '消息发送失败，请稍后再试'
+      match.pushNotice(chatError.value, 'error')
+    }
+  } catch (error) {
+    chatError.value = '消息发送失败：' + String(error)
+    match.pushNotice(chatError.value, 'error')
+  }
+}
+
 async function turnAction(event: 'enter_battle_phase' | 'enter_end_phase' | 'end_turn'): Promise<void> {
   try {
     const ack = await sendBattleEvent(event, {
@@ -919,13 +951,44 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
       </div>
     </div>
 
-    <section v-if="quickChatOpen" class="game__drawer" data-testid="game-quick-chat" aria-label="快捷语">
+    <section v-if="quickChatOpen" class="game__drawer" data-testid="game-quick-chat" aria-label="局内聊天">
       <header class="game__drawer-head">
-        <h2 class="game__panel-title">快捷语</h2>
+        <h2 class="game__panel-title">局内聊天</h2>
         <button type="button" class="button game__action" data-testid="game-quick-chat-close" @click="quickChatOpen = false">
           关闭
         </button>
       </header>
+      <section class="game__chat-text" data-testid="game-chat" aria-label="文字聊天">
+        <ol class="game__chat-log" data-testid="game-chat-messages" aria-live="polite">
+          <li
+            v-for="(message, index) in chatMessages"
+            :key="'chat-' + index"
+            class="game__chat-line"
+            :class="{ 'game__chat-line--mine': message.username === selfName }"
+            :data-testid="'game-chat-message-' + index"
+          >
+            <b>{{ message.username }}</b>：{{ message.message }}
+          </li>
+        </ol>
+        <p v-if="!chatMessages.length" class="game__panel-empty" data-testid="game-chat-empty">还没有人说话</p>
+        <p v-if="chatError" class="game__target-error" data-testid="game-chat-error">{{ chatError }}</p>
+        <div class="game__chat-form">
+          <input
+            v-model="chatDraft"
+            class="game__chat-input"
+            type="text"
+            :maxlength="CHAT_MAX_LENGTH"
+            placeholder="说点什么…"
+            aria-label="聊天内容"
+            data-testid="game-chat-input"
+            @keydown.enter.prevent="sendChat"
+          />
+          <button type="button" class="button game__action" data-testid="game-chat-send" @click="sendChat">
+            发送
+          </button>
+        </div>
+      </section>
+      <h3 class="game__panel-title">快捷语</h3>
       <ul class="game__chat-items">
         <li v-for="item in quickChatCatalog" :key="item.id">
           <button
@@ -1549,6 +1612,42 @@ const theirFrozenText = computed(() => (frozenTheirs.value.size ? '对方 3×3 �
   list-style: none;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.game__chat-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.game__chat-line {
+  overflow-wrap: anywhere;
+}
+
+.game__chat-line b {
+  color: var(--accent);
+}
+
+.game__chat-line--mine b {
+  color: var(--text);
+}
+
+.game__chat-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.game__chat-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #081824;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
 }
 
 .game__banner {
