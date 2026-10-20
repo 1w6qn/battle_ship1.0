@@ -689,14 +689,14 @@ onBeforeUnmount(() => {
 <style scoped>
 .lobby {
   gap: 12px;
+  padding-top: 8px;
 }
 
 .lobby__head {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px 18px;
-  align-items: flex-start;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
 }
 
 .lobby__title-block {
@@ -704,36 +704,42 @@ onBeforeUnmount(() => {
 }
 
 .lobby__eyebrow {
-  margin: 0 0 4px;
-  color: var(--accent);
-  font-size: 12px;
-  letter-spacing: 0.12em;
+  margin: 0 0 2px;
+  color: #8f9bc4;
+  font-size: 10px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
 .lobby__title {
   margin: 0;
-  font-size: 28px;
+  font-size: 30px;
+  line-height: 1.2;
 }
 
 .lobby__hint {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   max-width: 62ch;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .lobby__topbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 10px;
+  gap: 8px 10px;
+}
+
+.lobby__topbar [data-testid='lobby-refresh'] {
+  margin-left: auto;
 }
 
 .lobby__stat {
-  padding: 3px 8px;
-  border: 1px solid var(--border);
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
+  background: rgba(13, 17, 34, 0.6);
   color: var(--text-muted);
   font-size: 12px;
   white-space: nowrap;
@@ -759,8 +765,8 @@ onBeforeUnmount(() => {
 }
 
 .lobby__notice {
-  color: var(--accent);
-  background: #0f2b34;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
 }
 
 .lobby__error {
@@ -798,7 +804,7 @@ onBeforeUnmount(() => {
   padding: 7px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #0b1a24;
+  background: var(--bg-sunken);
   color: var(--text);
   font: inherit;
 }
@@ -811,6 +817,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  margin-left: auto;
 }
 
 .lobby__seg-btn {
@@ -826,7 +833,7 @@ onBeforeUnmount(() => {
 
 .lobby__seg-btn.is-active {
   border-color: var(--accent-strong);
-  background: #0f3a47;
+  background: var(--accent-soft);
   color: var(--text);
 }
 
@@ -840,11 +847,12 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--border);
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--panel-line);
   border-radius: var(--radius);
-  background: var(--bg-elevated);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
 }
 
 .lobby__panel-head {
@@ -855,12 +863,18 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.lobby__panel-head .lobby__panel-title {
+  flex: 1;
+}
+
 .lobby__panel-title {
   margin: 0;
-  color: var(--text-muted);
-  font-size: 11px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line-dash);
+  color: var(--text);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.1em;
 }
 
 .lobby__panel-meta {
@@ -880,6 +894,15 @@ onBeforeUnmount(() => {
   list-style: none;
 }
 
+/* Waiting rooms are a two-column card grid in the C+ lobby. */
+.lobby__panel--rooms .lobby__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  max-height: none;
+  overflow: visible;
+}
+
 .lobby__player,
 .lobby__room,
 .lobby__match,
@@ -889,9 +912,50 @@ onBeforeUnmount(() => {
   gap: 8px;
   min-width: 0;
   padding: 7px 8px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #0b1a24;
+  background: rgba(13, 17, 34, 0.6);
+}
+
+.lobby__room {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'main main'
+    'seats join';
+  gap: 10px 8px;
+  align-items: end;
+  padding: 14px;
+  border-radius: 10px;
+}
+
+.lobby__room-main {
+  grid-area: main;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.lobby__room-state {
+  padding: 2px 9px;
+  border: 1px solid rgba(78, 200, 224, 0.5);
+  border-radius: 999px;
+  color: var(--accent-cyan);
+  font-size: 11px;
+  order: -1;
+}
+
+.lobby__room.is-full .lobby__room-state {
+  border-color: rgba(201, 162, 76, 0.55);
+  color: var(--gold-strong);
+}
+
+.lobby__room-seats {
+  grid-area: seats;
+}
+
+.lobby__room [data-testid^='lobby-room-join-'] {
+  grid-area: join;
 }
 
 .lobby__player.is-me {
@@ -905,10 +969,10 @@ onBeforeUnmount(() => {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background-color: #14303f;
+  background-color: #1b2140;
   background-position: center;
   background-size: cover;
-  color: var(--accent);
+  color: #cfc2ff;
   font-size: 14px;
   font-weight: 700;
 }
@@ -965,15 +1029,15 @@ onBeforeUnmount(() => {
 }
 
 .lobby__player-title {
-  color: #ffd76a;
+  color: var(--gold-strong);
   font-size: 11px;
 }
 
 .lobby__tag {
   padding: 1px 6px;
-  border: 1px solid var(--accent-strong);
+  border: 1px solid rgba(124, 92, 240, 0.6);
   border-radius: 999px;
-  color: var(--accent);
+  color: var(--accent-strong);
   font-size: 10px;
 }
 
@@ -1036,15 +1100,19 @@ onBeforeUnmount(() => {
   color: #ffb4a8;
 }
 
+.lobby__empty--error {
+  color: #ffb4a8;
+}
+
 .lobby__own {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid #3d6b4c;
+  padding: 10px 12px;
+  border: 1px solid rgba(111, 224, 160, 0.4);
   border-radius: 8px;
-  background: #0c2118;
+  background: rgba(42, 143, 104, 0.14);
 }
 
 .lobby__own-main {
@@ -1092,13 +1160,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-height: 120px;
+  min-height: 150px;
   max-height: 300px;
   overflow-y: auto;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #08141c;
+  background: rgba(13, 17, 34, 0.7);
 }
 
 .lobby__chat-item {
@@ -1120,7 +1188,7 @@ onBeforeUnmount(() => {
 }
 
 .lobby__chat-name {
-  color: #ffd76a;
+  color: var(--gold-strong);
   font-size: 12px;
 }
 
@@ -1143,9 +1211,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 9px 12px;
-  border: 1px solid #3d6b4c;
+  border: 1px solid rgba(111, 224, 160, 0.4);
   border-radius: 8px;
-  background: #0c2118;
+  background: rgba(42, 143, 104, 0.14);
 }
 
 .lobby__invite-text {
@@ -1174,7 +1242,7 @@ onBeforeUnmount(() => {
 }
 
 .button--ghost:hover {
-  background: #14303f;
+  background: var(--accent-soft);
   color: var(--text);
 }
 
@@ -1193,9 +1261,14 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
+/* C+ lobby: one 1233px two-column block (rooms/matches | players/chat),
+   left-aligned inside the page gutter. Friends keeps a third right-hand row. */
 @media (min-width: 980px) {
   .lobby__columns {
-    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 1.05fr);
+    grid-template-columns: minmax(0, 754px) minmax(0, 422px);
+    gap: 20px;
+    max-width: 1233px;
+    align-items: start;
   }
 
   .lobby__panel--rooms {
@@ -1213,14 +1286,15 @@ onBeforeUnmount(() => {
     grid-row: 1;
   }
 
-  .lobby__panel--friends {
+  .lobby__panel--chat {
     grid-column: 2;
     grid-row: 2;
+    min-height: 230px;
   }
 
-  .lobby__panel--chat {
-    grid-column: 3;
-    grid-row: 1 / span 2;
+  .lobby__panel--friends {
+    grid-column: 2;
+    grid-row: 3;
   }
 
   .lobby__columns[data-filter='watchable'] .lobby__panel--matches {

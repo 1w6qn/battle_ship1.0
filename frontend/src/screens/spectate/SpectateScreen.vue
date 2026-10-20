@@ -239,6 +239,7 @@ function startOver(): void {
         <span class="spectate__stat">剩余攻击 <b data-testid="spectate-attacks">{{ store.attacksRemaining }}</b></span>
         <span class="spectate__stat">场地魔法 <b data-testid="spectate-field-magic">{{ fieldMagicText }}</b></span>
         <span class="spectate__stat">观战 <b data-testid="spectate-count">{{ store.count }}</b>/<b data-testid="spectate-limit">{{ store.limit }}</b> 人</span>
+        <button type="button" class="button button--ghost spectate__leave" data-testid="spectate-leave" @click="leaveScreen">退出观战</button>
       </div>
 
       <div class="spectate__body">
@@ -273,26 +274,6 @@ function startOver(): void {
 
           <p class="spectate__hint">观众只能看到已经轰过的格子；船位与手牌内容不会下发到这台设备。</p>
 
-          <section class="spectate__panel" aria-label="当前连锁">
-            <h2 class="spectate__panel-title">当前连锁</h2>
-            <div class="spectate__chain" data-testid="spectate-chain">
-              <span v-if="!chain.length" class="spectate__muted">当前没有连锁</span>
-              <div
-                v-for="row in chain"
-                :key="row.key"
-                class="spectate__chain-item"
-                :class="{ negated: row.negated }"
-              >{{ chainName(row.seat) }}：{{ row.card }}{{ row.negated ? '（已被康）' : '' }}</div>
-            </div>
-          </section>
-
-          <section class="spectate__panel" aria-label="对局日志">
-            <h2 class="spectate__panel-title">对局记录</h2>
-            <div class="spectate__logs" data-testid="spectate-logs">
-              <p v-if="!store.logs.length" class="spectate__muted">暂无日志</p>
-              <div v-for="(entry, index) in store.logs" :key="index" class="spectate__log">{{ entry.text }}</div>
-            </div>
-          </section>
         </div>
 
         <aside class="spectate__side">
@@ -339,12 +320,30 @@ function startOver(): void {
             </form>
             <p class="spectate__chat-note" data-testid="spectate-chat-notice">观战席的话只有观众看得到，对局双方听不见。</p>
           </section>
+
+          <section class="spectate__panel" aria-label="当前连锁">
+            <h2 class="spectate__panel-title">当前连锁</h2>
+            <div class="spectate__chain" data-testid="spectate-chain">
+              <span v-if="!chain.length" class="spectate__muted">当前没有连锁</span>
+              <div
+                v-for="row in chain"
+                :key="row.key"
+                class="spectate__chain-item"
+                :class="{ negated: row.negated }"
+              >{{ chainName(row.seat) }}：{{ row.card }}{{ row.negated ? '（已被康）' : '' }}</div>
+            </div>
+          </section>
+
+          <section class="spectate__panel" aria-label="对局日志">
+            <h2 class="spectate__panel-title">对局记录</h2>
+            <div class="spectate__logs" data-testid="spectate-logs">
+              <p v-if="!store.logs.length" class="spectate__muted">暂无日志</p>
+              <div v-for="(entry, index) in store.logs" :key="index" class="spectate__log">{{ entry.text }}</div>
+            </div>
+          </section>
         </aside>
       </div>
 
-      <footer class="spectate__actions">
-        <button type="button" class="button button--ghost" data-testid="spectate-leave" @click="leaveScreen">离开观战</button>
-      </footer>
     </template>
 
     <section v-else class="spectate__notice" data-testid="spectate-loading">
@@ -355,35 +354,37 @@ function startOver(): void {
 
 <style scoped>
 .spectate-screen {
-  gap: 12px;
+  gap: 14px;
+  padding-top: 8px;
 }
 
 .spectate__eyebrow {
-  margin: 0 0 4px;
-  color: var(--accent);
-  font-size: 12px;
-  letter-spacing: 0.12em;
+  margin: 0 0 2px;
+  color: #8f9bc4;
+  font-size: 10px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
 .spectate__title {
   margin: 0;
-  font-size: 26px;
+  font-size: 30px;
+  line-height: 1.2;
 }
 
 .spectate__status {
-  margin: 6px 0 0;
+  margin: 1px 0 0;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .spectate__ended {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
   padding: 6px 10px;
-  border: 1px solid #b8872e;
+  border: 1px solid rgba(201, 162, 76, 0.5);
   border-radius: 8px;
-  background: #2a2312;
-  color: #ffd76a;
+  background: var(--gold-soft);
+  color: var(--gold-strong);
   font-size: 13px;
 }
 
@@ -394,7 +395,7 @@ function startOver(): void {
   padding: 20px;
   border: 1px dashed var(--border);
   border-radius: var(--radius);
-  background: rgb(13 27 38 / 60%);
+  background: var(--panel);
 }
 
 .spectate__notice h2 {
@@ -417,16 +418,22 @@ function startOver(): void {
   color: var(--danger);
 }
 
+/* Status rail with the exit action on the right, as in the C+ legend shot. */
 .spectate__topbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
-  padding: 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
+  gap: 8px 22px;
+  padding: 10px 16px;
+  border: 1px solid var(--panel-line);
+  border-radius: 10px;
+  background: var(--panel);
   font-size: 13px;
+  box-shadow: var(--shadow-panel);
+}
+
+.spectate__stat {
+  color: var(--text-muted);
 }
 
 .spectate__stat b {
@@ -434,35 +441,48 @@ function startOver(): void {
   font-variant-numeric: tabular-nums;
 }
 
+.spectate__leave {
+  min-height: 40px;
+  margin-left: auto;
+  padding: 6px 16px;
+}
+
 .spectate__body {
   display: grid;
-  gap: 12px;
+  gap: 20px;
 }
 
 .spectate__main {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
 }
 
 .spectate__boards {
   display: grid;
-  gap: 12px;
+  gap: 20px;
+  margin-top: 45px;
 }
 
 .spectate__board-wrap {
   min-width: 0;
+  padding: 12px 16px 16px;
+  border: 1px solid var(--panel-line);
+  border-radius: 10px;
+  background: var(--panel);
 }
 
 .spectate__board-title {
-  margin: 0 0 2px;
+  margin: 0 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line-dash);
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text);
 }
 
 .spectate__board-meta {
-  margin: 0 0 6px;
+  margin: 8px 0 10px;
   color: var(--text-muted);
   font-size: 12px;
 }
@@ -475,12 +495,12 @@ function startOver(): void {
 .spectate__board {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
-  gap: 2px;
-  width: min(100%, 300px);
-  padding: 4px;
-  border: 1px solid var(--border);
+  gap: 5px;
+  width: min(100%, 304px);
+  padding: 6px;
+  border: 1px solid #2a3358;
   border-radius: 8px;
-  background: #081824;
+  background: radial-gradient(120% 120% at 50% 0%, #1d2a55, #101733 70%);
 }
 
 .spectate__board .cell {
@@ -488,9 +508,9 @@ function startOver(): void {
   align-items: center;
   justify-content: center;
   aspect-ratio: 1;
-  border: 1px solid #123243;
-  border-radius: 4px;
-  background: #0d2433;
+  border: 1px solid #232c54;
+  border-radius: 6px;
+  background: #1b2244;
   color: var(--text-muted);
   font-size: clamp(11px, 3.4vw, 15px);
   line-height: 1;
@@ -503,7 +523,7 @@ function startOver(): void {
 }
 
 .spectate__board .cell.miss {
-  color: #7fb3c8;
+  color: var(--accent-cyan);
 }
 
 .spectate__board .cell.sunk {
@@ -513,25 +533,32 @@ function startOver(): void {
 }
 
 .spectate__hint {
+  order: -1;
   margin: 0;
+  padding: 8px 14px;
+  border: 1px solid var(--panel-line);
+  border-radius: 8px;
+  background: rgba(21, 26, 48, 0.6);
   color: var(--text-muted);
   font-size: 12px;
 }
 
 .spectate__panel {
   padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
+  border: 1px solid var(--panel-line);
+  border-radius: 10px;
+  background: var(--panel);
   min-width: 0;
 }
 
 .spectate__panel-title {
-  margin: 0 0 6px;
-  color: var(--text-muted);
-  font-size: 11px;
+  margin: 0 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line-dash);
+  color: var(--text);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.08em;
 }
 
 .spectate__chain,
@@ -540,7 +567,7 @@ function startOver(): void {
 .spectate__chat {
   display: grid;
   gap: 4px;
-  max-height: 200px;
+  max-height: 110px;
   overflow-y: auto;
   font-size: 12px;
 }
@@ -549,9 +576,9 @@ function startOver(): void {
 .spectate__log,
 .spectate__roster-item,
 .spectate__chat-line {
-  padding: 3px 6px;
+  padding: 4px 8px;
   border-radius: 6px;
-  background: #0b1a24;
+  background: rgba(13, 17, 34, 0.7);
 }
 
 .spectate__chain-item.negated {
@@ -561,11 +588,11 @@ function startOver(): void {
 
 .spectate__roster-item.me {
   border: 1px solid var(--accent-strong);
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .spectate__chat-line.kind-player {
-  border-left: 2px solid #4d8fa8;
+  border-left: 2px solid var(--accent);
 }
 
 .spectate__chat-line.kind-notice,
@@ -580,7 +607,7 @@ function startOver(): void {
 }
 
 .spectate__muted {
-  color: var(--text-muted);
+  color: var(--text-dim);
   font-size: 12px;
 }
 
@@ -593,10 +620,10 @@ function startOver(): void {
 .spectate__chat-input {
   flex: 1;
   min-width: 0;
-  padding: 6px 9px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #081824;
+  background: var(--bg-sunken);
   color: var(--text);
   font: inherit;
   font-size: 13px;
@@ -604,14 +631,8 @@ function startOver(): void {
 
 .spectate__chat-note {
   margin: 6px 0 0;
-  color: var(--text-muted);
+  color: var(--text-dim);
   font-size: 11px;
-}
-
-.spectate__actions {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 4px;
 }
 
 @media (min-width: 900px) {
@@ -620,14 +641,39 @@ function startOver(): void {
   }
 
   .spectate__body {
-    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+    grid-template-columns: minmax(0, 1fr) 422px;
     align-items: start;
+  }
+
+  .spectate__side {
+    margin-top: 0;
+  }
+
+  .spectate__side {
+    display: grid;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 899px) {
+  .spectate__side {
+    display: grid;
+    gap: 12px;
   }
 }
 
 @media (max-width: 520px) {
   .spectate__title {
     font-size: 22px;
+  }
+
+  .spectate__topbar {
+    gap: 6px 12px;
+    font-size: 12px;
+  }
+
+  .spectate__leave {
+    margin-left: 0;
   }
 }
 </style>
