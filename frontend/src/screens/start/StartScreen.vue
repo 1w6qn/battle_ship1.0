@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import MatchFoundOverlay from '../../components/MatchFoundOverlay.vue'
 import StateSurface from '../../components/StateSurface.vue'
+import { useAuthStore } from '../../stores/auth'
 import { useCollectionStore } from '../../stores/collection'
 import { useGameStore } from '../../stores/game'
 import { useHomeStore } from '../../stores/home'
@@ -35,6 +36,7 @@ import {
  * disconnect the connection the seat is bound to.
  */
 const router = useRouter()
+const auth = useAuthStore()
 const home = useHomeStore()
 const game = useGameStore()
 const collection = useCollectionStore()
@@ -64,7 +66,14 @@ onBeforeUnmount(() => {
 })
 
 const player = computed(() => playerView(home.profile))
-const playerName = computed(() => (player.value.guest ? '玩家' : player.value.name))
+/** Identity and profile are separate reads; the guest card follows the session. */
+/**
+ * One name for the whole session (ticket #44): a logged-in account shows its
+ * username, a guest shows the persisted 舰长1234. The same computed is what
+ * find_match and create_ai_room submit, so the screen never promises a name the
+ * server did not receive (spec story 9).
+ */
+const playerName = computed(() => (auth.isGuest ? auth.guestName : auth.displayName))
 const stats = computed(() => statsText(home.stats))
 const queueText = computed(() => queueStatusText(home.queueMode))
 const pillText = computed(() => numberText(home.onlinePill))
@@ -131,6 +140,13 @@ function currentSocket() {
 }
 
 async function startMatch(mode: 'casual' | 'ranked'): Promise<void> {
+  // A guest cannot rank (server refuses it); open the login overlay instead of
+  // spending the click on a refusal the player cannot act on (spec story 31).
+  if (mode === 'ranked' && auth.isGuest) {
+    home.notifyMessage('排位对战需要先登录')
+    auth.open('login', '排位对战需要先登录，登录后会回到这里继续。')
+    return
+  }
   const socket = currentSocket()
   if (!socket) return
   home.clearNotice()
@@ -301,9 +317,9 @@ async function startAi(): Promise<void> {
       <aside class="home-panel home-player" data-testid="start-player" aria-labelledby="home-player-title">
         <h2 id="home-player-title" class="home-panel__title">指 挥 官</h2>
         <div class="home-player__emblem" aria-hidden="true"><span>舰</span></div>
-        <p class="home-player__name" data-testid="start-player-name">{{ player.name }}</p>
+        <p class="home-player__name" data-testid="start-player-name">{{ playerName }}</p>
 
-        <template v-if="player.guest">
+        <template v-if="auth.isGuest">
           <p v-if="home.profileFailed" class="home-player__note" data-testid="start-player-error">
             名片暂时取不到，刷新后再试。
           </p>
@@ -312,7 +328,14 @@ async function startAi(): Promise<void> {
           </p>
           <p v-else class="home-player__note" data-testid="start-player-loading">正在读取名片…</p>
           <div class="home-player__links">
-            <a class="home-link" href="/login" data-testid="start-login-link">去登录</a>
+            <button
+              type="button"
+              class="home-link home-link--button"
+              data-testid="start-login-link"
+              @click="auth.open('login')"
+            >
+              去登录
+            </button>
             <router-link class="home-link" :to="{ name: 'profile' }" data-testid="start-profile-link">查看名片</router-link>
           </div>
         </template>
