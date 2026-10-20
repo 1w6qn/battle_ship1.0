@@ -20,6 +20,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ..contracts import errors as socket_errors
 from ..domain.anticheat import suspicion
 from ..domain.matchmaking import guard
 from ..domain.room import Player, Room, RoomState, new_room_id, rank_payload, seat_label
@@ -262,5 +263,9 @@ class MatchmakingService:
             return ""
 
     async def _deny(self, sid: str, message: str) -> dict[str, Any]:
-        await self._publisher.emit("error", {"message": message}, to=sid)
+        await self._publisher.emit(
+            "error",
+            socket_errors.error_detail(socket_errors.OPERATION_FAILED, message),
+            to=sid,
+        )
         return {"status": "error", "message": message}

@@ -26,8 +26,10 @@ from .models import (
     field_magic_name,
     is_ship_alive,
     opponent_of,
+    opponent_seat_state,
     room_match_mode,
     seat_label,
+    turn_timing,
 )
 
 #: Legacy `_EFFECT_BADGES`: (effect_flags field, card name, expiry text, suffix).
@@ -182,8 +184,15 @@ def _magic_temp_data(room: Room) -> dict[str, Any]:
     return room.magic_temp_data if isinstance(room.magic_temp_data, dict) else {}
 
 
-def build_room_sync(room: Room, player_id: str) -> dict[str, Any]:
-    """Build the 45-key reconnect snapshot for one seated player."""
+def build_room_sync(
+    room: Room, player_id: str, *, turn_timeout_seconds: int = 0
+) -> dict[str, Any]:
+    """Build the reconnect snapshot for one seated player (49 keys, ticket #43).
+
+    `turn_timeout_seconds` is the configured watchdog timeout; the room snapshot
+    does not own a second copy, it asks the same service that performs the
+    fallback action (see `RoomService.turn_timeout_seconds`).
+    """
 
     from ...contracts.events_out import RoomSync
 
@@ -292,6 +301,10 @@ def build_room_sync(room: Room, player_id: str) -> dict[str, Any]:
         "rps_choices": (
             dict(room.rps_choices) if room.state == RoomState.ROCK_PAPER_SCISSORS else {}
         ),
+        # Ticket #43 additive tail: the countdown truth and the waiting-seat
+        # visibility, both derived from state the snapshot already reads.
+        **turn_timing(room, turn_timeout_seconds),
+        **opponent_seat_state(room, player_id),
     }
     # Validation is the freeze: adding/removing a key without updating the
     # contract model fails here instead of silently drifting the wire shape.
