@@ -69,6 +69,47 @@ export function modeText(ranked: boolean, mode: string): string {
   return '休闲赛'
 }
 
+export type MatchMode = 'ranked' | 'casual' | 'ai' | 'custom'
+
+/**
+ * The mode "再来一局" must replay. The game store already carries the three
+ * server-authoritative flags (recorded at match start), so no new protocol
+ * field is needed; ranked wins over a stale mode string, AI over custom.
+ */
+export function matchModeOf(ranked: boolean, mode: string, isAiRoom: boolean): MatchMode {
+  if (isAiRoom || mode === 'ai') return 'ai'
+  if (ranked || mode === 'ranked') return 'ranked'
+  if (mode === 'custom') return 'custom'
+  return 'casual'
+}
+
+export function matchModeLabel(mode: MatchMode): string {
+  switch (mode) {
+    case 'ranked':
+      return '排位赛'
+    case 'ai':
+      return '人机对战'
+    case 'custom':
+      return '自定义房'
+    default:
+      return '休闲赛'
+  }
+}
+
+/** The start screen stores the picked AI difficulty here (default normal). */
+export const AI_DIFFICULTY_KEY = 'bs.aiDifficulty'
+export const AI_DIFFICULTIES = ['easy', 'normal', 'hard', 'master'] as const
+
+export function aiDifficulty(): string {
+  try {
+    const stored = String(window.localStorage.getItem(AI_DIFFICULTY_KEY) || '').trim()
+    if ((AI_DIFFICULTIES as readonly string[]).includes(stored)) return stored
+  } catch {
+    // Private-mode storage can throw; the default applies.
+  }
+  return 'normal'
+}
+
 export function signed(value: number): string {
   return value > 0 ? '+' + value : String(value)
 }
