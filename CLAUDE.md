@@ -88,6 +88,9 @@ backend/src/battleship/
 - **契约产物**：`contracts/export_schema.py` 导出 JSON Schema 与
   `frontend/src/socket/events.gen.ts`；构建前 `frontend/scripts/check-contract.mjs`
   校验哈希，契约改了必须重新生成并重跑构建。
+- **卡表**：卡面数据单一来源 = 后端 `domain/magic/data/magic_card.json`（build 期由
+  `frontend/scripts/sync-card-data.mjs` 生成前端 `src/cards/card_data.json`，勿手改）；
+  新卡 = 牌表一条 + `@register` 一个效果，见 [docs/ADD_A_MAGIC_CARD.md](docs/ADD_A_MAGIC_CARD.md)。
 
 ---
 
