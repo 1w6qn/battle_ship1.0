@@ -32,19 +32,27 @@ import {
   type SettlementEventName,
 } from './realtime/settlement'
 import {
+  BATTLE_EVENTS,
+  applyBattleEvent,
+  battleSocketConnected,
+  getBattleSocket,
+  type BattleEventName,
+} from './realtime/battle'
+import {
   applyMatchEvent,
   MATCH_EVENTS,
   setMatchAckInterceptor,
   type MatchEventName,
 } from './realtime/match'
-import { usePlacementStore } from './stores/placement'
-import { useRpsStore } from './stores/rps'
 import {
   applyLobbyEvent,
   getLobbySocket,
   lobbySocketConnected,
   type LobbyEventName,
 } from './realtime/lobby'
+import { useMatchStore } from './stores/match'
+import { usePlacementStore } from './stores/placement'
+import { useRpsStore } from './stores/rps'
 import { CrashProbe } from './test-crash/CrashProbe'
 import { crashTarget, requestCrash } from './test-crash/state'
 
@@ -103,6 +111,15 @@ export interface SpectateTestApi {
   leave: () => Promise<void>
   chat: (message: string) => Promise<{ ok: boolean; message: string }>
   resetChannel: () => void
+}
+
+export interface BattleTestApi {
+  socket: () => TypedSocket | null
+  connected: () => boolean
+  /** The live battle store snapshot (log, prompts, marks) plus the game state. */
+  state: () => Record<string, unknown>
+  /** Feed the exact production reducer with a frozen frame (test build only). */
+  feed: (event: string, payload: Record<string, unknown>) => void
 }
 
 export interface ScreensTestApi {
@@ -174,6 +191,7 @@ export interface TestHooksApi {
   settlement: SettlementTestApi
   replay: ReplayTestApi
   spectate: SpectateTestApi
+  battle: BattleTestApi
   screens: ScreensTestApi
   match: MatchTestApi
   lobby: LobbyTestApi
@@ -233,6 +251,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
   const result = useResultStore(pinia)
   const replay = useReplayStore(pinia)
   const spectate = useSpectateStore(pinia)
+  const battleStore = useMatchStore(pinia)
   const profile = useProfileStore(pinia)
   const leaderboard = useLeaderboardStore(pinia)
   const settings = useSettingsStore(pinia)
@@ -433,8 +452,39 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     resetChannel: () => resetSpectateChannelForTest(),
   }
 
+  const battle: BattleTestApi = {
+    socket: () => getBattleSocket(),
+    connected: () => battleSocketConnected(),
+    state: () =>
+      JSON.parse(
+        JSON.stringify({
+          ...battleStore.snapshot(),
+          game: {
+            hand: game.state.hand,
+            chain: game.state.chain,
+            attacks: game.state.attacks,
+            opponent_attacks: game.state.opponent_attacks,
+            effect_badges: game.state.effect_badges,
+            state: game.state.state,
+            current_phase: game.state.current_phase,
+            attacks_remaining: game.state.attacks_remaining,
+            remaining_ships: game.state.remaining_ships,
+            opponent_remaining_ships: game.state.opponent_remaining_ships,
+            frozen_area: game.state.frozen_area,
+            shenwei_holes: game.state.shenwei_holes,
+          },
+        }),
+      ),
+    feed: (event, payload) => {
+      if (!(BATTLE_EVENTS as readonly string[]).includes(event)) {
+        throw new Error('unknown battle event: ' + event)
+      }
+      applyBattleEvent(event as BattleEventName, payload, pinia)
+    },
+  }
+
   window.__BS_TEST__ = {
-    version: 'ticket-25+ticket-23+ticket-24+ticket-28',
+    version: 'ticket-25+ticket-23+ticket-24+ticket-28+ticket-27',
     router,
     currentRouteName: () => (router.currentRoute.value.name as string | null) ?? null,
     routeLoadingHistory: () => history.slice(),
@@ -451,6 +501,7 @@ export function installTestHooks(router: Router, pinia: Pinia): void {
     settlement,
     replay: replayApi,
     spectate: spectateApi,
+    battle,
     screens,
     match,
     lobby,
