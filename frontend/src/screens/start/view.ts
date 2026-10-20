@@ -28,13 +28,13 @@ export function readObject(source: JsonObject | null | undefined, key: string): 
     : null
 }
 
-/** Unknown server numbers stay an em dash; zero is a real value. */
+/** Unknown server numbers render nothing; zero is a real value (story 64). */
 export function numberText(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '—'
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
 }
 
 export function percentOf(value: number | null, total: number | null): string {
-  if (value === null || total === null || total <= 0) return '—'
+  if (value === null || total === null || total <= 0) return ''
   return Math.round((value / total) * 100) + '%'
 }
 
@@ -73,9 +73,9 @@ export function playerView(profile: JsonObject | null): PlayerView {
       level: '',
       levelText: '',
       levelFill: 0,
-      record: '—',
-      winRate: '—',
-      streak: '—',
+      record: '',
+      winRate: '',
+      streak: '',
     }
   }
   const rank = readObject(profile, 'rank_info')
@@ -89,13 +89,13 @@ export function playerView(profile: JsonObject | null): PlayerView {
   return {
     guest: false,
     name: readString(profile, 'username') || '指挥官',
-    rankLabel: readString(rank, 'label') || '—',
+    rankLabel: readString(rank, 'label'),
     rankFill: percentWidth(readNumber(rank, 'progress'), readNumber(rank, 'sub_points')),
     level: levelValue === null ? '' : 'Lv.' + levelValue,
     levelText:
-      need === null ? '—' : need > 0 ? numberText(into) + ' / ' + numberText(need) : '满级',
+      need === null ? '' : need > 0 ? numberText(into) + ' / ' + numberText(need) : '满级',
     levelFill: ratioWidth(readNumber(level, 'ratio')),
-    record: wins === null || losses === null ? '—' : wins + ' 胜 / ' + losses + ' 负',
+    record: wins === null || losses === null ? '' : wins + ' 胜 / ' + losses + ' 负',
     winRate: percentOf(wins, matches),
     streak: numberText(readNumber(profile, 'longest_streak')),
   }
@@ -106,6 +106,20 @@ export function queueStatusText(mode: HomeMode | null): string {
   if (mode === 'casual') return '正在寻找休闲对手…'
   return ''
 }
+
+/** Seconds waited since the server confirmed the queue entry (story 21). */
+export function waitedSeconds(startedAt: number, now: number): number {
+  if (!startedAt) return 0
+  return Math.max(0, Math.floor((now - startedAt) / 1000))
+}
+
+/** AI difficulty options: four directly clickable pills (story 17). */
+export const DIFFICULTY_OPTIONS: ReadonlyArray<{ value: string; label: string; hint: string }> = [
+  { value: 'easy', label: '简单', hint: '只会炮击' },
+  { value: 'normal', label: '普通', hint: '每回合一张安全卡' },
+  { value: 'hard', label: '困难', hint: '会用失灵响应连锁' },
+  { value: 'master', label: '大师', hint: '试算选牌 · 读情报开炮' },
+]
 
 /**
  * Stable list key for one announcement: the server contract says the date is

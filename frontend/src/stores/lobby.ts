@@ -51,6 +51,10 @@ export interface LobbyRoom {
   players: number
   capacity: number
   createdAt: number
+  /** Ticket #43 additive fields: 'casual' | 'ranked' | 'custom' (or '' if absent). */
+  mode: string
+  /** Ticket #43: false = private room (join by room id only). */
+  public: boolean
 }
 
 export interface LobbyMatch {
@@ -155,6 +159,9 @@ function normalizeRoom(raw: JsonObject): LobbyRoom {
     players: Math.max(1, asNumber(raw.players, 1)),
     capacity: Math.max(1, asNumber(raw.capacity, 2)),
     createdAt: asNumber(raw.created_at),
+    mode: asString(raw.mode),
+    // Older broadcasts omit the field; the server default is public.
+    public: raw.public !== false,
   }
 }
 
