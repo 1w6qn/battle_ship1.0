@@ -16,14 +16,17 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import random
 import time
 from typing import Any, Awaitable, Callable
 
 from ..domain import battle as battle_rules
+from ..domain import placement as placement_rules
 from ..domain import replay as replay_rules
 from ..domain.magic import interaction as interaction_rules
 from ..domain.battle import AttackOutcome
-from ..domain.room import Player, PlayerShip, Room, RoomState
+from ..domain.room import Player, PlayerShip, Position, Room, RoomState
+from ..domain.room.models import field_magic_name
 from ..infra.logging import get_logger
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
 from .settlement import SettlementResult, SettlementService
@@ -46,11 +49,15 @@ class BattleService:
         *,
         clock: Callable[[], float] | None = None,
         touch_turn: Callable[[Room, str], None] | None = None,
+        rng: Any | None = None,
     ) -> None:
         self.rooms = rooms
         self.settlement = settlement or SettlementService(None)
         self.clock = clock or time.time
         self.touch_turn = touch_turn
+        # Debug boards / random attacks follow random.seed(...) by default so
+        # an E2E run stays reproducible (CLAUDE #17).
+        self.rng = rng or random
         self._publisher: EventPublisher = NullPublisher()
         self.sink_hooks: list[SinkHook] = []
         self.damage_hooks: list[DamageHook] = []
@@ -460,3 +467,180 @@ class BattleService:
             "game_over", {"winner": room.winner}, room=room.id
         )
         return {"status": "success", "message": "游戏失败已设置"}
+
+    async def debug_set_player_ships(self, room_id: str | None,
+                                    player_id: str | None,
+                                    ship_count: Any) -> dict:
+        """test_set_player_ships: random board for the caller's own seat."""
+
+        return await self._debug_set_ships(room_id, player_id, ship_count, own=True)
+
+    async def debug_set_opponent_ships(self, room_id: str | None,
+                                       player_id: str | None,
+                                       ship_count: Any) -> dict:
+        """test_set_opponent_ships: random board for the other seat."""
+
+        return await self._debug_set_ships(room_id, player_id, ship_count, own=False)
+
+    async def _debug_set_ships(self, room_id: str | None, player_id: str | None,
+                               ship_count: Any, *, own: bool) -> dict:
+        room = self.rooms.get_room(room_id)
+        if room is None or not player_id or player_id not in room.players:
+            return {"status": "error", "message": "无效的房间或玩家"}
+        seat = str(player_id) if own else room.opponent_of(str(player_id))
+        if not seat or seat not in room.players:
+            return {"status": "error", "message": "无效的房间或玩家"}
+        ships = placement_rules.random_board(self.rng, ship_count)
+        placement_rules.apply_placement(room.players[seat], ships)
+        # The legacy event re-published both frames, so the two clients agree
+        # with the server about the new board without a reconnect.
+        await self._emit_ships_updated(room)
+        await self._emit_player_ships(room, seat)
+        label = "玩家" if own else "对方"
+        return {"status": "success", "message": f"已设置{label}船只数量为 {len(ships)}"}
+
+    async def debug_auto_attack(self, room_id: str | None, player_id: str | None,
+                                count: Any = 1) -> dict:
+        """test_auto_attack: raw random shots, bypassing every attack guard.
+
+        Legacy parity: this writes attacks directly (no hit/sink frames, no
+        replay step) and only emits game_over when the last ship goes down; E2E
+        reads the result through test_get_game_state or the ack.
+        """
+
+        room = self.rooms.get_room(room_id)
+        if room is None or not player_id or player_id not in room.players:
+            return {"status": "error", "message": "无效的房间或玩家"}
+        attacker = room.players[str(player_id)]
+        opponent_id = room.opponent_of(str(player_id))
+        opponent = room.players.get(opponent_id) if opponent_id else None
+        if opponent is None:
+            return {"status": "error", "message": "无效的房间或玩家"}
+        try:
+            shots = int(count)
+        except (TypeError, ValueError):
+            shots = 1
+        results: list[dict[str, Any]] = []
+        for _ in range(max(0, shots)):
+            if room.attacks_remaining <= 0:
+                break
+            cells = battle_rules.attackable_cells(attacker)
+            if not cells:
+                break
+            x, y = self.rng.choice(cells)
+            hit = False
+            ship_sunk = False
+            for ship in opponent.ships:
+                if Position(x=x, y=y) not in ship.positions:
+                    continue
+                hit = True
+                if ship.shield:
+                    ship.shield = False
+                elif not ship.invincible:
+                    ship.hits.append(Position(x=x, y=y))
+                    if len(ship.hits) == len(ship.positions):
+                        ship_sunk = True
+                        opponent.remaining_ships -= 1
+                break
+            attacker.attacks.append(
+                Position(x=x, y=y, hit=hit, ship_sunk=ship_sunk)
+            )
+            room.attacks_remaining -= 1
+            results.append(
+                {"x": x, "y": y, "hit": hit, "ship_sunk": ship_sunk}
+            )
+            if opponent.remaining_ships <= 0:
+                room.state = RoomState.GAME_OVER
+                room.winner = str(player_id)
+                await self._publisher.emit(
+                    "game_over", {"winner": str(player_id)}, room=room.id
+                )
+                break
+        return {
+            "status": "success",
+            "message": f"已执行 {len(results)} 次自动攻击",
+            "attack_results": results,
+        }
+
+    def debug_get_game_state(self, room_id: str | None) -> dict:
+        """test_get_game_state: the authoritative E2E snapshot of one room."""
+
+        room = self.rooms.get_room(room_id)
+        if room is None:
+            return {"status": "error", "message": "无效的房间"}
+        pending = room.priority_pending
+        players: dict[str, Any] = {}
+        for pid, player in room.players.items():
+            players[pid] = {
+                "remaining_ships": player.remaining_ships,
+                "magic_hand_count": len(player.magic_hand),
+                "attacks": [
+                    {
+                        "x": attack.x,
+                        "y": attack.y,
+                        "hit": bool(getattr(attack, "hit", False)),
+                        "ship_sunk": bool(getattr(attack, "ship_sunk", False)),
+                    }
+                    for attack in (player.attacks or [])
+                ],
+                "magic_hand": [
+                    getattr(card, "name", None) for card in player.magic_hand
+                ],
+                "effect_flags": (
+                    vars(player.effect_flags)
+                    if hasattr(player.effect_flags, "__dict__")
+                    else {}
+                ),
+                "damage_dealt_this_turn": player.damage_dealt_this_turn,
+                "ships": [
+                    {
+                        "positions": [(pos.x, pos.y) for pos in ship.positions],
+                        "hits": [
+                            (hit.x, hit.y) if not isinstance(hit, dict)
+                            else (hit["x"], hit["y"])
+                            for hit in ship.hits
+                        ],
+                        "invincible": bool(ship.invincible),
+                        "shield": bool(ship.shield),
+                    }
+                    for ship in player.ships
+                ],
+            }
+        # One implementation of "current field card name" for every caller.
+        field = field_magic_name(room) or None
+        return {
+            "status": "success",
+            "game_state": {
+                "room_id": room.id,
+                "state": getattr(room.state, "value", room.state),
+                "current_attacker": room.current_attacker,
+                "current_phase": getattr(
+                    room.current_phase, "value", room.current_phase
+                ),
+                "attacks_remaining": room.attacks_remaining,
+                "round": room.round,
+                "field_magic": field,
+                "game_effects": list(room.game_effects.keys()),
+                "priority_pending": (
+                    {
+                        "actor": pending.get("actor"),
+                        "responder": pending.get("responder"),
+                        "action": pending.get("action"),
+                    }
+                    if isinstance(pending, dict)
+                    else None
+                ),
+                "decline_priority": dict(getattr(room, "decline_priority", None) or {}),
+                "chain": [
+                    {
+                        "card": getattr(item.card, "name", None),
+                        "player": item.player_id,
+                        "negated": bool(item.negated),
+                    }
+                    for item in (room.chain or [])
+                ],
+                "chain_window": room.chain_window,
+                "players": players,
+            },
+        }
+

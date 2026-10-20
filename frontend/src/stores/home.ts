@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { bootHomeStats, readBoot } from '../boot'
 
 /**
  * Home-screen view model (ticket #26).
@@ -32,6 +33,14 @@ export interface ChangelogEntry {
 }
 
 export type HomeMode = 'casual' | 'ranked'
+
+/** A real match the server has already seated us into (匹配成功 overlay). */
+export interface MatchFoundInfo {
+  playerName: string
+  opponentName: string
+  mode: HomeMode
+  roomId: string
+}
 
 export interface HomeFetchResult {
   ok: boolean
@@ -95,6 +104,10 @@ export const useHomeStore = defineStore('home', () => {
   const notice = ref('')
   /** True once a match/room hand-off is expected to move us to placement. */
   const awaitingPlacement = ref(false)
+  /** Set when a real matchmaking pair lands; the home screen shows the
+   *  five-second 匹配成功 overlay before navigating to placement. AI/custom
+   *  rooms never set it (they are not matchmaking pairs). */
+  const matchFound = ref<MatchFoundInfo | null>(null)
   /**
    * Monotonic counter bumped by every `game_state{placing_ships}` frame. The
    * screen watches this instead of the state value: after one match the store
@@ -203,6 +216,25 @@ export const useHomeStore = defineStore('home', () => {
     queueMode.value = null
   }
 
+  /** Record the placing_ships frame: matchmaking pairs open the overlay. */
+  function recordPlacementFrame(payload: JsonObject | null | undefined): void {
+    const data = asObject(payload)
+    if (!data) return
+    const mode = queueMode.value
+    const opponentName = asString(data.opponent_name)
+    if (mode === null || !opponentName) return
+    matchFound.value = {
+      playerName: asString(data.player_name) || '你',
+      opponentName,
+      mode,
+      roomId: asString(data.room_id),
+    }
+  }
+
+  function clearMatchFound(): void {
+    matchFound.value = null
+  }
+
   function markPlacementFrame(): void {
     placementSignal.value += 1
   }
@@ -232,8 +264,27 @@ export const useHomeStore = defineStore('home', () => {
     socketConnected.value = value
   }
 
-  /** Read the read-only aggregate; both requests belong to the same panel. */
-  async function loadStats(): Promise<void> {
+  /**
+   * Read the read-only aggregate; both requests belong to the same panel.
+   * The shell's window.__BOOT__ already carries the same three counters, so the
+   * first paint renders them without a round trip (spec: startup data JSON).
+   * The force flag (used once the realtime socket is up) bypasses the boot
+   * snapshot: the boot counters are the page-render moment, and presence
+   * changes as soon as our own connection registers.
+   */
+  let bootConsumed = false
+  async function loadStats(force = false): Promise<void> {
+    if (!force && !bootConsumed) {
+      const booted = bootHomeStats()
+      if (booted) {
+        bootConsumed = true
+        applyHomeStats(booted)
+        if (typeof booted.online_count === 'number') {
+          applyOnlineCount({ online_count: booted.online_count })
+        }
+        return
+      }
+    }
     const [aggregate, counter] = await Promise.all([
       getJson('/api/home_stats'),
       getJson('/api/online_count'),
@@ -245,6 +296,12 @@ export const useHomeStore = defineStore('home', () => {
 
   /** `/api/profile` answers 401 for guests; that is a state, not a failure. */
   async function loadProfile(): Promise<void> {
+    const boot = readBoot()
+    if (boot && boot.user === null) {
+      // The shell already knows this request is anonymous; skip the 401 probe.
+      markGuest()
+      return
+    }
     const result = await getJson('/api/profile')
     if (result.status === 401) {
       markGuest()
@@ -284,6 +341,7 @@ export const useHomeStore = defineStore('home', () => {
     pendingAction.value = null
     notice.value = ''
     awaitingPlacement.value = false
+    matchFound.value = null
     placementSignal.value = 0
   }
 
@@ -305,6 +363,7 @@ export const useHomeStore = defineStore('home', () => {
     busy,
     notice,
     awaitingPlacement,
+    matchFound,
     placementSignal,
     socketConnected,
     applyHomeStats,
@@ -317,6 +376,8 @@ export const useHomeStore = defineStore('home', () => {
     beginAction,
     endAction,
     expectPlacement,
+    recordPlacementFrame,
+    clearMatchFound,
     markPlacementFrame,
     placementHandled,
     notifyError,

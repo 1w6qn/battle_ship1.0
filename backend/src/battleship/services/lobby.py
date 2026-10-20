@@ -29,9 +29,9 @@ from ..domain.lobby.rules import (
     LOBBY_STATE_TICK_SECONDS,
     chat_text,
     clean_name,
+    lobby_counters,
     player_status,
     rooms_by_socket,
-    visible_rooms,
 )
 from ..infra.logging import get_logger
 from .presence import PresenceService
@@ -42,8 +42,6 @@ logger = get_logger("lobby")
 #: Avatar / title cache lifetime (the legacy stack used 60s to avoid a query per
 #: broadcast; the lobby ticker re-broadcasts every 4 seconds).
 PROFILE_CACHE_TTL_SECONDS = 60.0
-
-MATCH_MODE_RANKED = "ranked"
 
 
 @dataclass
@@ -272,15 +270,16 @@ class LobbyService:
                 }
             )
 
-        queue = list(self._rooms.match_queue)
-        ranked_n = sum(1 for entry in queue if entry.get("mode") == MATCH_MODE_RANKED)
+        counters = lobby_counters(
+            self._rooms.get_all_rooms().values(), presence, self._rooms.match_queue
+        )
         return {
             "ts": int(now),
-            "online_count": len(presence),
+            "online_count": counters.online_count,
             "lobby_count": len(members),
-            "queue": {"casual": len(queue) - ranked_n, "ranked": ranked_n},
+            "queue": counters.queue,
             "players": players,
-            "rooms": visible_rooms(self._rooms.get_all_rooms().values(), set(presence)),
+            "rooms": counters.joinable_rooms,
             # The spectate entry: only started, full, non-AI rooms whose two
             # seats both allow watching. The key is always present because the
             # client renders it unconditionally.

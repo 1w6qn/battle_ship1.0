@@ -176,16 +176,19 @@ def room_match_mode(room: "Room") -> str:
 
 
 def field_magic_name(room: "Room") -> str:
-    """Public card name of the active field magic (one implementation).
+    """Public card name of the active field magic (the only implementation).
 
-    The room stores the card *instance* (legacy behaviour); later tickets may
-    also store a plain dict, so both shapes are accepted and an unknown shape
-    degrades to the empty string rather than crashing a snapshot.
+    The room stores the card *instance* (legacy behaviour); tests and repairs
+    may also store a plain dict or a bare name, so all three shapes are accepted
+    and an unknown shape degrades to the empty string rather than crashing a
+    snapshot. Every other module imports this function; none re-implements it.
     """
 
     card = getattr(room, "field_magic", None)
     if card is None:
         return ""
+    if isinstance(card, str):
+        return card
     if isinstance(card, dict):
         return str(card.get("name") or "")
     return str(getattr(card, "name", "") or "")

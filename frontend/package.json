@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/check-contract.mjs && vite build",
-    "build:test": "node scripts/check-contract.mjs && vite build --mode test",
+    "build": "node scripts/sync-card-data.mjs && node scripts/check-contract.mjs && vite build",
+    "build:test": "node scripts/sync-card-data.mjs && node scripts/check-contract.mjs && vite build --mode test",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "check:contract": "node scripts/check-contract.mjs"

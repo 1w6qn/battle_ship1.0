@@ -1,5 +1,1 @@
-"""backend/src/battleship/domain/magic/__init__.py -- placeholder module.
-
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+"""Magic cards, decks, playability, effects and the chain engine."""

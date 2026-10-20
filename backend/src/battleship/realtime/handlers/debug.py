@@ -6,8 +6,11 @@
 
 实现策略：**开关关闭时一个调试 handler 都不注册**；未登记事件由 realtime 的
 catch-all 返回明确的 ack 错误（见 `realtime/server.py`），而不是 Socket.IO 的
-未知事件静默超时。开关打开后，14 个 handler 才注册，并且仍要过白名单；
-真正的实现（`DEBUG_IMPLEMENTATIONS`）按事件增量登记。
+未知事件静默超时。开关打开后，14 个 handler 才注册，并且仍要过白名单。
+
+本模块只做"事件名 -> 服务方法"的映射；每个调试动作都写在拥有那份状态的
+service 里（布船/炮击在 battle、卡牌与效果在 magic、阶段与重置在 gameplay），
+所以调试路径与产品路径不会各自长出第二份规则。
 """
 
 from __future__ import annotations
@@ -26,8 +29,9 @@ if TYPE_CHECKING:
 
 DEBUG_EVENT_DISABLED_MESSAGE = "调试事件未启用"
 DEBUG_EVENT_FORBIDDEN_MESSAGE = "调试事件未对你的账号开放"
+DEBUG_EVENT_UNIMPLEMENTED_MESSAGE = "调试事件 {event} 尚未实现"
 
-# 事件名 -> 实现。后续票登记真实实现；未登记时明确返回"尚未实现"，
+# 事件名 -> 实现。14 个事件全部登记；仍然保留"未登记即明确报错"的兜底，
 # 绝不假装成功（旧栈 `test_win_game` 的"成功但毫无反应"就是这种坑）。
 DEBUG_IMPLEMENTATIONS: dict[str, Callable[..., Awaitable[Any]]] = {}
 
@@ -70,7 +74,7 @@ def _make_handler(
                 error = True
                 return {
                     "status": "error",
-                    "message": f"调试事件 {event} 尚未实现",
+                    "message": DEBUG_EVENT_UNIMPLEMENTED_MESSAGE.format(event=event),
                 }
             result = await implementation(sid, data or {}, sio=sio, settings=settings)
             return result
@@ -83,8 +87,9 @@ def _make_handler(
 
 
 def register_debug_implementations(battle: Any, magic: Any = None,
-                                   rooms: Any = None) -> None:
-    """Register the debug events implemented so far (only behind the gate)."""
+                                   rooms: Any = None,
+                                   gameplay: Any = None) -> None:
+    """Map every legacy `test_*` event to the service method that owns it."""
 
     async def test_win_game(sid: str, data: dict[str, Any], *,
                             sio: "socketio.AsyncServer", settings: "Settings") -> dict:
@@ -94,8 +99,42 @@ def register_debug_implementations(battle: Any, magic: Any = None,
                              sio: "socketio.AsyncServer", settings: "Settings") -> dict:
         return await battle.debug_lose(data.get("room_id"), data.get("player_id"))
 
+    async def test_set_player_ships(
+        sid: str, data: dict[str, Any], *,
+        sio: "socketio.AsyncServer", settings: "Settings",
+    ) -> dict:
+        return await battle.debug_set_player_ships(
+            data.get("room_id"), data.get("player_id"), data.get("ship_count")
+        )
+
+    async def test_set_opponent_ships(
+        sid: str, data: dict[str, Any], *,
+        sio: "socketio.AsyncServer", settings: "Settings",
+    ) -> dict:
+        return await battle.debug_set_opponent_ships(
+            data.get("room_id"), data.get("player_id"), data.get("ship_count")
+        )
+
+    async def test_auto_attack(
+        sid: str, data: dict[str, Any], *,
+        sio: "socketio.AsyncServer", settings: "Settings",
+    ) -> dict:
+        return await battle.debug_auto_attack(
+            data.get("room_id"), data.get("player_id"), data.get("count", 1)
+        )
+
+    async def test_get_game_state(
+        sid: str, data: dict[str, Any], *,
+        sio: "socketio.AsyncServer", settings: "Settings",
+    ) -> dict:
+        return battle.debug_get_game_state(data.get("room_id"))
+
     DEBUG_IMPLEMENTATIONS["test_win_game"] = test_win_game
     DEBUG_IMPLEMENTATIONS["test_lose_game"] = test_lose_game
+    DEBUG_IMPLEMENTATIONS["test_set_player_ships"] = test_set_player_ships
+    DEBUG_IMPLEMENTATIONS["test_set_opponent_ships"] = test_set_opponent_ships
+    DEBUG_IMPLEMENTATIONS["test_auto_attack"] = test_auto_attack
+    DEBUG_IMPLEMENTATIONS["test_get_game_state"] = test_get_game_state
 
     if rooms is not None:
         async def test_set_ai_rps_choice(
@@ -137,8 +176,47 @@ def register_debug_implementations(battle: Any, magic: Any = None,
                 data.get("room_id"), data.get("player_id")
             )
 
+        async def test_clear_all_effects(
+            sid: str, data: dict[str, Any], *,
+            sio: "socketio.AsyncServer", settings: "Settings",
+        ) -> dict:
+            return await magic.debug_clear_all_effects(data.get("room_id"))
+
+        async def test_get_multi_area_chain(
+            sid: str, data: dict[str, Any], *,
+            sio: "socketio.AsyncServer", settings: "Settings",
+        ) -> dict:
+            return await magic.debug_get_multi_area_chain(
+                data.get("room_id"), data.get("player_id")
+            )
+
+        async def test_get_magic_cards_list(
+            sid: str, data: dict[str, Any], *,
+            sio: "socketio.AsyncServer", settings: "Settings",
+        ) -> dict:
+            return magic.debug_get_magic_cards_list()
+
         DEBUG_IMPLEMENTATIONS["test_add_specific_magic_card"] = test_add_specific_magic_card
         DEBUG_IMPLEMENTATIONS["test_add_all_magic_cards"] = test_add_all_magic_cards
+        DEBUG_IMPLEMENTATIONS["test_clear_all_effects"] = test_clear_all_effects
+        DEBUG_IMPLEMENTATIONS["test_get_multi_area_chain"] = test_get_multi_area_chain
+        DEBUG_IMPLEMENTATIONS["test_get_magic_cards_list"] = test_get_magic_cards_list
+
+    if gameplay is not None:
+        async def test_end_turn(
+            sid: str, data: dict[str, Any], *,
+            sio: "socketio.AsyncServer", settings: "Settings",
+        ) -> dict:
+            return await gameplay.debug_end_turn(data.get("room_id"))
+
+        async def test_reset_game(
+            sid: str, data: dict[str, Any], *,
+            sio: "socketio.AsyncServer", settings: "Settings",
+        ) -> dict:
+            return await gameplay.debug_reset_game(data.get("room_id"))
+
+        DEBUG_IMPLEMENTATIONS["test_end_turn"] = test_end_turn
+        DEBUG_IMPLEMENTATIONS["test_reset_game"] = test_reset_game
 
 
 def register_debug_handlers(

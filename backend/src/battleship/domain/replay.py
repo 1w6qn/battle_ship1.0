@@ -75,7 +75,11 @@ def _state(room):
         "effects": [],
         "remaining": [],
         "board_resets": [],
+        "phases": [],
+        "rounds": [],
+        "chains": [],
         "nodes": [],
+        "context": None,
         "lost": {},
         "last": None,
         "last_effects": None,
@@ -536,8 +540,116 @@ def _record_snapshot(room, st, step):
 
 
 # ---------------------------------------------------------------------------
-# 步骤
+# 上下文（阶段 / 大回合 / 连锁）—— 回放顶栏三项的唯一来源
 # ---------------------------------------------------------------------------
+def _phase_value(value):
+    return str(getattr(value, "value", value) or "")
+
+
+def _chain_items(room, chain=None):
+    """Compact public chain rows: {"card", "side", "negated"}."""
+    items = list(chain if chain is not None else (getattr(room, "chain", None) or []))
+    out = []
+    for item in items:
+        card = getattr(item, "card", None)
+        name = getattr(card, "name", None)
+        if name is None:
+            name = getattr(item, "card_name", None)
+        if name is None:
+            name = str(card) if card is not None else ""
+        pid = getattr(item, "player_id", None) or getattr(item, "player", None)
+        out.append({
+            "card": str(name),
+            "side": _side_label(room, pid),
+            "negated": bool(getattr(item, "negated", False)),
+        })
+    return out
+
+
+def _append_context_row(st, key, field, step, value):
+    """Idempotent timeline row: only the last row's value matters."""
+    rows = st.setdefault(key, [])
+    if rows and rows[-1].get(field) == value:
+        return
+    rows.append({"step": step, field: value})
+
+
+def _round_value(value) -> int:
+    try:
+        return int(value or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def note_phase(room, phase=None) -> str:
+    """Phase of the next recorded step.
+
+    With an explicit phase the value is stamped onto the *next* step (one-shot),
+    for callers whose room already moved past the step they are about to record.
+    Without one it reads the live room phase. The recorder itself calls this for
+    every step, so the timeline and the step stamps share one definition.
+    """
+    if room is None:
+        return ""
+    st = _state(room)
+    if phase is None:
+        return _phase_value(getattr(room, "current_phase", ""))
+    text = _phase_value(phase)
+    st.setdefault("pending", {})["phase"] = text
+    return text
+
+
+def note_round(room, round_no=None) -> int:
+    """Big-round number of the next step (explicit value is one-shot)."""
+    if room is None:
+        return 1
+    st = _state(room)
+    if round_no is None:
+        return _round_value(getattr(room, "round", 1))
+    number = _round_value(round_no)
+    st.setdefault("pending", {})["round"] = number
+    return number
+
+
+def note_chain(room, chain=None) -> list:
+    """Chain stack of the next step (explicit stack is one-shot).
+
+    Pass the prospective stack when the recorder is fed a card-play step before
+    the item is pushed (services/magic.py) so the step carries the stack *after*
+    that play; pass an empty list to record that the stack drained. Without an
+    argument it reads the live room stack.
+    """
+    if room is None:
+        return []
+    st = _state(room)
+    if chain is None:
+        return _chain_items(room)
+    items = _chain_items(room, chain)
+    st.setdefault("pending", {})["chain"] = items
+    return items
+
+
+def _step_context(room, st, step):
+    """Effective phase/round/chain for one step + its timeline rows."""
+
+    pending = st.get("pending")
+    pending = pending if isinstance(pending, dict) else {}
+    phase = pending.pop("phase", None)
+    if phase is None:
+        phase = _phase_value(getattr(room, "current_phase", ""))
+    round_no = pending.pop("round", None)
+    if round_no is None:
+        round_no = _round_value(getattr(room, "round", 1))
+    if "chain" in pending:
+        chain = pending.pop("chain")
+    else:
+        chain = _chain_items(room)
+    _append_context_row(st, "phases", "phase", step, phase)
+    _append_context_row(st, "rounds", "round", step, round_no)
+    _append_context_row(st, "chains", "items", step, chain)
+    return phase, round_no, chain
+
+
 def _actor_name(room, pid):
     player = (getattr(room, "players", None) or {}).get(pid)
     name = getattr(player, "name", None) if player is not None else None
@@ -581,6 +693,10 @@ def _append(room, kind, text, detail=None, actor=None):
             st["truncated"] = "%s（超过 %d 步）" % (TRUNCATED_TEXT, _MAX_STEPS)
             _mark_node(st, step, "truncated", TRUNCATED_TEXT)
         return None
+    # 阶段 / 大回合 / 连锁：note_* 是唯一来源，既写时间线行也写步骤标记；
+    # 只有真变化才落到步骤上（稀疏），长回放不会因此膨胀。
+    phase, round_no, chain = _step_context(room, st, step)
+    seen = st.get("context") or {}
     entry = {
         "i": step,
         "kind": str(kind),
@@ -588,6 +704,13 @@ def _append(room, kind, text, detail=None, actor=None):
         "text": str(text),
         "detail": _step_detail(detail),
     }
+    if seen.get("phase") != phase:
+        entry["phase"] = phase
+    if seen.get("round") != round_no:
+        entry["round"] = round_no
+    if seen.get("chain") != chain:
+        entry["chain"] = chain
+    st["context"] = {"phase": phase, "round": round_no, "chain": chain}
     st["steps"].append(entry)
     _record_snapshot(room, st, step)
     _node_from_step(st, step, entry)
@@ -740,6 +863,9 @@ def build(room):
         "effects": list(st.get("effects") or []),
         "remaining": list(st.get("remaining") or []),
         "board_resets": list(st.get("board_resets") or []),
+        "phases": list(st.get("phases") or []),
+        "rounds": list(st.get("rounds") or []),
+        "chains": list(st.get("chains") or []),
         "nodes": list(st.get("nodes") or []),
         "truncated": st.get("truncated"),
     }
@@ -765,6 +891,8 @@ def _shrink(payload):
         payload["remaining"] = _trim_timeline(payload.get("remaining") or [], keep)
         payload["board_resets"] = [r for r in (payload.get("board_resets") or [])
                                    if int(r.get("step", 0)) <= keep]
+        for key in ("phases", "rounds", "chains"):
+            payload[key] = _trim_timeline(payload.get(key) or [], keep)
         payload["nodes"] = [n for n in (payload.get("nodes") or [])
                             if int(n.get("step", 0)) <= keep]
 
@@ -784,6 +912,9 @@ def _shrink(payload):
         payload["effects"] = []
         payload["remaining"] = []
         payload["board_resets"] = []
+        payload["phases"] = []
+        payload["rounds"] = []
+        payload["chains"] = []
         payload["nodes"] = []
 
     payload["truncated_steps"] = original_steps - len(payload["steps"])

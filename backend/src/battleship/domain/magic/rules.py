@@ -5,6 +5,10 @@ This module is the **only** server-side implementation of
 The front end may mirror it for greying-out cards, but the server decision is
 authoritative.
 
+`field_magic_name` (`domain/room/models.py`) and `action_wait_reason`
+(`domain/battle.py`) are re-exported here for the ticket-era import paths; this
+module does not implement them (CLAUDE #1: one implementation per rule).
+
 Legacy reference: server.py `can_play_magic_card` (8546-8588),
 `freezing_block_reason`, `_last_attack_requirement_reason` and the three
 requirement helpers. DECISIONS D10 keeps the front-end drift (speed-1 in battle
@@ -15,8 +19,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..battle import CHAIN_BUSY_ERROR
+from ..battle import action_wait_reason
 from ..room import Room, RoomPhase
+from ..room.models import field_magic_name
 from .cards import MagicCard
 
 END_PHASE_PLAYABLE: tuple[str, ...] = ("Freezing！",)
@@ -29,15 +34,6 @@ _FIELD_NAME = "禁忌果实"
 
 def value(value: Any) -> Any:
     return getattr(value, "value", value)
-
-
-def field_magic_name(room: Room) -> str:
-    """Current field card name (field cards are objects, never strings)."""
-
-    field = getattr(room, "field_magic", None)
-    if not field:
-        return ""
-    return getattr(field, "name", field) or ""
 
 
 def freezing_block_reason(room: Room, player_id: str, card: MagicCard) -> str | None:
@@ -162,24 +158,6 @@ def playability_reason(room: Room, player_id: str, card: MagicCard) -> str:
     if int(card.speed) != 3 and room.current_attacker != player_id:
         return f"速阶{card.speed}的魔法卡只能在自己的回合使用（现在不是你的回合）"
     return f"当前阶段{value(room.current_phase)}无法使用速阶{card.speed}的魔法卡"
-
-
-def action_wait_reason(room: Room, player_id: str) -> str | None:
-    """Shenji declaration > dice discard > priority, exactly like legacy."""
-
-    pending = (room.magic_temp_data or {}).get("pending_shenji") or {}
-    caster = pending.get("caster") if isinstance(pending, dict) else None
-    if caster and caster != player_id:
-        return "对方正在宣言神机妙算，请等待宣言完成"
-    if (room.pending_dice_discard or {}).get(player_id) is False:
-        return "命运骰子生效中，请先选择一张手牌弃置"
-    pending_priority = room.priority_pending
-    if pending_priority and pending_priority.get("actor") == player_id:
-        action = {"enter_battle": "进入战斗阶段", "enter_end": "进入结束阶段"}.get(
-            pending_priority.get("action"), "阶段转换"
-        )
-        return f"正在等待对方响应「{action}」，请稍候再操作"
-    return None
 
 
 __all__ = [

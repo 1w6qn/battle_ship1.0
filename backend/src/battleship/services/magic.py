@@ -30,7 +30,12 @@ from ..domain.magic import field as field_rules
 from ..domain.magic import interaction as interaction_rules
 from ..domain.magic import lifecycle as lifecycle_rules
 from ..domain.magic import registry
-from ..domain.magic.cards import MagicCard, card_from_payload
+from ..domain.magic.cards import (
+    MAGIC_CARDS,
+    MagicCard,
+    card_by_name,
+    card_from_payload,
+)
 from ..domain.magic import chain as chain_rules
 from ..domain.magic.chain import CHAIN_RESPONSE_SECONDS, ChainItem, ChainResult
 from ..domain.magic.effects.base import EffectContext, EffectResult
@@ -48,6 +53,7 @@ from ..domain.magic.rules import (
     woxin_requirement_reason,
 )
 from ..domain.room import (
+    EffectFlags,
     Player,
     PlayerShip,
     Position,
@@ -830,9 +836,13 @@ class MagicService:
             room.magic_discard.append(card)
         await self._emit_hand(player)
         # Replay: the card leaves the hand at this instant, not at resolution.
+        # The step also carries the stack *including* this card (note_chain),
+        # so the replay top bar can show the chain of every play.
+        item = ChainItem(player_id, card, targets, self.clock())
+        replay_rules.note_chain(room, list(room.chain) + [item])
         replay_rules.note_card_played(room, player_id, card)
 
-        room.chain.append(ChainItem(player_id, card, targets, self.clock()))
+        room.chain.append(item)
         await self._publisher.emit(
             "magic_chain_updated", _spectate_chain_payload(room), room=room.id
         )
@@ -1064,10 +1074,13 @@ class MagicService:
                     break
             room.magic_discard.append(card)
             await self._emit_hand(player)
-            # Replay: chained play is a play, recorded at the same moment.
+            # Replay: chained play is a play, recorded at the same moment; the
+            # step carries the stack after this play (same single seam).
+            item = ChainItem(str(player_id), card, targets, self.clock())
+            replay_rules.note_chain(room, list(room.chain) + [item])
             replay_rules.note_card_played(room, str(player_id), card, chained=True)
 
-            room.chain.append(ChainItem(str(player_id), card, targets, self.clock()))
+            room.chain.append(item)
             await self._publisher.emit(
                 "magic_chain_updated", _spectate_chain_payload(room), room=room.id
             )
@@ -2821,6 +2834,82 @@ class MagicService:
         room.players[player_id].magic_hand = list(MAGIC_CARDS)
         await self._emit_hand(room.players[player_id])
         return {"status": "success", "message": f"已添加 {len(MAGIC_CARDS)} 张魔法卡到手牌"}
+
+    async def debug_clear_all_effects(self, room_id: str | None) -> dict:
+        """test_clear_all_effects: wipe every effect and hand, then re-sync hands.
+
+        The legacy event deliberately wiped the hands too ("手上有什么卡" must be
+        fully controllable in E2E) and pushed a per-seat hand_updated.
+        """
+
+        room = self.rooms.get_room(room_id)
+        if room is None:
+            return {"status": "error", "message": "无效的房间"}
+        room.game_effects = {}
+        room.field_magic = None
+        room.field_magic_owner = None
+        room.last_attack = None
+        room.magic_temp_data = {}
+        for player in room.players.values():
+            player.effect_flags = EffectFlags()
+            for ship in player.ships:
+                ship.invincible = False
+                ship.shield = False
+                ship.trap = False
+            player.sunken_ships = []
+            player.damage_dealt_this_turn = 0
+            player.magic_hand = []
+            await self._emit_hand(player)
+        return {"status": "success", "message": "已清除所有魔法效果"}
+
+    def debug_get_magic_cards_list(self) -> dict:
+        """test_get_magic_cards_list: the frozen card table for E2E / collection."""
+
+        return {
+            "status": "success",
+            "magic_cards": [card.to_payload() for card in MAGIC_CARDS],
+        }
+
+    async def debug_get_multi_area_chain(self, room_id: str | None,
+                                         player_id: str | None) -> dict:
+        """test_get_multi_area_chain: a public chain payload with two areas.
+
+        Built through the real constructors (ChainItem + sanitize_targets +
+        public chain payload) instead of hand-written dicts, and the room's
+        chain stack is restored afterwards so a debug probe never disturbs a
+        live match.
+        """
+
+        room = self.rooms.get_room(room_id)
+        if room is None or not player_id or player_id not in room.players:
+            return {"status": "error", "message": "无效的房间或玩家"}
+        caster_id = str(player_id)
+        opponent_id = room.opponent_of(caster_id)
+        cases = (
+            (caster_id, "轰炸", {"target_line": {"type": "row", "index": 4}}),
+            (caster_id, "克苏鲁之眼",
+             {"target_area": {"x1": 2, "y1": 2, "x2": 2, "y2": 2}}),
+        )
+        items: list[ChainItem] = []
+        for cid, name, targets in cases:
+            card = card_by_name(name)
+            if card is None:
+                return {"status": "error", "message": f"卡表里没有 {name}"}
+            normalised, error = sanitize_targets(dict(targets), name)
+            if error:
+                return {"status": "error", "message": error}
+            items.append(ChainItem(cid, card, normalised, self.clock()))
+        saved = room.chain
+        try:
+            room.chain = items
+            payload = _spectate_chain_payload(room)
+        finally:
+            room.chain = saved
+        return {
+            "status": "success",
+            "chain": payload,
+            "opponent_id": opponent_id,
+        }
 
     @staticmethod
     def _name(room: Room, player_id: str) -> str:
