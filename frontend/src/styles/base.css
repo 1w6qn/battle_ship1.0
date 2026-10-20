@@ -12,7 +12,10 @@ body,
 }
 
 body {
-  background: radial-gradient(circle at 20% 0%, #102734 0%, var(--bg) 55%);
+  background-color: var(--bg);
+  background-image: var(--bg-page);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   color: var(--text);
   font-family: var(--font);
   font-size: 15px;
@@ -24,42 +27,141 @@ a {
   text-decoration: none;
 }
 
+/* ---------------------------------------------------------------- shell ---- */
 .app-shell {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  padding: var(--space-3);
-  gap: var(--space-3);
+  padding: 0;
+  gap: 0;
 }
 
 .app-nav {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
+  align-items: center;
+  gap: 22px;
+  flex: 0 0 auto;
+  min-height: 52px;
+  padding: 0 24px 0 64px;
+  border: 0;
+  border-bottom: 1px solid rgba(124, 92, 240, 0.16);
+  border-radius: 0;
+  background: linear-gradient(180deg, rgba(10, 12, 24, 0.92), rgba(10, 12, 24, 0.6));
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding-right: 4px;
+}
+
+.app-brand__mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(124, 92, 240, 0.45);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 25%, rgba(124, 92, 240, 0.45), rgba(11, 13, 24, 0.6));
+  color: #cfc2ff;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.app-brand__text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.app-brand__title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.app-brand__sub {
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+}
+
+.app-nav__links {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 20px;
+  min-width: 0;
 }
 
 .app-nav__link {
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: 0;
   color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .app-nav__link:hover,
 .app-nav__link.router-link-active {
   color: var(--text);
-  background: #14303f;
+  background: transparent;
+}
+
+.app-nav__link.router-link-active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.app-nav__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.app-nav__pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.app-nav__pill b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-nav__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.app-nav__icon:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .route-loading {
-  margin: 0;
+  margin: 8px 24px 0;
   padding: 6px 10px;
   border-radius: 8px;
-  background: #14303f;
-  color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   font-size: 13px;
 }
 
@@ -69,39 +171,47 @@ a {
   flex-direction: column;
 }
 
+/* --------------------------------------------------------------- screens --- */
 .screen {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: linear-gradient(160deg, #0e2230, #091620 70%);
+  gap: 14px;
+  min-width: 0;
+  padding: 18px 24px 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.screen__header {
+  min-width: 0;
 }
 
 .screen__eyebrow {
-  margin: 0 0 var(--space-1);
-  color: var(--accent);
-  font-size: 12px;
-  letter-spacing: 0.12em;
+  margin: 0 0 2px;
+  color: #8f9bc4;
+  font-size: 11px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
 .screen__title {
   margin: 0;
-  font-size: 28px;
+  font-size: 30px;
+  line-height: 1.2;
 }
 
 .screen__hint,
 .screen__note {
-  margin: var(--space-1) 0 0;
+  margin: 4px 0 0;
   color: var(--text-muted);
   font-size: 13px;
 }
 
 .screen__body {
   flex: 1;
+  min-width: 0;
 }
 
 .screen__actions {
@@ -115,7 +225,7 @@ a {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  color: var(--text-muted);
+  color: var(--text-dim);
   font-size: 12px;
 }
 
@@ -126,29 +236,38 @@ a {
   color: var(--text);
 }
 
+/* --------------------------------------------------------------- buttons --- */
 .button {
-  padding: 8px 14px;
-  border: 1px solid var(--accent-strong);
-  border-radius: 8px;
-  background: #0f3a47;
+  padding: 8px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(27, 33, 64, 0.8);
   color: var(--text);
   font: inherit;
   cursor: pointer;
 }
 
 .button:hover {
-  background: #145062;
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ----------------------------------------------------------- error states -- */
 .screen-error {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
+  margin: 24px;
   padding: var(--space-4);
   border: 1px solid var(--danger);
   border-radius: var(--radius);
-  background: #2a1414;
+  background: rgba(42, 20, 24, 0.8);
 }
 
 .screen-error__title {
@@ -160,6 +279,44 @@ a {
   margin: 0;
   color: var(--text-muted);
 }
+/* --------------------------------------------------------------- mobile ---- */
+@media (max-width: 760px) {
+  .app-nav {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 14px;
+  }
+
+  .app-brand__sub {
+    display: none;
+  }
+
+  .app-nav__links {
+    order: 3;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+
+  .app-nav__link {
+    padding: 11px 10px;
+    font-size: 12px;
+  }
+
+  .app-nav__meta {
+    margin-left: auto;
+  }
+
+  .screen {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .screen__title {
+    font-size: 24px;
+  }
+}
+
 /* Ticket #33 / spec user story 8: every interactive control is a >= 40px
    touch target on mobile. Screens keep their desktop density; only the phone
    breakpoint is floored. */
