@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import MatchFoundOverlay from '../../components/MatchFoundOverlay.vue'
+import { useCollectionStore } from '../../stores/collection'
 import { useGameStore } from '../../stores/game'
 import { useHomeStore } from '../../stores/home'
 import {
@@ -33,6 +35,7 @@ import {
 const router = useRouter()
 const home = useHomeStore()
 const game = useGameStore()
+const collection = useCollectionStore()
 
 const difficulty = ref('normal')
 let releaseChannel: (() => void) | null = null
@@ -41,8 +44,9 @@ let navigating = false
 onMounted(() => {
   releaseChannel = acquireHomeChannel(undefined, {
     onConnect: () => {
-      // The online counter includes this very connection once it is up.
-      void home.loadStats()
+      // The online counter includes this very connection once it is up, so the
+      // boot snapshot is not enough: refetch the authoritative counters.
+      void home.loadStats(true)
     },
   })
   void home.loadStats()
@@ -70,12 +74,28 @@ const entries = computed(() =>
 )
 const actionsDisabled = computed(() => home.busy || home.awaitingPlacement)
 
+/**
+ * Hand-off to placement. A real matchmaking pair first shows the 匹配成功
+ * overlay (five-second countdown, legacy screen) and navigates when it emits
+ * done; AI/custom rooms have no matchFound entry and advance immediately.
+ */
+function advanceToPlacement(): void {
+  if (navigating) return
+  navigating = true
+  home.placementHandled()
+  home.clearMatchFound()
+  void router.push({ name: 'placement' })
+}
+
+function onMatchFoundDone(): void {
+  if (home.awaitingPlacement) advanceToPlacement()
+}
+
 function maybeAdvance(): void {
   if (navigating || !home.awaitingPlacement) return
   if (game.state.state !== 'placing_ships') return
-  navigating = true
-  home.placementHandled()
-  void router.push({ name: 'placement' })
+  if (home.matchFound) return
+  advanceToPlacement()
 }
 
 watch(() => game.state.state, maybeAdvance)
@@ -141,6 +161,14 @@ async function startAi(): Promise<void> {
 </script>
 
 <template>
+  <MatchFoundOverlay
+    v-if="home.matchFound"
+    :self-name="home.matchFound.playerName"
+    :opponent-name="home.matchFound.opponentName"
+    :mode="home.matchFound.mode"
+    @done="onMatchFoundDone"
+  />
+
   <section
     class="screen home-screen"
     data-screen="start"
@@ -245,6 +273,9 @@ async function startAi(): Promise<void> {
           <router-link class="home-link" :to="{ name: 'lobby' }" data-testid="start-lobby-link">游戏大厅</router-link>
           <router-link class="home-link" :to="{ name: 'leaderboard' }" data-testid="start-leaderboard-link">排行榜</router-link>
           <router-link class="home-link" :to="{ name: 'settings' }" data-testid="start-settings-link">设置</router-link>
+          <button type="button" class="home-link home-link--button" data-testid="start-collection-link" @click="collection.open()">
+            图鉴 / 卡库
+          </button>
         </nav>
       </section>
 
@@ -690,6 +721,14 @@ async function startAi(): Promise<void> {
   border-color: var(--accent);
   color: var(--text);
   background: var(--accent-soft);
+}
+
+/* The collection entry is an overlay button that must look exactly like the
+   neighbouring route links (no new route name, same visual affordance). */
+.home-link--button {
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .home-player__emblem {

@@ -34,7 +34,14 @@ from ..domain import battle as battle_rules
 from ..domain import placement as placement_rules
 from ..domain import replay as replay_rules
 from ..domain.placement import PlacementError
-from ..domain.room import Room, RoomPhase, RoomState, card_payload, rank_payload
+from ..domain.room import (
+    EffectFlags,
+    Room,
+    RoomPhase,
+    RoomState,
+    card_payload,
+    rank_payload,
+)
 from ..infra.logging import get_logger
 from .rooms import Connection, EventPublisher, NullPublisher, RoomService
 
@@ -638,6 +645,85 @@ class GameplayService:
         if ack is None:
             return {"status": "error", "message": battle_rules.END_TURN_ERROR}
         return ack
+
+    # ---------------------------------------------------------------- debug
+
+    async def debug_end_turn(self, room_id: str | None) -> dict:
+        """test_end_turn: force the phase ladder forward, without the guards.
+
+        Legacy parity: battle -> end, end -> the next attacker's preparation
+        with the budget refilled from that seat's ship count. It emits no frame
+        (the E2E reads the authoritative state through test_get_game_state).
+        """
+
+        room = self.rooms.get_room(room_id)
+        if room is None:
+            return {"status": "error", "message": "无效的房间"}
+        phase = _phase_value(room)
+        if phase == RoomPhase.BATTLE.value:
+            room.current_phase = RoomPhase.END
+        elif phase == RoomPhase.END.value:
+            order = list(room.attack_order or room.players)
+            if not order or room.current_attacker not in order:
+                return {"status": "error", "message": "回合顺序为空"}
+            index = order.index(room.current_attacker)
+            next_id = order[(index + 1) % len(order)]
+            room.current_attacker = next_id
+            room.current_phase = RoomPhase.PREPARATION
+            player = room.players.get(next_id)
+            room.attacks_remaining = int(player.remaining_ships) if player else 0
+        return {"status": "success", "message": "回合已结束"}
+
+    async def debug_reset_game(self, room_id: str | None) -> dict:
+        """test_reset_game: back to an empty placing-ships room.
+
+        The legacy event only cleared the fields that existed then; this also
+        clears the pending-interaction state added by later tickets (ship
+        picks, dice discards) and restarts the big round, so a reset room never
+        carries a half-resolved card into the next E2E scenario.
+        """
+
+        room = self.rooms.get_room(room_id)
+        if room is None:
+            return {"status": "error", "message": "无效的房间"}
+        room.state = RoomState.PLACING_SHIPS
+        room.attack_order = []
+        room.current_attacker = ""
+        room.attacks_remaining = 0
+        room.current_phase = RoomPhase.PREPARATION
+        room.round = 1
+        room.winner = ""
+        room.game_over_reason = None
+        room.field_magic = None
+        room.field_magic_owner = None
+        room.game_effects = {}
+        room.last_attack = None
+        room.magic_temp_data = {}
+        room.chain = []
+        room.chain_waiting = False
+        room.chain_window = None
+        room.chain_passes = 0
+        room.chain_timer = -1
+        room.chain_display_token = None
+        room.chain_display_deadline = None
+        room.pending_dice_discard = {}
+        room.pending_dice_discard_label = {}
+        room.pending_ship_picks = []
+        room.priority_pending = None
+        room.decline_priority = {}
+        room.turn_started_at = None
+        room.turn_timer_attacker = None
+        for player in room.players.values():
+            player.ships = []
+            player.remaining_ships = 0
+            player.attacks = []
+            player.magic_hand = []
+            player.damage_dealt_this_turn = 0
+            player.effect_flags = EffectFlags()
+            player.sunken_ships = []
+            player.revealed_positions = []
+            player.needs_reset = True
+        return {"status": "success", "message": "游戏状态已重置"}
 
     # --------------------------------------------------------------- timeout
 

@@ -95,6 +95,59 @@ def all_players_placed(room: Room) -> bool:
     return bool(room.players) and all(len(seat.ships or []) > 0 for seat in room.players.values())
 
 
+#: The debug boards' frozen ship-size ladder (legacy [3, 2, 2, 1, 1, 1]).
+DEBUG_SHIP_SIZES: tuple[int, ...] = (3, 2, 2, 1, 1, 1)
+
+
+def random_board(rng: Any, ship_count: Any) -> list[PlayerShip]:
+    """Random multi-cell board for the debug events (legacy test_set_*_ships).
+
+    Sizes follow the frozen ladder; the requested count is clamped to it so a
+    malformed debug payload cannot ask for more ships than the ladder has. The
+    placement retry is bounded (the legacy loop could spin forever on a packed
+    board) and falls back to the first free cell run.
+    """
+
+    try:
+        count = int(ship_count)
+    except (TypeError, ValueError):
+        count = len(DEBUG_SHIP_SIZES)
+    count = max(0, min(len(DEBUG_SHIP_SIZES), count))
+    board: list[PlayerShip] = []
+    used: set[tuple[int, int]] = set()
+    for size in DEBUG_SHIP_SIZES[:count]:
+        cells = _random_ship_cells(rng, size, used)
+        used.update(cells)
+        board.append(PlayerShip(positions=[Position(x=x, y=y) for x, y in cells]))
+    return board
+
+
+def _random_ship_cells(
+    rng: Any, size: int, used: set[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    for _ in range(200):
+        if rng.random() < 0.5:
+            x = rng.randrange(0, BOARD_SIZE - size + 1)
+            y = rng.randrange(0, BOARD_SIZE)
+            cells = [(x + i, y) for i in range(size)]
+        else:
+            x = rng.randrange(0, BOARD_SIZE)
+            y = rng.randrange(0, BOARD_SIZE - size + 1)
+            cells = [(x, y + i) for i in range(size)]
+        if not any(cell in used for cell in cells):
+            return cells
+    for x in range(BOARD_SIZE):
+        for y in range(BOARD_SIZE):
+            cells = [(x + i, y) for i in range(size)]
+            if x + size > BOARD_SIZE:
+                cells = [(x, y + i) for i in range(size)]
+            if y + size > BOARD_SIZE:
+                continue
+            if not any(cell in used for cell in cells):
+                return cells
+    return [(0, 0)]
+
+
 def auto_place_ai(room: Room, player_id: str, rng) -> list[PlayerShip]:
     """Random single-cell board for an AI seat, exactly like `_ai_place_ships`.
 

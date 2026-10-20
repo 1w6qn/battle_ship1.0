@@ -7,6 +7,7 @@ tests share exactly one definition of each rule.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterable
 
 #: Socket.IO room every lobby subscriber joins.
@@ -89,6 +90,40 @@ def rooms_by_socket(rooms: Iterable[Any]) -> tuple[set[str], set[str]]:
             if socket_id:
                 bucket.add(socket_id)
     return in_game, in_room
+
+
+@dataclass(frozen=True)
+class LobbyCounters:
+    """The home-panel counters, plus the joinable rows they were counted from.
+
+    `lobby_state` and `GET /api/home_stats` both read these numbers; computing
+    them here (once, from the same presence snapshot and the same match queue)
+    is what keeps the two surfaces from disagreeing.
+    """
+
+    online_count: int
+    queue: dict[str, int]
+    joinable_rooms: list[dict[str, Any]]
+
+    @property
+    def lobby_rooms(self) -> int:
+        return len(self.joinable_rooms)
+
+
+def lobby_counters(
+    rooms: Iterable[Any],
+    presence_rows: dict[str, Any],
+    queue: Iterable[Any],
+) -> LobbyCounters:
+    """Online / queue split / joinable rooms from one presence snapshot."""
+
+    entries = list(queue)
+    ranked = sum(1 for entry in entries if entry.get("mode") == "ranked")
+    return LobbyCounters(
+        online_count=len(presence_rows),
+        queue={"casual": len(entries) - ranked, "ranked": ranked},
+        joinable_rooms=visible_rooms(rooms, set(presence_rows)),
+    )
 
 
 def visible_rooms(rooms: Iterable[Any], online_sids: set[str]) -> list[dict[str, Any]]:

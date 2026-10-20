@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import AppWallpaper from './components/AppWallpaper.vue'
+import CardCollectionOverlay from './components/CardCollectionOverlay.vue'
 import ScreenBoundary from './components/ScreenBoundary.vue'
 import { routeLoading } from './router'
+import { useCollectionStore } from './stores/collection'
 
 /**
  * Shell chrome: frozen route navigation, the route loading state and the
@@ -28,9 +31,16 @@ const nav = [
 ]
 
 const loading = computed(() => routeLoading.value)
+const collection = useCollectionStore()
 </script>
 
 <template>
+  <!-- Applied wallpaper layer (spec story 2); renders nothing until applied. -->
+  <AppWallpaper />
+
+  <!-- 图鉴 / 卡库 overlay: the 11 frozen routes have no slot for it. -->
+  <CardCollectionOverlay v-if="collection.isOpen" @close="collection.close()" />
+
   <div class="app-shell" data-testid="app-shell" :data-route-loading="loading ? 'true' : 'false'">
     <nav class="app-nav" data-testid="app-nav" aria-label="主屏导航">
       <router-link class="app-brand" to="/" aria-label="回到首页">

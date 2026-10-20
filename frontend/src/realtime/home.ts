@@ -48,6 +48,9 @@ export function applyHomeEvent(
       // here we only tick the hand-off signal. Both listeners run in the same
       // dispatch, so the screen's watcher sees the mirrored state.
       if (payload.state === 'placing_ships' && home.awaitingPlacement) {
+        // A real pair also opens the 匹配成功 overlay (opponent name is in the
+        // matchmaking frame); AI/custom rooms have no queue and skip it.
+        home.recordPlacementFrame(payload)
         home.markPlacementFrame()
       }
       break
