@@ -55,7 +55,6 @@ from ..domain.magic.rules import (
     woxin_requirement_reason,
 )
 from ..domain.room import (
-    EffectFlags,
     Player,
     PlayerShip,
     Position,
@@ -2080,9 +2079,10 @@ class MagicService:
         if owner is None:
             return
         if owner.effect_flags.subsidy:
-            owner.effect_flags.subsidy_bonus = int(
-                getattr(owner.effect_flags, "subsidy_bonus", 0) or 0
-            ) + 3
+            # #38：百亿补贴的累加写在租约的投影值上（+3/艘，大回合内累计）。
+            effects.adjust_flag(
+                room, owner_id, "subsidy_bonus", 3, boundary=effects.BOUNDARY_ROUND
+            )
             if owner.socket_id:
                 await self._publisher.emit(
                     "message", {"text": "百亿补贴生效，你的攻击次数 +3"},
@@ -2141,7 +2141,8 @@ class MagicService:
             return False
         if player.damage_dealt_this_turn > 0:
             return False
-        player.effect_flags.wuxian = False
+        # #38：五险一金触发即消费租约。
+        effects.consume_flag(room, player_id, "wuxian")
         room.attacks_remaining += 3
         await self._add_log(
             room,
@@ -2229,7 +2230,10 @@ class MagicService:
         if player is None:
             return
         x = max(0, min(6, int(value)))
-        player.effect_flags.prediction = x
+        # #38：prediction 是 round 边界的整数租约（大回合结束时随投影清零）。
+        effects.grant_flag(
+            room, caster_id, "prediction", boundary=effects.BOUNDARY_ROUND, value=x
+        )
         if f"prediction_initial_{caster_id}" not in room.game_effects:
             self._snapshot_shenji_baseline(room, caster_id)
         room.magic_temp_data.pop("prediction", None)
@@ -2761,6 +2765,7 @@ class MagicService:
                             "reason": "无暇圣心笼罩大地 愿这方世界不再有战争"}
 
         for player_id, player in list(room.players.items()):
+            # 先读宣言值（round 租约还没过期），大回合边界统一 expire 掉。
             prediction = int(getattr(player.effect_flags, "prediction", 0) or 0)
             if prediction <= 0:
                 continue
@@ -2773,14 +2778,18 @@ class MagicService:
                         already_sunken_ids=saved.get("sunken_ids"),
                     )
                     room.game_effects.pop(f"prediction_initial_{player_id}", None)
-            player.effect_flags.prediction = 0
 
-        lifecycle_rules.prune_effect_flags(room, lifecycle_rules.FLAGS_KEEP_ACROSS_ROUND)
+        # #38：大回合边界清掉 round 与 turn 租约，再投影回 effect_flags。
+        effects.expire(room, effects.BOUNDARY_ROUND)
+        effects.project_effect_flags(room)
         await self._emit_active_effects(room)
         return None
 
     async def on_turn_switch(self, room: Room) -> None:
-        lifecycle_rules.prune_effect_flags(room, lifecycle_rules.FLAGS_KEEP_ACROSS_TURN)
+        """小回合边界：只过期 turn 租约（round/match 的跨回合效果保留）。"""
+
+        effects.expire(room, effects.BOUNDARY_TURN)
+        effects.project_effect_flags(room)
         await self._emit_active_effects(room)
 
     async def begin_shenji_redeploy(self, room: Room, player_id: str, count: int,
@@ -2954,7 +2963,6 @@ class MagicService:
         room.last_attack = None
         room.magic_temp_data = {}
         for player in room.players.values():
-            player.effect_flags = EffectFlags()
             for ship in player.ships:
                 ship.invincible = False
                 ship.shield = False
@@ -2963,6 +2971,9 @@ class MagicService:
             player.damage_dealt_this_turn = 0
             player.magic_hand = []
             await self._emit_hand(player)
+        # #38：整对象重置改成 match 边界清租约 + 投影，避免留下幽灵投影。
+        effects.expire(room, effects.BOUNDARY_MATCH)
+        effects.project_effect_flags(room)
         return {"status": "success", "message": "已清除所有魔法效果"}
 
     def debug_get_magic_cards_list(self) -> dict:
