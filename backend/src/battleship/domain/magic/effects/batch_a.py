@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from ... import effects
 from ...battle import (
     SPLASH_NEEDS_HIT,
     line_cells,
@@ -25,6 +26,7 @@ from ...battle import (
 from ...room import BOARD_SIZE, PlayerShip, Position, alive_ships, is_ship_alive
 from ..cards import MagicCard
 from ..deck import revive_sunken_ships
+from ..hooks import SHIP_DESTROYED, SHIP_SUNK
 from ..registry import register
 from .base import EffectContext, EffectResult
 
@@ -112,7 +114,11 @@ def _record_reveal_misses(
 async def echoing_beam(ctx: EffectContext) -> EffectResult:
     if ctx.phase != "preparation" or ctx.room.current_attacker != ctx.caster_id:
         return EffectResult(False, "只能在自己的准备阶段使用")
-    ctx.caster.effect_flags.forced_kill = 2
+    # #38：余音绕梁 = round 边界、2 层的租约，每个结束阶段消耗 1 层。
+    effects.grant_flag(
+        ctx.room, ctx.caster_id, "forced_kill",
+        boundary=effects.BOUNDARY_ROUND, value=2,
+    )
     return EffectResult(True, "接下来两个攻击阶段（本回合与下一回合）将造成强制击杀")
 
 
@@ -122,8 +128,9 @@ async def out_of_nothing(ctx: EffectContext) -> EffectResult:
     for _ in range(2):
         if await ctx.draw(ctx.caster_id) is not None:
             drawn += 1
-    ctx.caster.effect_flags.no_draw = True
-    ctx.opponent.effect_flags.no_draw = True
+    # 无中生有：双方都在本大回合内无法获得魔法卡（turn 边界不清）。
+    effects.grant_flag(ctx.room, ctx.caster_id, "no_draw", boundary=effects.BOUNDARY_ROUND)
+    effects.grant_flag(ctx.room, ctx.opponent_id, "no_draw", boundary=effects.BOUNDARY_ROUND)
     if drawn == 2:
         message = "抽了2张牌，本回合双方无法获得魔法卡"
     elif drawn == 1:
@@ -173,7 +180,7 @@ async def full_power(ctx: EffectContext) -> EffectResult:
     )
     if in_battle and not flags.double_attacks:
         ctx.room.attacks_remaining = max(0, ctx.room.attacks_remaining) * 2
-        flags.double_attacks = False
+        effects.consume_flag(ctx.room, ctx.caster_id, "double_attacks")
         await ctx.emit(
             "attacks_updated",
             {
@@ -183,7 +190,9 @@ async def full_power(ctx: EffectContext) -> EffectResult:
             room=ctx.room.id,
         )
         return EffectResult(True, f"本回合攻击次数翻倍，当前攻击次数为{ctx.room.attacks_remaining}")
-    flags.double_attacks = True
+    effects.grant_flag(
+        ctx.room, ctx.caster_id, "double_attacks", boundary=effects.BOUNDARY_TURN
+    )
     return EffectResult(True, "本回合攻击次数翻倍")
 
 
@@ -247,7 +256,9 @@ async def battle_spirit(ctx: EffectContext) -> EffectResult:
     last = ctx.room.last_attack or {}
     if last.get("attacker") != ctx.caster_id or not last.get("ship_sunk"):
         return EffectResult(False, "必须在击沉对方战舰后立即使用")
-    ctx.caster.effect_flags.battle_spirit = True
+    effects.grant_flag(
+        ctx.room, ctx.caster_id, "battle_spirit", boundary=effects.BOUNDARY_TURN
+    )
     gained = await ctx.grant_attacks(1)
     if gained:
         return EffectResult(
@@ -407,7 +418,7 @@ async def vampire(ctx: EffectContext) -> EffectResult:
     last = ctx.room.last_attack or {}
     if last.get("attacker") != ctx.caster_id or not last.get("ship_sunk"):
         return EffectResult(False, "需要在击沉对方一艘战舰后才能使用")
-    ctx.caster.effect_flags.vampire = True
+    effects.grant_flag(ctx.room, ctx.caster_id, "vampire", boundary=effects.BOUNDARY_ROUND)
     await ctx.draw(ctx.caster_id)
     await ctx.emit("message", {"text": "饮血发动，立即抽一张卡"}, to=ctx.caster.socket_id)
     return EffectResult(True, "饮血生效：已为刚才击沉的战舰抽一张牌，接下来每击杀一艘船再抽一张。")
@@ -433,7 +444,7 @@ async def five_insurances(ctx: EffectContext) -> EffectResult:
         return EffectResult(False, "教皇旨意生效中，本回合攻击次数为0，五险一金无法发动")
     if ctx.caster.damage_dealt_this_turn > 0:
         return EffectResult(False, "本回合已造成伤害，无法发动")
-    ctx.caster.effect_flags.wuxian = True
+    effects.grant_flag(ctx.room, ctx.caster_id, "wuxian", boundary=effects.BOUNDARY_TURN)
     if await ctx.maybe_wuxian():
         return EffectResult(True, "攻击次数已用尽且未造成伤害，攻击次数 +3")
     return EffectResult(True, "五险一金已生效：用完本回合所有攻击次数且未造成伤害时，攻击次数 +3")
@@ -466,13 +477,53 @@ async def bitter_training(ctx: EffectContext) -> EffectResult:
 
 @register("八方来财")
 async def treasure_hunter(ctx: EffectContext) -> EffectResult:
-    ctx.caster.effect_flags.treasure_hunter = True
+    effects.grant_flag(
+        ctx.room, ctx.caster_id, "treasure_hunter", boundary=effects.BOUNDARY_ROUND
+    )
     return EffectResult(True, "战舰数目变化时抽一张牌")
 
 
 @register("百亿补贴")
 async def subsidy(ctx: EffectContext) -> EffectResult:
-    ctx.caster.effect_flags.subsidy = True
+    """自己的船被击沉/摧毁时攻击次数 +3。
+
+    炮击（BattleService.sink_hooks）与效果摧毁（ctx.on_ship_destroyed）最后都
+    落在 MagicService 的同一个 SHIP_SUNK / SHIP_DESTROYED 漏斗上，所以这里只要
+    订阅两个事件、把 +3 写进租约投影即可；订阅随 subsidy 租约在大回合边界消失。
+    """
+
+    owner = ctx.caster_id
+    key = effects.flag_lease_key("subsidy", owner)
+    fresh = effects.get_lease(ctx.room, key) is None
+    lease = effects.grant_flag(
+        ctx.room, owner, "subsidy", boundary=effects.BOUNDARY_ROUND
+    )
+    if not fresh:
+        # 重复施放只刷新同一条租约；再订阅一次会让一次击沉 +6。
+        return EffectResult(True, "船被击败时攻击次数加3")
+
+    async def on_owner_ship_lost(payload: dict[str, Any]) -> None:
+        if payload.get("owner_id") != owner:
+            return
+        effects.adjust_flag(
+            ctx.room, owner, "subsidy_bonus", 3, boundary=effects.BOUNDARY_ROUND
+        )
+        player = ctx.room.players.get(owner)
+        if player is not None and player.socket_id:
+            await ctx.emit(
+                "message",
+                {"text": "百亿补贴生效，你的攻击次数 +3"},
+                to=player.socket_id,
+            )
+
+    for event in (SHIP_SUNK, SHIP_DESTROYED):
+        effects.subscribe(
+            ctx.room,
+            event,
+            on_owner_ship_lost,
+            kind=effects.KIND_NOTIFY,
+            lease_key=lease.key,
+        )
     return EffectResult(True, "船被击败时攻击次数加3")
 
 
