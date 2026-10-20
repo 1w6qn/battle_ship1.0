@@ -170,6 +170,7 @@ backend/src/battleship/
 | 文档 | 内容 |
 | --- | --- |
 | [docs/REWRITE_LANDING_2026_10_20.md](docs/REWRITE_LANDING_2026_10_20.md) | 重写落地：架构、目录、契约、门禁、回滚、残余 |
+| [docs/ADD_A_MAGIC_CARD.md](docs/ADD_A_MAGIC_CARD.md) | 新增魔法卡：牌表 + 效果 + 卡面 + 门禁 |
 | [docs/adr/0001-modern-rewrite.md](docs/adr/0001-modern-rewrite.md) | 重写决策与替代方案 |
 | [ops/README.md](ops/README.md) | 构建/迁移/部署/5 分钟回滚 runbook |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 历史部署事故记录（旧栈），现行步骤看 ops |

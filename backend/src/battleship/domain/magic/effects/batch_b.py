@@ -70,6 +70,8 @@ async def wangyang(ctx: EffectContext) -> EffectResult:
     count = max(int(ctx.caster.remaining_ships or 0), int(ctx.opponent.remaining_ships or 0))
     if not ctx.room.magic_discard or count <= 0:
         if own_card is not None:
+            # 放回刚才为看一眼而取出的那张：这是回滚（弃牌区内容没变），不是
+            # 一次新弃牌，所以不发 CARD_DISCARDED —— 否则同一张牌会被数两次。
             ctx.room.magic_discard.append(own_card)
         return EffectResult(False, "弃牌区没有可挑选的卡牌")
     take = min(count, len(ctx.room.magic_discard))
@@ -338,9 +340,8 @@ async def polar_reversal(ctx: EffectContext) -> EffectResult:
         if hasattr(player, "opponent_attacks"):
             player.opponent_attacks = []
         player.magic_blocked = False
-    # #38：整对象重置改成 match 边界清租约 + 投影（旧实现直接换一个空 flags）。
-    effects.expire(ctx.room, effects.BOUNDARY_MATCH)
-    effects.project_effect_flags(ctx.room)
+    # #38：整对象重置统一走 reset_all（match 边界清租约 + 投影）。
+    effects.reset_all(ctx.room)
 
     ctx.room.field_magic = None
     ctx.room.field_magic_owner = None
