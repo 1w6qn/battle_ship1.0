@@ -974,7 +974,8 @@ onBeforeUnmount(() => {
 }
 
 .lobby__changelog-close {
-  min-height: 32px;
+  min-width: 44px;
+  min-height: 44px;
   padding: 2px 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);

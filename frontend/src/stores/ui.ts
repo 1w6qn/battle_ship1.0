@@ -225,6 +225,8 @@ export const useUiStore = defineStore('ui', () => {
   // The one connection flag for the whole shell (spec §5). Every realtime
   // channel reports its socket here; the App banner and disable rules read it.
   const connection = ref<ConnectionState>('online')
+  /** A reconnect that could not restore the seat keeps a persistent banner. */
+  const connectionIssue = ref('')
   let droppedOnce = false
 
   function setConnection(online: boolean): void {
@@ -240,6 +242,14 @@ export const useUiStore = defineStore('ui', () => {
       droppedOnce = false
       notify({ code: 'connection-restored', message: '已恢复连接', tone: 'success' })
     }
+  }
+
+  function setConnectionIssue(message: string): void {
+    connectionIssue.value = String(message ?? '').trim()
+  }
+
+  function clearConnectionIssue(): void {
+    connectionIssue.value = ''
   }
 
   // ----------------------------------------------------------- overlays ----
@@ -343,7 +353,10 @@ export const useUiStore = defineStore('ui', () => {
 
   return {
     connection,
+    connectionIssue,
     setConnection,
+    setConnectionIssue,
+    clearConnectionIssue,
     theme,
     motion,
     contrast,

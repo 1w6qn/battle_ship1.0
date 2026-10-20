@@ -75,6 +75,12 @@ function retryConnection(): void {
   window.location.reload()
 }
 
+/** The reconnect could not restore the seat: the player can still leave. */
+function exitToHome(): void {
+  ui.clearConnectionIssue()
+  void router.push({ name: 'start' })
+}
+
 function exitMatch(): void {
   ui.cancelExit()
   void router.push({ name: 'lobby' })
@@ -111,13 +117,32 @@ onBeforeUnmount(() => window.removeEventListener('bs:auth-required', onAuthRequi
     <div
       v-if="ui.connection === 'offline'"
       class="app-connection"
-      data-testid="app-connection-banner"
+      data-testid="connection-banner"
       role="alert"
       aria-live="assertive"
     >
       <span class="app-connection__text">连接中断，正在重连…</span>
       <button type="button" class="app-connection__retry" data-testid="app-connection-retry" @click="retryConnection">
         重新连接
+      </button>
+      <button type="button" class="app-connection__retry" data-testid="app-connection-exit" @click="exitToHome">
+        回首页
+      </button>
+    </div>
+
+    <div
+      v-if="ui.connectionIssue"
+      class="app-connection app-connection--issue"
+      data-testid="connection-issue"
+      role="alert"
+      aria-live="assertive"
+    >
+      <span class="app-connection__text">{{ ui.connectionIssue }}</span>
+      <button type="button" class="app-connection__retry" data-testid="connection-issue-retry" @click="retryConnection">
+        重新连接
+      </button>
+      <button type="button" class="app-connection__retry" data-testid="connection-issue-exit" @click="exitToHome">
+        回首页
       </button>
     </div>
 

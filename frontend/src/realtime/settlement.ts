@@ -2,6 +2,7 @@ import type { Pinia } from 'pinia'
 import { createTypedSocket, type TypedSocket } from '../socket/client'
 import { useGameStore } from '../stores/game'
 import { useUiStore } from '../stores/ui'
+import { rememberSeat, restoreSeat } from './reconnect'
 import { useResultStore } from '../stores/result'
 
 /**
@@ -99,7 +100,11 @@ export function applySettlementEvent(
 
 export function installSettlementListeners(socket: TypedSocket, pinia?: Pinia): () => void {
   const offs = SETTLEMENT_EVENTS.map((event) =>
-    socket.on(event, (payload) => applySettlementEvent(event, payload, pinia)),
+    socket.on(event, (payload) => {
+      applySettlementEvent(event, payload, pinia)
+      // Keep a reconnect token warm while the seat is bound to this connection.
+      if (event === 'game_state' || event === 'room_sync') void rememberSeat(socket, pinia)
+    }),
   )
   // The server has pushed this private frame since the legacy settlement hook
   // (one per seat, only when both seats are accounts), but the frozen outbound
@@ -155,7 +160,12 @@ export function acquireSettlementChannel(
     // One connection truth for the whole shell (spec §5, ticket #52): every
     // channel reuses this socket, so it reports here once.
     const ui = useUiStore(pinia)
-    const onConnect = (): void => ui.setConnection(true)
+    const onConnect = (): void => {
+      ui.setConnection(true)
+      // Ticket #53: a reconnect gives a new socket id; rebind the seat with the
+      // frozen get_reconnect_token / rejoin_room pair before anything else.
+      void restoreSeat(socket, pinia)
+    }
     const onDisconnect = (): void => ui.setConnection(false)
     socket.socket.on('connect', onConnect)
     socket.socket.on('disconnect', onDisconnect)
