@@ -9,6 +9,10 @@ authoritative.
 (`domain/battle.py`) are re-exported here for the ticket-era import paths; this
 module does not implement them (CLAUDE #1: one implementation per rule).
 
+`evaluate_cast` is the **one** pre-cast gate both activation paths
+(`services.magic.use_magic_card` and `services.magic.chain_response`) call
+(spec #35 §7), so the order and the wording of every refusal live here only.
+
 Legacy reference: server.py `can_play_magic_card` (8546-8588),
 `freezing_block_reason`, `_last_attack_requirement_reason` and the three
 requirement helpers. DECISIONS D10 keeps the front-end drift (speed-1 in battle
@@ -23,6 +27,7 @@ from ..battle import action_wait_reason
 from ..room import Room, RoomPhase
 from ..room.models import field_magic_name
 from .cards import MagicCard
+from .interaction import ship_pick_blocked_reason
 
 END_PHASE_PLAYABLE: tuple[str, ...] = ("Freezing！",)
 
@@ -30,6 +35,10 @@ END_PHASE_PLAYABLE: tuple[str, ...] = ("Freezing！",)
 BINGLIANG_FAIL_BELOW = 3
 BINGLIANG_SKIP_PHASES = 2
 _FIELD_NAME = "禁忌果实"
+
+#: Refusal text for a card whose effect is not registered yet. One wording for
+#: both activation paths and for the settlement refund path (services/magic.py).
+UNIMPLEMENTED = "【{name}】效果尚未接入（后续批次），本张卡未消耗"
 
 
 def value(value: Any) -> Any:
@@ -160,13 +169,45 @@ def playability_reason(room: Room, player_id: str, card: MagicCard) -> str:
     return f"当前阶段{value(room.current_phase)}无法使用速阶{card.speed}的魔法卡"
 
 
+def evaluate_cast(room: Room, player_id: str, card: MagicCard) -> str | None:
+    """The single pre-cast gate both activation paths share (spec #35 §7).
+
+    Returns None when the cast may proceed, otherwise the exact wire wording
+    of the refusal. The order is fixed: playability -> per-card requirements ->
+    ship-pick obligation -> registry. Neither service may re-list these checks.
+    """
+
+    if not can_play_magic_card(room, player_id, card):
+        return playability_reason(room, player_id, card)
+    for reason in (
+        last_attack_requirement_reason(room, player_id, card),
+        wangyang_requirement_reason(room, player_id, card),
+        woxin_requirement_reason(room, player_id, card),
+        lanyu_requirement_reason(room, player_id, card),
+    ):
+        if reason:
+            return reason
+    blocked = ship_pick_blocked_reason(room, player_id, card.name)
+    if blocked:
+        return blocked
+    # registry imports the effect batches, which import this module: resolve it
+    # lazily so the gate module stays *below* the dispatch table.
+    from .registry import is_implemented
+
+    if not is_implemented(card):
+        return UNIMPLEMENTED.format(name=card.name)
+    return None
+
+
 __all__ = [
     "BINGLIANG_FAIL_BELOW",
     "BINGLIANG_SKIP_PHASES",
     "END_PHASE_PLAYABLE",
+    "UNIMPLEMENTED",
     "action_wait_reason",
     "blocked_cells",
     "can_play_magic_card",
+    "evaluate_cast",
     "field_magic_name",
     "freezing_block_reason",
     "lanyu_requirement_reason",

@@ -4,7 +4,8 @@ The socket layer only translates frames. This service owns the protocol-level
 order the legacy handler had:
 
 1. identity -> target sanitisation -> frozen/chain/priority/magic-blocked gates;
-2. hand membership -> can_play_magic_card -> per-card requirement checks;
+2. hand membership -> evaluate_cast (playability + per-card requirements +
+   ship-pick obligation + registry), the one gate both activation paths use;
 3. remove the card and push it on the chain stack;
 4. resolve the stack (ticket #12 replaces this direct resolution with the real
    response window), refund on a failed effect, then re-push the authoritative
@@ -45,14 +46,10 @@ from ..domain.spectate.rules import AREA_TARGET_BOARDS
 from ..domain.magic.rules import (
     BINGLIANG_FAIL_BELOW,
     BINGLIANG_SKIP_PHASES,
+    UNIMPLEMENTED,
     action_wait_reason,
-    can_play_magic_card,
+    evaluate_cast,
     field_magic_name,
-    lanyu_requirement_reason,
-    last_attack_requirement_reason,
-    playability_reason,
-    wangyang_requirement_reason,
-    woxin_requirement_reason,
 )
 from ..domain.room import (
     Player,
@@ -77,7 +74,6 @@ INVALID_SEAT = {"status": "error", "message": "无效的房间或玩家"}
 FINISHED_GAME = {"status": "error", "message": "对局已结束"}
 OPPONENT_DISCONNECTED = "对手已掉线，等待重连中"
 CHAIN_BUSY = "连锁响应中，请先响应连锁"
-UNIMPLEMENTED = "【{name}】效果尚未接入（后续批次），本张卡未消耗"
 
 #: Fields a client may stage through select_magic_target (whitelist, not blacklist).
 SELECTION_TARGET_KEYS = frozenset({
@@ -844,24 +840,10 @@ class MagicService:
             for candidate in player.magic_hand
         ):
             return {"status": "error", "message": "你没有这张魔法卡"}
-        if not can_play_magic_card(room, player_id, card):
-            return {"status": "error", "message": playability_reason(room, player_id, card)}
-        for reason in (
-            last_attack_requirement_reason(room, player_id, card),
-            wangyang_requirement_reason(room, player_id, card),
-            woxin_requirement_reason(room, player_id, card),
-            lanyu_requirement_reason(room, player_id, card),
-        ):
-            if reason:
-                return {"status": "error", "message": reason}
-        blocked = interaction_rules.ship_pick_blocked_reason(room, player_id, card.name)
-        if blocked:
-            return {"status": "error", "message": blocked}
-        if not registry.is_implemented(card):
-            return {
-                "status": "error",
-                "message": UNIMPLEMENTED.format(name=card.name),
-            }
+        # §7：唯一的 pre-cast 评估；连锁路径调用同一个函数（顺序与文案一份）。
+        refusal = evaluate_cast(room, player_id, card)
+        if refusal:
+            return {"status": "error", "message": refusal}
 
         # #37：宣告通过全部闸门、扣牌之前发 CAST_BEFORE（filter 带可改写目标）。
         await hooks.emit(
@@ -1125,10 +1107,12 @@ class MagicService:
             if int(card.speed) != 3:
                 return {"status": "error", "message": "只能使用速阶3的卡牌进行连锁"}
 
-            # Same playability gate as a normal play (禁忌果实 / 绝处逢生).
-            if not can_play_magic_card(room, str(player_id), card):
+            # §7：与 use_magic_card 同一个 pre-cast 评估（禁忌果实 / 绝处逢生 /
+            # 卡专属条件 / 待选船 / 未接入）。拒绝后让过并推窗，绝不留半开窗口。
+            refusal = evaluate_cast(room, str(player_id), card)
+            if refusal:
                 await self._pass_after_refusal(room, str(player_id))
-                return {"status": "error", "message": "当前无法使用这张魔法卡"}
+                return {"status": "error", "message": refusal}
 
             # 第二条支付路径：与 use_magic_card 发同一对事件（复审 finding 7）。
             await hooks.emit(
