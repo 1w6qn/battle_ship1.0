@@ -6,10 +6,12 @@ import {
   cellClass,
   cellGlyph,
   cellOf,
+  chainText,
   handChips,
   nodeEntries,
   nodePercent,
   nodeTipText,
+  phaseText,
   shipsAlive,
   stepKindText,
   type Side,
@@ -64,6 +66,14 @@ const statusText = computed(() => {
     ? '回放已加载（' + truncated.value + '）'
     : '回放已加载，可以拖动进度条或点下一步。'
 })
+
+// Phase / big-round / chain of the current frame. The server recorder stamps
+// them on the steps and exports the timelines; the screen only formats.
+const contextPhase = computed(() => phaseText(frame.value?.phase ?? ''))
+const contextRound = computed(() =>
+  typeof frame.value?.round === 'number' ? String(frame.value.round) : '—',
+)
+const contextChain = computed(() => chainText(frame.value?.chain ?? []))
 
 const currentStep = computed(() => store.currentStep)
 const stepKind = computed(() => (currentStep.value ? stepKindText(currentStep.value.kind) : '—'))
@@ -332,6 +342,9 @@ onBeforeUnmount(() => {
         <span class="replay__stat">第 <b data-testid="replay-step-index">{{ stepIndex }}</b>/<b data-testid="replay-step-total">{{ stepTotal }}</b> 步</span>
         <span class="replay__stat">当前 <b data-testid="replay-step-kind">{{ stepKind }}</b></span>
         <span class="replay__stat">行动方 <b data-testid="replay-step-actor">{{ stepActor }}</b></span>
+        <span class="replay__stat">阶段 <b data-testid="replay-phase">{{ contextPhase }}</b></span>
+        <span class="replay__stat">大回合 <b data-testid="replay-round">{{ contextRound }}</b></span>
+        <span class="replay__stat replay__stat--chain">当前连锁 <b data-testid="replay-chain">{{ contextChain }}</b></span>
         <span class="replay__speed" role="group" aria-label="播放倍速">
           <button
             v-for="option in SPEEDS"

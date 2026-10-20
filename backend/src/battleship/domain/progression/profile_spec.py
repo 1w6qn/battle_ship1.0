@@ -391,7 +391,7 @@ def catalog(stats):
 
     ⚠️ 下发字段是**白名单展开**，不是 `{**item}`。段位解锁项在池子里多带一个
     `rank_tier`（内部阈值，前端用不着），直接展开会把它漏给前端 ——
-    而契约只有 5 个键（`tests/test_profile_card.py` 就是按这 5 个断言的）。
+    而契约只有 5 个键（仓外名片对照脚本按这 5 个断言；D4：新栈不携带测试）。
     `requirement` 文案里已经写明「段位达到 船长」，前端要显示的信息不缺。
     """
     title_ok = unlocked_titles(stats)

@@ -1,5 +1,1 @@
-"""backend/src/battleship/domain/progression/__init__.py -- placeholder module.
-
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+"""Ranks, levels, experience, achievements and the profile card spec."""

@@ -56,12 +56,23 @@ export interface ReplayNode {
   label: string
 }
 
+/** One card on the chain stack when a step happened (public rows only). */
+export interface ReplayChainItem {
+  card: string
+  side: 'p1' | 'p2' | null
+  negated: boolean
+}
+
 export interface ReplayStep {
   i: number
   kind: string
   actor: string | null
   text: string
   detail: JsonObject
+  /** Sparse context stamped by the server recorder (carry-forward wins). */
+  phase?: string
+  round?: number
+  chain?: ReplayChainItem[]
 }
 
 export interface ReplayPayload {
@@ -76,6 +87,10 @@ export interface ReplayPayload {
   effects: JsonObject[]
   remaining: JsonObject[]
   boardResets: JsonObject[]
+  /** Server-side phase / big-round / chain timelines (ticket #18 recorder). */
+  phases: JsonObject[]
+  rounds: JsonObject[]
+  chains: JsonObject[]
   nodes: ReplayNode[]
   truncated: string
 }
@@ -87,6 +102,10 @@ export interface ReplayFrame {
   marks: Record<Side, Record<string, ReplayMark>>
   resetAt: Record<Side, number[]>
   alive: Record<Side, number | null>
+  /** Context of step k: phase text, big-round number, current chain stack. */
+  phase: string
+  round: number | null
+  chain: ReplayChainItem[]
 }
 
 export type CellEffect = 'shield' | 'hole' | 'frozen' | 'laststand' | null
@@ -209,9 +228,46 @@ export function normalizePayload(raw: unknown): ReplayPayload | null {
     effects: asArray(raw.effects).filter(isObject),
     remaining: asArray(raw.remaining).filter(isObject),
     boardResets: asArray(raw.board_resets).filter(isObject),
+    phases: asArray(raw.phases).filter(isObject),
+    rounds: asArray(raw.rounds).filter(isObject),
+    chains: asArray(raw.chains).filter(isObject),
     nodes: normalizeNodes(raw.nodes),
     truncated: asString(raw.truncated),
   }
+}
+
+/** Public chain rows; an unreadable item is dropped, never invented. */
+export function normalizeChain(value: unknown): ReplayChainItem[] {
+  const out: ReplayChainItem[] = []
+  for (const raw of asArray(value)) {
+    if (!isObject(raw)) continue
+    const card = asString(raw.card)
+    if (!card) continue
+    out.push({
+      card,
+      side: raw.side === 'p1' || raw.side === 'p2' ? raw.side : null,
+      negated: raw.negated === true,
+    })
+  }
+  return out
+}
+
+export function phaseText(phase: string): string {
+  if (phase === 'preparation') return '准备阶段'
+  if (phase === 'battle') return '战斗阶段'
+  if (phase === 'end') return '结束阶段'
+  return phase || '—'
+}
+
+export function chainText(chain: ReplayChainItem[]): string {
+  if (!chain.length) return '无'
+  return chain
+    .map((item) => {
+      const owner = item.side === 'p1' ? '先手' : item.side === 'p2' ? '后手' : ''
+      const negated = item.negated ? '（已无效）' : ''
+      return (owner ? owner + '·' : '') + item.card + negated
+    })
+    .join(' → ')
 }
 
 const SIDES: readonly Side[] = ['p1', 'p2']
@@ -272,6 +328,9 @@ export function computeFrame(payload: ReplayPayload | null, k: number): ReplayFr
     marks: { p1: {}, p2: {} },
     resetAt: { p1: [], p2: [] },
     alive: { p1: null, p2: null },
+    phase: '',
+    round: null,
+    chain: [],
   }
   if (!payload) return frame
   const last = Math.max(0, payload.steps.length - 1)
@@ -322,6 +381,10 @@ export function computeFrame(payload: ReplayPayload | null, k: number): ReplayFr
       for (const cell of cells) if (isObject(cell)) hits[side].push({ step, cell })
     }
   }
+  frame.phase = foldContextText(payload, 'phases', 'phase', target)
+  frame.round = foldContextRound(payload, target)
+  frame.chain = foldContextChain(payload, target)
+
   for (const side of SIDES) {
     for (const hit of hits[side]) {
       const x = asInt(hit.cell.x, -1)
@@ -335,6 +398,59 @@ export function computeFrame(payload: ReplayPayload | null, k: number): ReplayFr
     }
   }
   return frame
+}
+
+/**
+ * Context of frame k. The recorder writes phase/round/chain timelines *and*
+ * sparse stamps on the steps; the timelines are authoritative when present (an
+ * old blob without them falls back to the step stamps). Carry-forward means the
+ * top bar shows the last known value, not an empty bar mid-replay.
+ */
+function foldContextText(payload: ReplayPayload, rowsKey: 'phases', field: string, k: number): string {
+  let value = ''
+  for (const row of payload[rowsKey]) {
+    if (asInt(row.step, -1) > k) break
+    const text = asString(row[field])
+    if (text) value = text
+  }
+  if (value) return value
+  for (const step of payload.steps) {
+    if (step.i > k) break
+    const stamped = asString(step.phase)
+    if (stamped) value = stamped
+  }
+  return value
+}
+
+function foldContextRound(payload: ReplayPayload, k: number): number | null {
+  let value: number | null = null
+  for (const row of payload.rounds) {
+    if (asInt(row.step, -1) > k) break
+    const number = asInt(row.round, -1)
+    if (number >= 0) value = number
+  }
+  if (value !== null) return value
+  for (const step of payload.steps) {
+    if (step.i > k) break
+    if (typeof step.round === 'number' && Number.isFinite(step.round)) {
+      value = Math.trunc(step.round)
+    }
+  }
+  return value
+}
+
+function foldContextChain(payload: ReplayPayload, k: number): ReplayChainItem[] {
+  let value: ReplayChainItem[] = []
+  for (const row of payload.chains) {
+    if (asInt(row.step, -1) > k) break
+    value = normalizeChain(row.items)
+  }
+  if (value.length) return value
+  for (const step of payload.steps) {
+    if (step.i > k) break
+    if (Array.isArray(step.chain) && step.chain.length) value = step.chain
+  }
+  return value
 }
 
 function effectOf(frame: ReplayFrame, side: Side, x: number, y: number): { kind: CellEffect; label: string } | null {

@@ -1,5 +1,1 @@
-"""backend/src/battleship/http/routers/__init__.py -- placeholder module.
-
-Implementation lands in the rewrite phases.
-No tests are committed in this repository.
-"""
+"""One module per HTTP area; every route is registered from main.py."""

@@ -34,6 +34,10 @@ a {
   min-height: 100vh;
   padding: 0;
   gap: 0;
+  /* Keep the shell above the optional wallpaper layer (AppWallpaper, z-index 0)
+     so an applied background never hides navigation or screen content. */
+  position: relative;
+  z-index: 1;
 }
 
 .app-nav {
