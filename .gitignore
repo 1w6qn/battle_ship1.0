@@ -9,6 +9,7 @@ __pycache__/
 1
 avatars/
 .trae/
+.trae-html-share-packages/
 *.mp3
 *.log
 .workbuddy/
